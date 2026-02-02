@@ -1,0 +1,14 @@
+{
+  "name": "hokuhoku-imomaru-bot",
+  "version": "0.1.0",
+  "description": "X育成ボット「ほくほくいも丸くん」- AWS Serverless Bot",
+  "scripts": {
+    "cdk": "cdk",
+    "synth": "cdk synth",
+    "deploy": "cdk deploy",
+    "diff": "cdk diff"
+  },
+  "devDependencies": {
+    "aws-cdk": "^2.100.0"
+  }
+}
