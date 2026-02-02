@@ -40,7 +40,7 @@ ASSETS_BUCKET_NAME = os.environ.get("ASSETS_BUCKET_NAME", "imomaru-bot-assets")
 SECRET_NAME = os.environ.get("SECRET_NAME", "imomaru-bot/x-api-credentials")
 OSHI_USER_ID = os.environ.get("OSHI_USER_ID", "")
 GROUP_USER_ID = os.environ.get("GROUP_USER_ID", "")
-BOT_USER_ID = os.environ.get("BOT_USER_ID", "1794035160897425408")
+BOT_USER_ID = os.environ.get("BOT_USER_ID", "")
 
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:

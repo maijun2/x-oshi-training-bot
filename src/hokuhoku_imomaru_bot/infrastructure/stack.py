@@ -151,7 +151,7 @@ class ImomaruBotStack(Stack):
                 "SECRET_NAME": self.x_api_secret.secret_name,
                 "OSHI_USER_ID": "",  # デプロイ後に設定
                 "GROUP_USER_ID": "",  # デプロイ後に設定
-                "BOT_USER_ID": "1794035160897425408",  # ボットのユーザーID
+                "BOT_USER_ID": "",  # デプロイ後に設定
             },
             description="Imomaru Bot - Main Handler",
         )
