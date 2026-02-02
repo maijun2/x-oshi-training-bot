@@ -164,13 +164,11 @@ class TestAIGenerator:
             model_id="custom-model",
             max_tokens=100,
             temperature=0.5,
-            top_p=0.8,
         )
         
         assert custom_generator.model_id == "custom-model"
         assert custom_generator.max_tokens == 100
         assert custom_generator.temperature == 0.5
-        assert custom_generator.top_p == 0.8
     
     def test_fallback_response_within_limit(self):
         """フォールバック応答が140文字以内であることを確認"""

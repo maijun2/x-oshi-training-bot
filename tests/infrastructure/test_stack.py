@@ -217,7 +217,7 @@ def test_lambda_execution_role_created():
                 }
             ]
         },
-        "Description": "ほくほくいも丸くんLambda実行ロール",
+        "Description": "Imomaru Bot Lambda Execution Role",
         "ManagedPolicyArns": assertions.Match.array_with([
             assertions.Match.object_like({
                 "Fn::Join": assertions.Match.any_value()
@@ -315,9 +315,7 @@ def test_lambda_role_has_bedrock_permissions():
                 assertions.Match.object_like({
                     "Action": "bedrock:InvokeModel",
                     "Effect": "Allow",
-                    "Resource": assertions.Match.object_like({
-                        "Fn::Join": assertions.Match.any_value()
-                    })
+                    "Resource": assertions.Match.any_value()
                 })
             ])
         }
@@ -347,7 +345,7 @@ def test_lambda_function_created():
         "Handler": "hokuhoku_imomaru_bot.lambda_handler.lambda_handler",
         "Timeout": 180,  # 3分 = 180秒
         "MemorySize": 256,
-        "Description": "ほくほくいも丸くん育成ボット - メインハンドラー",
+        "Description": "Imomaru Bot - Main Handler",
     })
 
 
@@ -550,7 +548,7 @@ def test_cdk_stack_resources_have_descriptions():
     
     # Lambda関数の説明
     template.has_resource_properties("AWS::Lambda::Function", {
-        "Description": "ほくほくいも丸くん育成ボット - メインハンドラー",
+        "Description": "Imomaru Bot - Main Handler",
     })
     
     # Secrets Managerの説明

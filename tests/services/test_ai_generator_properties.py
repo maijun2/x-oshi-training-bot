@@ -62,7 +62,7 @@ class TestPromptContentProperty:
         
         # キャラクター定義が含まれていることを確認
         assert "ほくほくいも丸くん🍠" in prompt
-        assert "天木じゅりさん" in prompt
+        assert "甘木ジュリさん" in prompt
         assert "◯◯ｲﾓ🍠" in prompt
 
 
