@@ -19,6 +19,9 @@ from aws_cdk import (
     aws_lambda as lambda_,
     aws_events as events,
     aws_events_targets as targets,
+    aws_cloudwatch as cloudwatch,
+    aws_sns as sns,
+    aws_cloudwatch_actions as cw_actions,
 )
 from constructs import Construct
 
@@ -236,3 +239,178 @@ class ImomaruBotStack(Stack):
             description="ほくほくいも丸くん - 夜21時（JST）のスケジュール",
         )
         self.evening_schedule.add_target(targets.LambdaFunction(self.bot_lambda))
+
+        # ========================================
+        # CloudWatch ダッシュボード & アラーム
+        # ========================================
+
+        # SNSトピック: アラーム通知用
+        self.alarm_topic = sns.Topic(
+            self,
+            "AlarmTopic",
+            topic_name="imomaru-bot-alarms",
+            display_name="Imomaru Bot Alarms",
+        )
+
+        # Lambda エラーアラーム
+        self.lambda_error_alarm = cloudwatch.Alarm(
+            self,
+            "LambdaErrorAlarm",
+            alarm_name="imomaru-bot-lambda-errors",
+            alarm_description="Lambda関数でエラーが発生しました",
+            metric=self.bot_lambda.metric_errors(
+                period=Duration.minutes(5),
+                statistic="Sum",
+            ),
+            threshold=1,
+            evaluation_periods=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+        )
+        self.lambda_error_alarm.add_alarm_action(cw_actions.SnsAction(self.alarm_topic))
+
+        # Lambda タイムアウトアラーム（実行時間が2分30秒を超えた場合）
+        self.lambda_duration_alarm = cloudwatch.Alarm(
+            self,
+            "LambdaDurationAlarm",
+            alarm_name="imomaru-bot-lambda-duration",
+            alarm_description="Lambda関数の実行時間が長すぎます",
+            metric=self.bot_lambda.metric_duration(
+                period=Duration.minutes(5),
+                statistic="Maximum",
+            ),
+            threshold=150000,  # 150秒（2分30秒）
+            evaluation_periods=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+        )
+        self.lambda_duration_alarm.add_alarm_action(cw_actions.SnsAction(self.alarm_topic))
+
+        # CloudWatch ダッシュボード
+        self.dashboard = cloudwatch.Dashboard(
+            self,
+            "BotDashboard",
+            dashboard_name="imomaru-bot-dashboard",
+        )
+
+        # 稼働率ゲージウィジェット（成功率を表示）- 左側に大きく配置
+        # MathExpressionを使用して成功率を計算: (呼び出し数 - エラー数) / 呼び出し数 * 100
+        success_rate_widget = cloudwatch.GaugeWidget(
+            title="稼働率 (過去24時間)",
+            metrics=[
+                cloudwatch.MathExpression(
+                    expression="IF(invocations > 0, (invocations - errors) / invocations * 100, 100)",
+                    using_metrics={
+                        "invocations": self.bot_lambda.metric_invocations(
+                            period=Duration.days(1),
+                            statistic="Sum",
+                        ),
+                        "errors": self.bot_lambda.metric_errors(
+                            period=Duration.days(1),
+                            statistic="Sum",
+                        ),
+                    },
+                    label="成功率 (%)",
+                ),
+            ],
+            left_y_axis=cloudwatch.YAxisProps(
+                min=0,
+                max=100,
+            ),
+            width=8,
+            height=12,
+        )
+
+        # アラームステータスウィジェット - 右上
+        alarm_status_widget = cloudwatch.AlarmStatusWidget(
+            title="アラーム状態",
+            alarms=[
+                self.lambda_error_alarm,
+                self.lambda_duration_alarm,
+            ],
+            width=16,
+            height=3,
+        )
+
+        # Lambda メトリクスウィジェット - 右側に配置
+        lambda_invocations_widget = cloudwatch.GraphWidget(
+            title="Lambda 呼び出し回数",
+            left=[
+                self.bot_lambda.metric_invocations(
+                    period=Duration.hours(1),
+                    statistic="Sum",
+                ),
+            ],
+            width=8,
+            height=4,
+        )
+
+        lambda_errors_widget = cloudwatch.GraphWidget(
+            title="Lambda エラー数",
+            left=[
+                self.bot_lambda.metric_errors(
+                    period=Duration.hours(1),
+                    statistic="Sum",
+                ),
+            ],
+            width=8,
+            height=4,
+        )
+
+        lambda_duration_widget = cloudwatch.GraphWidget(
+            title="Lambda 実行時間 (ms)",
+            left=[
+                self.bot_lambda.metric_duration(
+                    period=Duration.hours(1),
+                    statistic="Average",
+                ),
+                self.bot_lambda.metric_duration(
+                    period=Duration.hours(1),
+                    statistic="Maximum",
+                ),
+            ],
+            width=8,
+            height=5,
+        )
+
+        lambda_throttles_widget = cloudwatch.GraphWidget(
+            title="Lambda スロットリング",
+            left=[
+                self.bot_lambda.metric_throttles(
+                    period=Duration.hours(1),
+                    statistic="Sum",
+                ),
+            ],
+            width=8,
+            height=5,
+        )
+
+        # DynamoDB メトリクスウィジェット - 下段
+        dynamodb_consumed_widget = cloudwatch.GraphWidget(
+            title="DynamoDB 消費キャパシティ (BotState)",
+            left=[
+                self.bot_state_table.metric_consumed_read_capacity_units(
+                    period=Duration.hours(1),
+                    statistic="Sum",
+                ),
+                self.bot_state_table.metric_consumed_write_capacity_units(
+                    period=Duration.hours(1),
+                    statistic="Sum",
+                ),
+            ],
+            width=24,
+            height=5,
+        )
+
+        # ダッシュボードにウィジェットを追加
+        # 1行目: 稼働率ゲージ(左) + アラーム状態(右上)
+        self.dashboard.add_widgets(
+            cloudwatch.Column(success_rate_widget),
+            cloudwatch.Column(
+                alarm_status_widget,
+                cloudwatch.Row(lambda_invocations_widget, lambda_errors_widget),
+                cloudwatch.Row(lambda_duration_widget, lambda_throttles_widget),
+            ),
+        )
+        # 2行目: DynamoDBメトリクス
+        self.dashboard.add_widgets(dynamodb_consumed_widget)

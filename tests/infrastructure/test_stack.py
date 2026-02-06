@@ -580,3 +580,144 @@ def test_cdk_stack_resources_have_descriptions():
     template.has_resource_properties("AWS::SecretsManager::Secret", {
         "Description": "X API認証情報（OAuth 1.0a + Bearer Token）",
     })
+
+
+# ============================================
+# CloudWatch ダッシュボード & アラームのテスト
+# ============================================
+
+def test_cloudwatch_dashboard_created():
+    """
+    運用要件: CloudWatchダッシュボードが作成されることを確認
+    """
+    app = cdk.App()
+    stack = ImomaruBotStack(app, "test-stack")
+    template = assertions.Template.from_stack(stack)
+    
+    # CloudWatchダッシュボードが1つ作成されることを確認
+    template.resource_count_is("AWS::CloudWatch::Dashboard", 1)
+    
+    # ダッシュボード名の検証
+    template.has_resource_properties("AWS::CloudWatch::Dashboard", {
+        "DashboardName": "imomaru-bot-dashboard",
+    })
+
+
+def test_cloudwatch_dashboard_has_widgets():
+    """
+    運用要件: CloudWatchダッシュボードにウィジェットが含まれることを確認
+    """
+    app = cdk.App()
+    stack = ImomaruBotStack(app, "test-stack")
+    template = assertions.Template.from_stack(stack)
+    
+    # ダッシュボードにDashboardBodyが設定されていることを確認
+    template.has_resource_properties("AWS::CloudWatch::Dashboard", {
+        "DashboardBody": assertions.Match.any_value(),
+    })
+
+
+def test_sns_alarm_topic_created():
+    """
+    運用要件: アラーム通知用のSNSトピックが作成されることを確認
+    """
+    app = cdk.App()
+    stack = ImomaruBotStack(app, "test-stack")
+    template = assertions.Template.from_stack(stack)
+    
+    # SNSトピックが1つ作成されることを確認
+    template.resource_count_is("AWS::SNS::Topic", 1)
+    
+    # SNSトピックの検証
+    template.has_resource_properties("AWS::SNS::Topic", {
+        "TopicName": "imomaru-bot-alarms",
+        "DisplayName": "Imomaru Bot Alarms",
+    })
+
+
+def test_lambda_error_alarm_created():
+    """
+    運用要件: Lambdaエラーアラームが作成されることを確認
+    """
+    app = cdk.App()
+    stack = ImomaruBotStack(app, "test-stack")
+    template = assertions.Template.from_stack(stack)
+    
+    # CloudWatchアラームが2つ作成されることを確認（エラーと実行時間）
+    template.resource_count_is("AWS::CloudWatch::Alarm", 2)
+    
+    # Lambdaエラーアラームの検証
+    template.has_resource_properties("AWS::CloudWatch::Alarm", {
+        "AlarmName": "imomaru-bot-lambda-errors",
+        "AlarmDescription": "Lambda関数でエラーが発生しました",
+        "MetricName": "Errors",
+        "Namespace": "AWS/Lambda",
+        "Statistic": "Sum",
+        "Period": 300,  # 5分
+        "EvaluationPeriods": 1,
+        "Threshold": 1,
+        "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+        "TreatMissingData": "notBreaching",
+    })
+
+
+def test_lambda_duration_alarm_created():
+    """
+    運用要件: Lambda実行時間アラームが作成されることを確認
+    """
+    app = cdk.App()
+    stack = ImomaruBotStack(app, "test-stack")
+    template = assertions.Template.from_stack(stack)
+    
+    # Lambda実行時間アラームの検証
+    template.has_resource_properties("AWS::CloudWatch::Alarm", {
+        "AlarmName": "imomaru-bot-lambda-duration",
+        "AlarmDescription": "Lambda関数の実行時間が長すぎます",
+        "MetricName": "Duration",
+        "Namespace": "AWS/Lambda",
+        "Statistic": "Maximum",
+        "Period": 300,  # 5分
+        "EvaluationPeriods": 1,
+        "Threshold": 150000,  # 150秒（2分30秒）
+        "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+        "TreatMissingData": "notBreaching",
+    })
+
+
+def test_alarms_have_sns_action():
+    """
+    運用要件: アラームがSNSトピックに通知を送ることを確認
+    """
+    app = cdk.App()
+    stack = ImomaruBotStack(app, "test-stack")
+    template = assertions.Template.from_stack(stack)
+    
+    # アラームにAlarmActionsが設定されていることを確認
+    template.has_resource_properties("AWS::CloudWatch::Alarm", {
+        "AlarmActions": assertions.Match.array_with([
+            assertions.Match.object_like({
+                "Ref": assertions.Match.string_like_regexp("AlarmTopic.*")
+            })
+        ])
+    })
+
+
+def test_alarms_monitor_correct_lambda():
+    """
+    運用要件: アラームが正しいLambda関数を監視することを確認
+    """
+    app = cdk.App()
+    stack = ImomaruBotStack(app, "test-stack")
+    template = assertions.Template.from_stack(stack)
+    
+    # アラームがBotLambdaのDimensionsを持つことを確認
+    template.has_resource_properties("AWS::CloudWatch::Alarm", {
+        "Dimensions": assertions.Match.array_with([
+            assertions.Match.object_like({
+                "Name": "FunctionName",
+                "Value": assertions.Match.object_like({
+                    "Ref": assertions.Match.string_like_regexp("BotLambda.*")
+                })
+            })
+        ])
+    })

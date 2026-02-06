@@ -24,7 +24,46 @@ EventBridge Scheduler → Lambda → X API
                     Bedrock (AI生成)
                           ↓
                     S3 (画像アセット)
+                          ↓
+                    CloudWatch (監視・アラーム)
 ```
+
+## 運用監視
+
+### CloudWatchダッシュボード
+
+`imomaru-bot-dashboard` でボットの稼働状況をリアルタイムに確認できます。
+
+- **稼働率ゲージ**: 過去24時間の成功率を視覚的に表示
+- **Lambda呼び出し回数**: 時間ごとの実行回数
+- **Lambdaエラー数**: エラー発生状況
+- **Lambda実行時間**: 平均・最大実行時間
+- **Lambdaスロットリング**: スロットリング発生状況
+- **DynamoDB消費キャパシティ**: 読み書きキャパシティの使用状況
+- **アラーム状態**: 各アラームの現在の状態
+
+### CloudWatchアラーム
+
+以下のアラームが設定されており、SNSトピック経由でメール通知されます。
+
+| アラーム名 | 条件 | 説明 |
+|-----------|------|------|
+| `imomaru-bot-lambda-errors` | エラー数 ≥ 1（5分間） | Lambda関数でエラーが発生 |
+| `imomaru-bot-lambda-duration` | 実行時間 ≥ 150秒（5分間） | 実行時間が長すぎる（タイムアウト警告） |
+
+### アラーム通知の設定
+
+デプロイ後、SNSトピックにメールアドレスをサブスクライブしてアラーム通知を受け取れます:
+
+```bash
+aws sns subscribe \
+  --topic-arn arn:aws:sns:ap-northeast-1:ACCOUNT_ID:imomaru-bot-alarms \
+  --protocol email \
+  --notification-endpoint your-email@example.com \
+  --region ap-northeast-1
+```
+
+確認メールが届いたら、リンクをクリックして承認してください。
 
 ## 前提条件
 
