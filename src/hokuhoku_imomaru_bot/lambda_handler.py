@@ -38,6 +38,7 @@ from .utils import (
 STATE_TABLE_NAME = os.environ.get("STATE_TABLE_NAME", "imomaru-bot-state")
 XP_TABLE_NAME = os.environ.get("XP_TABLE_NAME", "imomaru-bot-xp-table")
 PROCESSED_TWEETS_TABLE_NAME = os.environ.get("PROCESSED_TWEETS_TABLE_NAME", "imomaru-bot-processed-tweets")
+EMOTION_IMAGES_TABLE_NAME = os.environ.get("EMOTION_IMAGES_TABLE_NAME", "imomaru-bot-emotion-images")
 ASSETS_BUCKET_NAME = os.environ.get("ASSETS_BUCKET_NAME", "imomaru-bot-assets")
 SECRET_NAME = os.environ.get("SECRET_NAME", "imomaru-bot/x-api-credentials")
 OSHI_USER_ID = os.environ.get("OSHI_USER_ID", "")
@@ -76,6 +77,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             state_table_name=STATE_TABLE_NAME,
             xp_table_name=XP_TABLE_NAME,
             processed_tweets_table_name=PROCESSED_TWEETS_TABLE_NAME,
+            emotion_images_table_name=EMOTION_IMAGES_TABLE_NAME,
         )
         
         x_api_client = XAPIClient(
@@ -125,6 +127,8 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             profile_updater=profile_updater,
             daily_reporter=daily_reporter,
             x_api_client=x_api_client,
+            s3_client=s3_client,
+            bucket_name=ASSETS_BUCKET_NAME,
         )
         
         log_event(
@@ -158,6 +162,8 @@ def _process_bot_logic(
     profile_updater: ProfileUpdater,
     daily_reporter: DailyReporter,
     x_api_client: XAPIClient,
+    s3_client = None,
+    bucket_name: str = None,
 ) -> Dict[str, Any]:
     """
     ボットのメインロジックを実行
@@ -173,6 +179,8 @@ def _process_bot_logic(
         profile_updater: ProfileUpdaterインスタンス
         daily_reporter: DailyReporterインスタンス
         x_api_client: XAPIClientインスタンス
+        s3_client: boto3 S3クライアント（感情画像取得用）
+        bucket_name: S3バケット名
     
     Returns:
         処理結果
@@ -247,6 +255,9 @@ def _process_bot_logic(
             ai_generator=ai_generator,
             x_api_client=x_api_client,
             state_store=state_store,
+            state=state,
+            s3_client=s3_client,
+            bucket_name=bucket_name,
         )
         
         # 投稿成功時のみXPを加算（既に処理済みの場合はスキップ）
@@ -450,9 +461,12 @@ def _post_quote_safe(
     ai_generator: AIGenerator,
     x_api_client: XAPIClient,
     state_store: StateStore,
+    state: BotState = None,
+    s3_client = None,
+    bucket_name: str = None,
 ) -> bool:
     """
-    引用ポストを安全に投稿（冪等性制御付き）
+    引用ポストを安全に投稿（冪等性制御付き、感情画像添付対応）
     
     Args:
         tweet: 引用するツイート
@@ -460,6 +474,9 @@ def _post_quote_safe(
         ai_generator: AIGeneratorインスタンス
         x_api_client: XAPIClientインスタンス
         state_store: StateStoreインスタンス
+        state: BotStateインスタンス（画像添付判定用）
+        s3_client: boto3 S3クライアント（画像取得用）
+        bucket_name: S3バケット名
     
     Returns:
         投稿成功の可否（既に処理済みの場合もFalse）
@@ -474,10 +491,38 @@ def _post_quote_safe(
             post_type=post_type,
         )
         
-        # 引用ポスト
+        # 感情画像添付の判定（推し投稿のみ、1日1回限定）
+        media_ids = None
+        if (
+            post_type == "oshi"
+            and state is not None
+            and not state.daily_image_posted
+            and s3_client is not None
+            and bucket_name is not None
+        ):
+            media_id = _get_emotion_image_media_id(
+                response_text=response_text,
+                ai_generator=ai_generator,
+                state_store=state_store,
+                x_api_client=x_api_client,
+                s3_client=s3_client,
+                bucket_name=bucket_name,
+            )
+            if media_id:
+                media_ids = [media_id]
+                state.daily_image_posted = True
+                log_event(
+                    level=LogLevel.INFO,
+                    event_type=EventType.POST_DETECTED,
+                    data={"media_id": media_id},
+                    message="Emotion image attached to quote post",
+                )
+        
+        # 引用ポスト（画像付きの場合あり）
         x_api_client.post_tweet(
             text=response_text,
             quote_tweet_id=tweet.id,
+            media_ids=media_ids,
         )
         
         return True
@@ -489,6 +534,69 @@ def _post_quote_safe(
     except Exception as e:
         handle_api_error(e, f"post_quote_{post_type}")
         return False
+
+
+def _get_emotion_image_media_id(
+    response_text: str,
+    ai_generator: AIGenerator,
+    state_store: StateStore,
+    x_api_client: XAPIClient,
+    s3_client,
+    bucket_name: str,
+) -> Optional[str]:
+    """
+    応答テキストの感情を分類し、対応する画像をアップロードしてmedia_idを取得
+    
+    Args:
+        response_text: 分類する応答テキスト
+        ai_generator: AIGeneratorインスタンス
+        state_store: StateStoreインスタンス
+        x_api_client: XAPIClientインスタンス
+        s3_client: boto3 S3クライアント
+        bucket_name: S3バケット名
+    
+    Returns:
+        media_id文字列（失敗時はNone）
+    """
+    try:
+        # 感情を分類
+        emotion_key = ai_generator.classify_emotion(response_text)
+        if not emotion_key:
+            return None
+        
+        # DynamoDBから画像ファイル名を取得
+        filename = state_store.get_emotion_image_filename(emotion_key)
+        if not filename:
+            return None
+        
+        # S3から画像を取得
+        s3_key = f"emotions/{filename}"
+        response = s3_client.get_object(
+            Bucket=bucket_name,
+            Key=s3_key,
+        )
+        image_data = response["Body"].read()
+        
+        # Xにアップロード
+        media_id = x_api_client.upload_media(image_data)
+        
+        log_event(
+            level=LogLevel.INFO,
+            event_type=EventType.POST_DETECTED,
+            data={"emotion_key": emotion_key, "filename": filename},
+            message=f"Emotion image uploaded: {emotion_key}",
+        )
+        
+        return media_id
+        
+    except Exception as e:
+        log_event(
+            level=LogLevel.WARNING,
+            event_type=EventType.POST_DETECTED,
+            data={"error": str(e)},
+            message="Failed to get emotion image, posting without image",
+        )
+        return None
 
 
 def _update_profile_on_level_up(

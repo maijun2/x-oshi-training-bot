@@ -35,6 +35,28 @@ PROMPT_TEMPLATE = """あなたは「ほくほくいも丸くん🍠」という�
 
 応答:"""
 
+# 感情分類プロンプトテンプレート
+EMOTION_CLASSIFICATION_PROMPT = """以下の応答文の感情を分類してください。
+
+応答文: {response_text}
+
+選択肢（emotion_keyのみを1つ返してください）:
+- passion: 推しへの情熱・愛
+- cheer: 躍動的な応援・エール
+- gratitude_hug: 感謝・幸福感（抱擁）
+- reverence: 感動・尊さ（拝む）
+- excitement_move: 高揚・現場移動（チャリ）
+- support_financial: 献身・支援（スパチャ）
+- infatuation: 心酔・魅了（目がハート）
+- deeply_moved: 感銘・落涙（感動の涙）
+- kindness: 受容・穏やかな感謝（合掌）
+- joy: 歓喜・達成感（やったあ）
+- encouragement: 激励・ペンライト応援
+- meal_time: 食事・期待（いただきます）
+
+該当する感情がない場合は "none" と返してください。
+emotion_keyのみを返してください（説明不要）:"""
+
 
 class AIGenerator:
     """
@@ -201,3 +223,59 @@ class AIGenerator:
         if post_type == "oshi":
             return DEFAULT_RESPONSE_OSHI_RETWEET
         return DEFAULT_RESPONSE_GROUP_RETWEET
+    
+    def classify_emotion(self, response_text: str) -> Optional[str]:
+        """
+        応答テキストの感情を分類
+        
+        Args:
+            response_text: 分類する応答テキスト
+        
+        Returns:
+            感情キー（emotion_key）、分類失敗時はNone
+        """
+        try:
+            prompt = EMOTION_CLASSIFICATION_PROMPT.format(response_text=response_text)
+            
+            request_body = {
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": 50,
+                "temperature": 0.0,  # 決定的な応答を得るため
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    }
+                ],
+            }
+            
+            response = self.bedrock_client.invoke_model(
+                modelId=self.model_id,
+                body=json.dumps(request_body),
+                contentType="application/json",
+                accept="application/json",
+            )
+            
+            response_body = json.loads(response["body"].read())
+            emotion_key = response_body["content"][0]["text"].strip().lower()
+            
+            # 有効な感情キーかチェック
+            valid_keys = {
+                "passion", "cheer", "gratitude_hug", "reverence",
+                "excitement_move", "support_financial", "infatuation",
+                "deeply_moved", "kindness", "joy", "encouragement", "meal_time"
+            }
+            
+            if emotion_key in valid_keys:
+                logger.info(f"Classified emotion: {emotion_key}")
+                return emotion_key
+            elif emotion_key == "none":
+                logger.info("Emotion classification returned 'none'")
+                return None
+            else:
+                logger.warning(f"Unknown emotion key returned: {emotion_key}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Failed to classify emotion: {e}")
+            return None

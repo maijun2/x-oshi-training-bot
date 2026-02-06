@@ -13,7 +13,7 @@ def test_dynamodb_tables_created():
     要件 7.1, 7.2, 11.2: DynamoDBテーブルが正しく作成されることを確認
     
     検証項目:
-    - BotStateテーブル、XPTableテーブル、ProcessedTweetsテーブルが作成される
+    - BotStateテーブル、XPTableテーブル、ProcessedTweetsテーブル、EmotionImagesテーブルが作成される
     - すべてのテーブルがオンデマンド課金モードを使用
     - 保存時の暗号化が有効化される
     """
@@ -21,8 +21,8 @@ def test_dynamodb_tables_created():
     stack = ImomaruBotStack(app, "test-stack")
     template = assertions.Template.from_stack(stack)
     
-    # DynamoDBテーブルが3つ作成されることを確認
-    template.resource_count_is("AWS::DynamoDB::Table", 3)
+    # DynamoDBテーブルが4つ作成されることを確認
+    template.resource_count_is("AWS::DynamoDB::Table", 4)
     
     # BotStateテーブルの検証
     template.has_resource_properties("AWS::DynamoDB::Table", {
@@ -492,7 +492,7 @@ def test_cdk_stack_all_resources():
     要件 9.1: CDKスタックにすべての必要なリソースが含まれることを確認
     
     検証項目:
-    - DynamoDBテーブル: 3つ（BotState、XPTable、ProcessedTweets）
+    - DynamoDBテーブル: 4つ（BotState、XPTable、ProcessedTweets、EmotionImages）
     - S3バケット: 1つ
     - Secrets Managerシークレット: 1つ
     - Lambda関数: 1つ
@@ -504,7 +504,7 @@ def test_cdk_stack_all_resources():
     template = assertions.Template.from_stack(stack)
     
     # リソース数の確認
-    template.resource_count_is("AWS::DynamoDB::Table", 3)
+    template.resource_count_is("AWS::DynamoDB::Table", 4)
     template.resource_count_is("AWS::S3::Bucket", 1)
     template.resource_count_is("AWS::SecretsManager::Secret", 1)
     template.resource_count_is("AWS::Lambda::Function", 1)

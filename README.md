@@ -8,9 +8,10 @@ X（旧Twitter）育成ボット - AWSサーバーレスアーキテクチャ
 
 - 🔍 **タイムライン監視**: 1日2回（9:00/21:00 JST）推しとグループの投稿をチェック
 - 🤖 **AI応答生成**: Amazon Bedrock（Claude Haiku 4.5）でキャラクターに合った応答を生成
+- 🎨 **感情別画像添付**: 推し投稿への引用ポスト時、AI応答の感情を分類してLINEスタンプ画像を添付（1日1回限定）
 - ⭐ **XP獲得**: 活動に応じてXPを獲得（推し投稿: 5.0 XP、グループ投稿: 2.0 XP、いいね: 0.1 XP、リポスト: 0.5 XP）
 - 📈 **レベルアップ**: DQ3勇者の経験値テーブルに基づいてレベルアップ
-- 🖼️ **プロフィール更新**: レベルアップ時にプロフィール画像と名前を自動更新
+- 🖼️ **プロフィール更新**: レベルアップ時にプロフィール画像と名前を自動更新、レベルアップ投稿に画像添付
 - 📊 **日報投稿**: 毎日21:00 JST以降に活動報告を投稿
 
 ## アーキテクチャ
@@ -151,7 +152,21 @@ aws s3 cp base_profile.png s3://imomaru-bot-assets-ACCOUNT_ID/base_profile.png -
 ### 3. DQ3経験値テーブルの初期化
 
 ```bash
-uv run python scripts/init_xp_table.py
+AWS_DEFAULT_REGION=ap-northeast-1 uv run python scripts/init_xp_table.py
+```
+
+### 4. 感情画像マスタの初期化
+
+```bash
+AWS_DEFAULT_REGION=ap-northeast-1 uv run python scripts/init_emotion_images.py
+```
+
+### 5. S3への感情画像アップロード
+
+感情別画像を`emotions/`プレフィックス内にアップロード:
+
+```bash
+aws s3 cp emotions/ s3://imomaru-bot-assets-ACCOUNT_ID/emotions/ --recursive --region ap-northeast-1
 ```
 
 ## プロジェクト構造
@@ -164,7 +179,8 @@ uv run python scripts/init_xp_table.py
 ├── data/
 │   └── dq3_xp_table.json          # DQ3経験値テーブルデータ
 ├── scripts/
-│   └── init_xp_table.py           # 経験値テーブル初期化スクリプト
+│   ├── init_xp_table.py           # 経験値テーブル初期化スクリプト
+│   └── init_emotion_images.py     # 感情画像マスタ初期化スクリプト
 ├── src/
 │   └── hokuhoku_imomaru_bot/
 │       ├── __init__.py
@@ -177,15 +193,20 @@ uv run python scripts/init_xp_table.py
 └── tests/                         # テストコード
 ```
 
-## XPレート
+## XPレートと投稿ルール
 
-| 活動タイプ | XP |
-|-----------|-----|
-| 推しの投稿検出 | 5.0 |
-| グループの投稿検出 | 2.0 |
-| リポスト（推し/グループ） | 0.5 |
-| ボット投稿へのリポスト | 0.5 |
-| ボット投稿へのいいね | 0.1 |
+| 活動タイプ | XP | 引用ポスト |
+|-----------|-----|-----------|
+| 推しオリジナル投稿 | 5.0 | AI生成応答（感情画像添付あり※） |
+| 推し引用リポスト | 5.0 | AI生成応答（感情画像添付あり※） |
+| 推しリツイート | 0.5 | なし（XP加算のみ） |
+| グループオリジナル投稿 | 2.0 | AI生成応答 |
+| グループ引用リポスト | 2.0 | AI生成応答 |
+| グループリツイート | 0.5 | なし（XP加算のみ） |
+| ボット投稿へのリポスト | 0.5 | なし |
+| ボット投稿へのいいね | 0.1 | なし |
+
+※感情画像添付は1日1回限定
 
 ## ライセンス
 

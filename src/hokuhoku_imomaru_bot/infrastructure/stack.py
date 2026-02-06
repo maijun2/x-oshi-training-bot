@@ -97,6 +97,21 @@ class ImomaruBotStack(Stack):
             time_to_live_attribute="ttl",  # TTL属性を有効化（24時間後に自動削除）
         )
 
+        # DynamoDB テーブル: EmotionImages（感情別画像マスタ）
+        # 感情キーと対応する画像ファイル名を保存
+        self.emotion_images_table = dynamodb.Table(
+            self,
+            "EmotionImagesTable",
+            table_name="imomaru-bot-emotion-images",
+            partition_key=dynamodb.Attribute(
+                name="emotion_key",
+                type=dynamodb.AttributeType.STRING
+            ),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,  # オンデマンド課金
+            encryption=dynamodb.TableEncryption.AWS_MANAGED,  # 保存時の暗号化
+            removal_policy=RemovalPolicy.RETAIN,  # 本番環境では削除しない
+        )
+
         # S3 バケット: 画像アセット
         # プロフィール画像のベース画像とフォントファイルを保存
         self.assets_bucket = s3.Bucket(
@@ -139,6 +154,7 @@ class ImomaruBotStack(Stack):
         self.bot_state_table.grant_read_write_data(self.lambda_role)
         self.xp_table.grant_read_data(self.lambda_role)
         self.processed_tweets_table.grant_read_write_data(self.lambda_role)
+        self.emotion_images_table.grant_read_data(self.lambda_role)
 
         # S3読み取り権限を付与
         self.assets_bucket.grant_read(self.lambda_role)
@@ -177,6 +193,7 @@ class ImomaruBotStack(Stack):
                 "STATE_TABLE_NAME": self.bot_state_table.table_name,
                 "XP_TABLE_NAME": self.xp_table.table_name,
                 "PROCESSED_TWEETS_TABLE_NAME": self.processed_tweets_table.table_name,
+                "EMOTION_IMAGES_TABLE_NAME": self.emotion_images_table.table_name,
                 "ASSETS_BUCKET_NAME": self.assets_bucket.bucket_name,
                 "SECRET_NAME": self.x_api_secret.secret_name,
                 "OSHI_USER_ID": oshi_user_id,

@@ -53,6 +53,8 @@ class BotState:
     # ボット投稿へのエンゲージメント追跡
     total_received_likes: int = 0      # ボット投稿への累積いいね数
     total_received_retweets: int = 0   # ボット投稿への累積リポスト数
+    # 感情画像添付制限（1日1回）
+    daily_image_posted: bool = False   # 本日の画像添付済みフラグ
 
     def to_dict(self) -> dict:
         """
@@ -80,6 +82,7 @@ class BotState:
             "last_profile_update_month": self.last_profile_update_month,
             "total_received_likes": self.total_received_likes,
             "total_received_retweets": self.total_received_retweets,
+            "daily_image_posted": self.daily_image_posted,
         }
         return result
 
@@ -112,6 +115,7 @@ class BotState:
             last_profile_update_month=data.get("last_profile_update_month"),
             total_received_likes=int(data.get("total_received_likes", 0)),
             total_received_retweets=int(data.get("total_received_retweets", 0)),
+            daily_image_posted=bool(data.get("daily_image_posted", False)),
         )
 
     def get_xp_breakdown(self) -> dict:

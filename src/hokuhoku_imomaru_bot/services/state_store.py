@@ -36,6 +36,7 @@ class StateStore:
         state_table_name: str = "imomaru-bot-state",
         xp_table_name: str = "imomaru-bot-xp-table",
         processed_tweets_table_name: str = "imomaru-bot-processed-tweets",
+        emotion_images_table_name: str = "imomaru-bot-emotion-images",
     ):
         """
         StateStoreを初期化
@@ -45,11 +46,13 @@ class StateStore:
             state_table_name: BotStateテーブル名
             xp_table_name: XPTableテーブル名
             processed_tweets_table_name: 処理済みツイートテーブル名
+            emotion_images_table_name: 感情画像マスタテーブル名
         """
         self.dynamodb_client = dynamodb_client
         self.state_table_name = state_table_name
         self.xp_table_name = xp_table_name
         self.processed_tweets_table_name = processed_tweets_table_name
+        self.emotion_images_table_name = emotion_images_table_name
         # TTL: 24時間（秒）
         self.ttl_seconds = 24 * 60 * 60
 
@@ -86,6 +89,7 @@ class StateStore:
                     last_profile_update_month=item.get("last_profile_update_month", {}).get("S"),
                     total_received_likes=int(item.get("total_received_likes", {}).get("N", 0)),
                     total_received_retweets=int(item.get("total_received_retweets", {}).get("N", 0)),
+                    daily_image_posted=item.get("daily_image_posted", {}).get("BOOL", False),
                 )
             
             logger.info("No existing state found, returning default state")
@@ -125,6 +129,7 @@ class StateStore:
                 "daily_xp": {"N": str(state.daily_xp)},
                 "total_received_likes": {"N": str(state.total_received_likes)},
                 "total_received_retweets": {"N": str(state.total_received_retweets)},
+                "daily_image_posted": {"BOOL": state.daily_image_posted},
             }
             
             # latest_tweet_idがNoneでない場合のみ追加
@@ -203,7 +208,36 @@ class StateStore:
         state.daily_repost_count = 0
         state.daily_like_count = 0
         state.daily_xp = 0.0
+        state.daily_image_posted = False  # 画像添付フラグもリセット
         return state
+
+    def get_emotion_image_filename(self, emotion_key: str) -> Optional[str]:
+        """
+        感情キーに対応する画像ファイル名を取得
+        
+        Args:
+            emotion_key: 感情キー（passion, cheer等）
+        
+        Returns:
+            画像ファイル名（存在しない場合はNone）
+        """
+        try:
+            response = self.dynamodb_client.get_item(
+                TableName=self.emotion_images_table_name,
+                Key={"emotion_key": {"S": emotion_key}},
+            )
+            
+            if "Item" in response:
+                filename = response["Item"].get("filename", {}).get("S")
+                logger.info(f"Emotion image found: {emotion_key} -> {filename}")
+                return filename
+            
+            logger.info(f"No emotion image found for key: {emotion_key}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Failed to get emotion image filename: {e}")
+            return None
 
 
     def acquire_tweet_lock(self, tweet_id: str, action_type: str) -> bool:

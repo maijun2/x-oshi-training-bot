@@ -379,6 +379,7 @@ class TestPostQuoteSafe:
         x_api_client.post_tweet.assert_called_once_with(
             text="応答テキスト",
             quote_tweet_id="123",
+            media_ids=None,
         )
     
     def test_returns_false_on_error(self):
