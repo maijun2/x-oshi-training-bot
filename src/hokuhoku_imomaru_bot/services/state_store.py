@@ -4,12 +4,20 @@ StateStoreクラス
 DynamoDBとの状態の読み書きを管理します。
 """
 import logging
+import time
 from typing import Dict, Optional
 from datetime import datetime, timezone
+
+from botocore.exceptions import ClientError
 
 from ..models import BotState
 
 logger = logging.getLogger(__name__)
+
+
+class TweetAlreadyProcessedError(Exception):
+    """ツイートが既に処理済みの場合に発生する例外"""
+    pass
 
 
 class StateStore:
@@ -27,6 +35,7 @@ class StateStore:
         dynamodb_client,
         state_table_name: str = "imomaru-bot-state",
         xp_table_name: str = "imomaru-bot-xp-table",
+        processed_tweets_table_name: str = "imomaru-bot-processed-tweets",
     ):
         """
         StateStoreを初期化
@@ -35,10 +44,14 @@ class StateStore:
             dynamodb_client: boto3 DynamoDBクライアント
             state_table_name: BotStateテーブル名
             xp_table_name: XPTableテーブル名
+            processed_tweets_table_name: 処理済みツイートテーブル名
         """
         self.dynamodb_client = dynamodb_client
         self.state_table_name = state_table_name
         self.xp_table_name = xp_table_name
+        self.processed_tweets_table_name = processed_tweets_table_name
+        # TTL: 24時間（秒）
+        self.ttl_seconds = 24 * 60 * 60
 
     def load_state(self) -> BotState:
         """
@@ -191,3 +204,70 @@ class StateStore:
         state.daily_like_count = 0
         state.daily_xp = 0.0
         return state
+
+
+    def acquire_tweet_lock(self, tweet_id: str, action_type: str) -> bool:
+        """
+        ツイート処理のロックを取得（冪等性制御）
+        
+        条件付き書き込みを使用し、まだ処理されていない場合のみ成功する。
+        既に処理済みの場合はTweetAlreadyProcessedErrorを発生させる。
+        
+        Args:
+            tweet_id: 処理対象のツイートID
+            action_type: 処理タイプ（"quote", "retweet_quote"など）
+        
+        Returns:
+            ロック取得成功の可否
+        
+        Raises:
+            TweetAlreadyProcessedError: ツイートが既に処理済みの場合
+        """
+        try:
+            # TTLを計算（現在時刻 + 24時間）
+            ttl = int(time.time()) + self.ttl_seconds
+            
+            self.dynamodb_client.put_item(
+                TableName=self.processed_tweets_table_name,
+                Item={
+                    "tweet_id": {"S": tweet_id},
+                    "action_type": {"S": action_type},
+                    "processed_at": {"S": datetime.now(timezone.utc).isoformat()},
+                    "ttl": {"N": str(ttl)},
+                },
+                # 条件: tweet_idが存在しない場合のみ書き込み成功
+                ConditionExpression="attribute_not_exists(tweet_id)",
+            )
+            
+            logger.info(f"Tweet lock acquired: tweet_id={tweet_id}, action_type={action_type}")
+            return True
+            
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                logger.info(f"Tweet already processed (skipping): tweet_id={tweet_id}")
+                raise TweetAlreadyProcessedError(f"Tweet {tweet_id} has already been processed")
+            else:
+                logger.error(f"Failed to acquire tweet lock: {e}")
+                raise
+
+    def is_tweet_processed(self, tweet_id: str) -> bool:
+        """
+        ツイートが既に処理済みかどうかを確認
+        
+        Args:
+            tweet_id: 確認対象のツイートID
+        
+        Returns:
+            処理済みの場合True
+        """
+        try:
+            response = self.dynamodb_client.get_item(
+                TableName=self.processed_tweets_table_name,
+                Key={"tweet_id": {"S": tweet_id}},
+            )
+            return "Item" in response
+            
+        except Exception as e:
+            logger.error(f"Failed to check tweet processed status: {e}")
+            # エラー時は安全のため処理済みとみなさない
+            return False

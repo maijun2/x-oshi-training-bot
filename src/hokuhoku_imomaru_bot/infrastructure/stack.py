@@ -81,6 +81,22 @@ class ImomaruBotStack(Stack):
             removal_policy=RemovalPolicy.RETAIN,  # 本番環境では削除しない
         )
 
+        # DynamoDB テーブル: ProcessedTweets（冪等性制御用）
+        # 処理済みツイートIDを保存し、二重処理を防止
+        self.processed_tweets_table = dynamodb.Table(
+            self,
+            "ProcessedTweetsTable",
+            table_name="imomaru-bot-processed-tweets",
+            partition_key=dynamodb.Attribute(
+                name="tweet_id",
+                type=dynamodb.AttributeType.STRING
+            ),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,  # オンデマンド課金
+            encryption=dynamodb.TableEncryption.AWS_MANAGED,  # 保存時の暗号化
+            removal_policy=RemovalPolicy.RETAIN,  # 本番環境では削除しない
+            time_to_live_attribute="ttl",  # TTL属性を有効化（24時間後に自動削除）
+        )
+
         # S3 バケット: 画像アセット
         # プロフィール画像のベース画像とフォントファイルを保存
         self.assets_bucket = s3.Bucket(
@@ -122,6 +138,7 @@ class ImomaruBotStack(Stack):
         # DynamoDB読み書き権限を付与
         self.bot_state_table.grant_read_write_data(self.lambda_role)
         self.xp_table.grant_read_data(self.lambda_role)
+        self.processed_tweets_table.grant_read_write_data(self.lambda_role)
 
         # S3読み取り権限を付与
         self.assets_bucket.grant_read(self.lambda_role)
@@ -159,6 +176,7 @@ class ImomaruBotStack(Stack):
             environment={
                 "STATE_TABLE_NAME": self.bot_state_table.table_name,
                 "XP_TABLE_NAME": self.xp_table.table_name,
+                "PROCESSED_TWEETS_TABLE_NAME": self.processed_tweets_table.table_name,
                 "ASSETS_BUCKET_NAME": self.assets_bucket.bucket_name,
                 "SECRET_NAME": self.x_api_secret.secret_name,
                 "OSHI_USER_ID": oshi_user_id,

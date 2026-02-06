@@ -13,6 +13,7 @@ from .clients import XAPIClient
 from .models import BotState
 from .services import (
     StateStore,
+    TweetAlreadyProcessedError,
     TimelineMonitor,
     Tweet,
     XPCalculator,
@@ -36,6 +37,7 @@ from .utils import (
 # 環境変数
 STATE_TABLE_NAME = os.environ.get("STATE_TABLE_NAME", "imomaru-bot-state")
 XP_TABLE_NAME = os.environ.get("XP_TABLE_NAME", "imomaru-bot-xp-table")
+PROCESSED_TWEETS_TABLE_NAME = os.environ.get("PROCESSED_TWEETS_TABLE_NAME", "imomaru-bot-processed-tweets")
 ASSETS_BUCKET_NAME = os.environ.get("ASSETS_BUCKET_NAME", "imomaru-bot-assets")
 SECRET_NAME = os.environ.get("SECRET_NAME", "imomaru-bot/x-api-credentials")
 OSHI_USER_ID = os.environ.get("OSHI_USER_ID", "")
@@ -73,6 +75,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             dynamodb_client=dynamodb_client,
             state_table_name=STATE_TABLE_NAME,
             xp_table_name=XP_TABLE_NAME,
+            processed_tweets_table_name=PROCESSED_TWEETS_TABLE_NAME,
         )
         
         x_api_client = XAPIClient(
@@ -233,23 +236,27 @@ def _process_bot_logic(
             message=f"Oshi post detected: {tweet.id}",
         )
         
-        # AI応答を生成して引用ポスト
-        _post_quote_safe(
+        # AI応答を生成して引用ポスト（冪等性制御付き）
+        posted = _post_quote_safe(
             tweet=tweet,
             post_type="oshi",
             ai_generator=ai_generator,
             x_api_client=x_api_client,
+            state_store=state_store,
         )
-        result["quotes_posted"] += 1
         
-        # XPを加算
-        xp = xp_calculator.calculate_xp(ActivityType.OSHI_POST)
-        state.cumulative_xp += xp
-        state.daily_xp += xp
-        state.oshi_post_count += 1
-        state.daily_oshi_count += 1
-        result["oshi_posts_detected"] += 1
-        result["xp_gained"] += xp
+        # 投稿成功時のみXPを加算（既に処理済みの場合はスキップ）
+        if posted:
+            result["quotes_posted"] += 1
+            
+            # XPを加算
+            xp = xp_calculator.calculate_xp(ActivityType.OSHI_POST)
+            state.cumulative_xp += xp
+            state.daily_xp += xp
+            state.oshi_post_count += 1
+            state.daily_oshi_count += 1
+            result["oshi_posts_detected"] += 1
+            result["xp_gained"] += xp
         
         all_tweets.append(tweet)
     
@@ -262,22 +269,26 @@ def _process_bot_logic(
             message=f"Oshi retweet detected: {tweet.id}",
         )
         
-        # リツイート用の固定応答を投稿
-        _post_retweet_quote_safe(
+        # リツイート用の固定応答を投稿（冪等性制御付き）
+        posted = _post_retweet_quote_safe(
             tweet=tweet,
             post_type="oshi",
             ai_generator=ai_generator,
             x_api_client=x_api_client,
+            state_store=state_store,
         )
-        result["quotes_posted"] += 1
         
-        # リポストのXPを加算
-        xp = xp_calculator.calculate_xp(ActivityType.REPOST)
-        state.cumulative_xp += xp
-        state.daily_xp += xp
-        state.repost_count += 1
-        state.daily_repost_count += 1
-        result["xp_gained"] += xp
+        # 投稿成功時のみXPを加算（既に処理済みの場合はスキップ）
+        if posted:
+            result["quotes_posted"] += 1
+            
+            # リポストのXPを加算
+            xp = xp_calculator.calculate_xp(ActivityType.REPOST)
+            state.cumulative_xp += xp
+            state.daily_xp += xp
+            state.repost_count += 1
+            state.daily_repost_count += 1
+            result["xp_gained"] += xp
         
         all_tweets.append(tweet)
     
@@ -289,23 +300,27 @@ def _process_bot_logic(
             message=f"Group post detected: {tweet.id}",
         )
         
-        # AI応答を生成して引用ポスト
-        _post_quote_safe(
+        # AI応答を生成して引用ポスト（冪等性制御付き）
+        posted = _post_quote_safe(
             tweet=tweet,
             post_type="group",
             ai_generator=ai_generator,
             x_api_client=x_api_client,
+            state_store=state_store,
         )
-        result["quotes_posted"] += 1
         
-        # XPを加算
-        xp = xp_calculator.calculate_xp(ActivityType.GROUP_POST)
-        state.cumulative_xp += xp
-        state.daily_xp += xp
-        state.group_post_count += 1
-        state.daily_group_count += 1
-        result["group_posts_detected"] += 1
-        result["xp_gained"] += xp
+        # 投稿成功時のみXPを加算（既に処理済みの場合はスキップ）
+        if posted:
+            result["quotes_posted"] += 1
+            
+            # XPを加算
+            xp = xp_calculator.calculate_xp(ActivityType.GROUP_POST)
+            state.cumulative_xp += xp
+            state.daily_xp += xp
+            state.group_post_count += 1
+            state.daily_group_count += 1
+            result["group_posts_detected"] += 1
+            result["xp_gained"] += xp
         
         all_tweets.append(tweet)
     
@@ -318,22 +333,26 @@ def _process_bot_logic(
             message=f"Group retweet detected: {tweet.id}",
         )
         
-        # リツイート用の固定応答を投稿
-        _post_retweet_quote_safe(
+        # リツイート用の固定応答を投稿（冪等性制御付き）
+        posted = _post_retweet_quote_safe(
             tweet=tweet,
             post_type="group",
             ai_generator=ai_generator,
             x_api_client=x_api_client,
+            state_store=state_store,
         )
-        result["quotes_posted"] += 1
         
-        # リポストのXPを加算
-        xp = xp_calculator.calculate_xp(ActivityType.REPOST)
-        state.cumulative_xp += xp
-        state.daily_xp += xp
-        state.repost_count += 1
-        state.daily_repost_count += 1
-        result["xp_gained"] += xp
+        # 投稿成功時のみXPを加算（既に処理済みの場合はスキップ）
+        if posted:
+            result["quotes_posted"] += 1
+            
+            # リポストのXPを加算
+            xp = xp_calculator.calculate_xp(ActivityType.REPOST)
+            state.cumulative_xp += xp
+            state.daily_xp += xp
+            state.repost_count += 1
+            state.daily_repost_count += 1
+            result["xp_gained"] += xp
         
         all_tweets.append(tweet)
     
@@ -438,20 +457,25 @@ def _post_quote_safe(
     post_type: str,
     ai_generator: AIGenerator,
     x_api_client: XAPIClient,
+    state_store: StateStore,
 ) -> bool:
     """
-    引用ポストを安全に投稿
+    引用ポストを安全に投稿（冪等性制御付き）
     
     Args:
         tweet: 引用するツイート
         post_type: "oshi" または "group"
         ai_generator: AIGeneratorインスタンス
         x_api_client: XAPIClientインスタンス
+        state_store: StateStoreインスタンス
     
     Returns:
-        投稿成功の可否
+        投稿成功の可否（既に処理済みの場合もFalse）
     """
     try:
+        # ロックを取得（既に処理済みの場合は例外が発生）
+        state_store.acquire_tweet_lock(tweet.id, f"quote_{post_type}")
+        
         # AI応答を生成
         response_text = ai_generator.generate_response(
             post_content=tweet.text,
@@ -466,6 +490,10 @@ def _post_quote_safe(
         
         return True
         
+    except TweetAlreadyProcessedError:
+        # 既に処理済み - スキップ（XP加算もスキップするためFalseを返す）
+        return False
+        
     except Exception as e:
         handle_api_error(e, f"post_quote_{post_type}")
         return False
@@ -476,20 +504,25 @@ def _post_retweet_quote_safe(
     post_type: str,
     ai_generator: AIGenerator,
     x_api_client: XAPIClient,
+    state_store: StateStore,
 ) -> bool:
     """
-    リツイート（リポスト）に対する引用ポストを安全に投稿
+    リツイート（リポスト）に対する引用ポストを安全に投稿（冪等性制御付き）
     
     Args:
         tweet: 引用するツイート
         post_type: "oshi" または "group"
         ai_generator: AIGeneratorインスタンス
         x_api_client: XAPIClientインスタンス
+        state_store: StateStoreインスタンス
     
     Returns:
-        投稿成功の可否
+        投稿成功の可否（既に処理済みの場合もFalse）
     """
     try:
+        # ロックを取得（既に処理済みの場合は例外が発生）
+        state_store.acquire_tweet_lock(tweet.id, f"retweet_quote_{post_type}")
+        
         # リツイート用の固定応答を取得
         response_text = ai_generator.generate_retweet_response(post_type)
         
@@ -500,6 +533,10 @@ def _post_retweet_quote_safe(
         )
         
         return True
+        
+    except TweetAlreadyProcessedError:
+        # 既に処理済み - スキップ（XP加算もスキップするためFalseを返す）
+        return False
         
     except Exception as e:
         handle_api_error(e, f"post_retweet_quote_{post_type}")

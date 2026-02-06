@@ -13,16 +13,16 @@ def test_dynamodb_tables_created():
     要件 7.1, 7.2, 11.2: DynamoDBテーブルが正しく作成されることを確認
     
     検証項目:
-    - BotStateテーブルとXPTableテーブルが作成される
-    - 両テーブルともオンデマンド課金モードが設定される
+    - BotStateテーブル、XPTableテーブル、ProcessedTweetsテーブルが作成される
+    - すべてのテーブルがオンデマンド課金モードを使用
     - 保存時の暗号化が有効化される
     """
     app = cdk.App()
     stack = ImomaruBotStack(app, "test-stack")
     template = assertions.Template.from_stack(stack)
     
-    # DynamoDBテーブルが2つ作成されることを確認
-    template.resource_count_is("AWS::DynamoDB::Table", 2)
+    # DynamoDBテーブルが3つ作成されることを確認
+    template.resource_count_is("AWS::DynamoDB::Table", 3)
     
     # BotStateテーブルの検証
     template.has_resource_properties("AWS::DynamoDB::Table", {
@@ -66,6 +66,31 @@ def test_dynamodb_tables_created():
         "BillingMode": "PAY_PER_REQUEST",
         "SSESpecification": {
             "SSEEnabled": True
+        }
+    })
+    
+    # ProcessedTweetsテーブルの検証（冪等性制御用）
+    template.has_resource_properties("AWS::DynamoDB::Table", {
+        "TableName": "imomaru-bot-processed-tweets",
+        "KeySchema": [
+            {
+                "AttributeName": "tweet_id",
+                "KeyType": "HASH"
+            }
+        ],
+        "AttributeDefinitions": [
+            {
+                "AttributeName": "tweet_id",
+                "AttributeType": "S"
+            }
+        ],
+        "BillingMode": "PAY_PER_REQUEST",
+        "SSESpecification": {
+            "SSEEnabled": True
+        },
+        "TimeToLiveSpecification": {
+            "AttributeName": "ttl",
+            "Enabled": True
         }
     })
 
@@ -467,7 +492,7 @@ def test_cdk_stack_all_resources():
     要件 9.1: CDKスタックにすべての必要なリソースが含まれることを確認
     
     検証項目:
-    - DynamoDBテーブル: 2つ
+    - DynamoDBテーブル: 3つ（BotState、XPTable、ProcessedTweets）
     - S3バケット: 1つ
     - Secrets Managerシークレット: 1つ
     - Lambda関数: 1つ
@@ -479,7 +504,7 @@ def test_cdk_stack_all_resources():
     template = assertions.Template.from_stack(stack)
     
     # リソース数の確認
-    template.resource_count_is("AWS::DynamoDB::Table", 2)
+    template.resource_count_is("AWS::DynamoDB::Table", 3)
     template.resource_count_is("AWS::S3::Bucket", 1)
     template.resource_count_is("AWS::SecretsManager::Secret", 1)
     template.resource_count_is("AWS::Lambda::Function", 1)

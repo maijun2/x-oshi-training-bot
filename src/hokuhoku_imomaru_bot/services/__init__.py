@@ -1,7 +1,7 @@
 """
 サービスパッケージ
 """
-from .state_store import StateStore
+from .state_store import StateStore, TweetAlreadyProcessedError
 from .xp_calculator import XPCalculator, XPRates, ActivityType
 from .level_manager import LevelManager
 from .timeline_monitor import TimelineMonitor, Tweet
@@ -12,6 +12,7 @@ from .daily_reporter import DailyReporter, DAILY_REPORT_TEMPLATE, JST, DAILY_REP
 
 __all__ = [
     "StateStore",
+    "TweetAlreadyProcessedError",
     "XPCalculator",
     "XPRates",
     "ActivityType",

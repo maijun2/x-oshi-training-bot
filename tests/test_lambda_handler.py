@@ -365,10 +365,13 @@ class TestPostQuoteSafe:
         ai_generator.generate_response.return_value = "応答テキスト"
         x_api_client = MagicMock()
         x_api_client.post_tweet.return_value = {"data": {"id": "999"}}
+        state_store = MagicMock(spec=StateStore)
+        state_store.acquire_tweet_lock.return_value = True
         
-        result = _post_quote_safe(tweet, "oshi", ai_generator, x_api_client)
+        result = _post_quote_safe(tweet, "oshi", ai_generator, x_api_client, state_store)
         
         assert result is True
+        state_store.acquire_tweet_lock.assert_called_once_with("123", "quote_oshi")
         ai_generator.generate_response.assert_called_once_with(
             post_content="元の投稿",
             post_type="oshi",
@@ -384,10 +387,29 @@ class TestPostQuoteSafe:
         ai_generator = MagicMock(spec=AIGenerator)
         ai_generator.generate_response.side_effect = Exception("API Error")
         x_api_client = MagicMock()
+        state_store = MagicMock(spec=StateStore)
+        state_store.acquire_tweet_lock.return_value = True
         
-        result = _post_quote_safe(tweet, "oshi", ai_generator, x_api_client)
+        result = _post_quote_safe(tweet, "oshi", ai_generator, x_api_client, state_store)
         
         assert result is False
+    
+    def test_returns_false_when_already_processed(self):
+        """既に処理済みの場合にFalseを返す"""
+        from src.hokuhoku_imomaru_bot.services import TweetAlreadyProcessedError
+        
+        tweet = Tweet(id="123", text="元の投稿", author_id="user")
+        ai_generator = MagicMock(spec=AIGenerator)
+        x_api_client = MagicMock()
+        state_store = MagicMock(spec=StateStore)
+        state_store.acquire_tweet_lock.side_effect = TweetAlreadyProcessedError("Already processed")
+        
+        result = _post_quote_safe(tweet, "oshi", ai_generator, x_api_client, state_store)
+        
+        assert result is False
+        # X APIは呼び出されない
+        x_api_client.post_tweet.assert_not_called()
+        ai_generator.generate_response.assert_not_called()
 
 
 class TestUpdateProfileOnLevelUp:
