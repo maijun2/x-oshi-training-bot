@@ -431,22 +431,24 @@ class XAPIClient:
             credentials = self._load_credentials()
             url = "https://upload.twitter.com/1.1/media/upload.json"
             
-            # OAuth認証ヘッダーを構築
+            # multipart/form-dataで送信する場合、POSTボディは署名に含めない
             auth_header = self._build_oauth_header("POST", url, credentials)
             
             headers = {
                 "Authorization": auth_header,
             }
             
+            # multipart/form-dataとして送信
             response = requests.post(
                 url=url,
                 headers=headers,
-                data={"media_data": image_base64},
+                files={"media": ("image.png", image_data, "image/png")},
                 timeout=60,
             )
             
             if not response.ok:
                 logger.error(f"Media upload error: {response.status_code}")
+                logger.error(f"Media upload response: {response.text}")
                 response.raise_for_status()
             
             result = response.json()
