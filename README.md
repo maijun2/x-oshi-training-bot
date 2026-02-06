@@ -77,20 +77,46 @@ uv run pytest tests/services/test_xp_calculator.py -v
 
 ## AWSへのデプロイ
 
-### 1. CDKブートストラップ（初回のみ）
+### 1. 環境変数の設定
+
+`.env.example`をコピーして`.env`ファイルを作成し、XアカウントのユーザーIDを設定:
+
+```bash
+cp .env.example .env
+```
+
+`.env`ファイルを編集:
+
+```bash
+# 推しのXアカウントユーザーID
+OSHI_USER_ID=1234567890123456789
+
+# グループ/ユニットのXアカウントユーザーID
+GROUP_USER_ID=9876543210987654321
+
+# ボット自身のXアカウントユーザーID
+BOT_USER_ID=1111111111111111111
+```
+
+**注意**: 
+- これらはXのユーザーIDです。ユーザー名（@xxx）ではありません。
+- `BOT_USER_ID` はボット自身の投稿へのエンゲージメント（いいね・リポスト）を追跡するために使用します。
+- `.env`ファイルは`.gitignore`で除外されているため、リポジトリにはコミットされません。
+
+### 2. CDKブートストラップ（初回のみ）
 
 ```bash
 # 東京リージョン（ap-northeast-1）にブートストラップ
 uv run npx cdk bootstrap aws://ACCOUNT_ID/ap-northeast-1
 ```
 
-### 2. CDKスタックのデプロイ
+### 3. CDKスタックのデプロイ
 
 ```bash
 # スタックをsynthesizeして確認
 uv run npx cdk synth
 
-# デプロイ
+# デプロイ（.envの環境変数が自動的にLambdaに設定されます）
 uv run npx cdk deploy
 
 # 変更差分を確認
@@ -116,28 +142,13 @@ aws secretsmanager put-secret-value \
   --region ap-northeast-1
 ```
 
-### 2. Lambda環境変数の設定
-
-AWSコンソールまたはCLIでLambda関数の環境変数を更新:
-
-```bash
-aws lambda update-function-configuration \
-  --function-name imomaru-bot-handler \
-  --environment "Variables={OSHI_USER_ID=推しのユーザーID,GROUP_USER_ID=グループのユーザーID,BOT_USER_ID=ボットのユーザーID}" \
-  --region ap-northeast-1
-```
-
-**注意**: 
-- `OSHI_USER_ID`、`GROUP_USER_ID`、`BOT_USER_ID` はXのユーザーIDです。ユーザー名（@xxx）ではありません。
-- `BOT_USER_ID` はボット自身の投稿へのエンゲージメント（いいね・リポスト）を追跡するために使用します。
-
-### 3. S3へのベース画像アップロード
+### 2. S3へのベース画像アップロード
 
 ```bash
 aws s3 cp base_profile.png s3://imomaru-bot-assets-ACCOUNT_ID/base_profile.png --region ap-northeast-1
 ```
 
-### 4. DQ3経験値テーブルの初期化
+### 3. DQ3経験値テーブルの初期化
 
 ```bash
 uv run python scripts/init_xp_table.py
