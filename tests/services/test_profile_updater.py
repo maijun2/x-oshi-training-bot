@@ -242,3 +242,92 @@ class TestProfileUpdater:
         assert results["name"] is True
         assert results["announcement"] is True
         mock_api_client.update_profile_image.assert_not_called()
+
+
+class TestProfileUpdaterWithImage:
+    """画像付きレベルアップ投稿のテスト"""
+    
+    @pytest.fixture
+    def mock_api_client(self):
+        """モックAPIクライアント"""
+        return Mock()
+    
+    @pytest.fixture
+    def mock_s3_client(self):
+        """モックS3クライアント"""
+        mock = Mock()
+        mock.get_object.return_value = {
+            "Body": MagicMock(read=lambda: b"fake image data")
+        }
+        return mock
+    
+    @pytest.fixture
+    def updater_with_s3(self, mock_api_client, mock_s3_client):
+        """S3クライアント付きProfileUpdaterインスタンス"""
+        return ProfileUpdater(
+            api_client=mock_api_client,
+            s3_client=mock_s3_client,
+            bucket_name="test-bucket",
+        )
+    
+    def test_post_level_up_with_image_success(self, updater_with_s3, mock_api_client, mock_s3_client):
+        """画像付きレベルアップ投稿が成功することを確認"""
+        mock_api_client.upload_media.return_value = "media_id_123"
+        mock_api_client.post_tweet.return_value = {"data": {"id": "tweet_123"}}
+        
+        xp_breakdown = {"oshi_post": 25.0, "group_post": 10.0, "like": 8.0, "repost": 5.0}
+        
+        result = updater_with_s3.post_level_up_announcement(10, xp_breakdown, 500)
+        
+        assert result is True
+        mock_s3_client.get_object.assert_called_once_with(
+            Bucket="test-bucket",
+            Key="level_up_image.png",
+        )
+        mock_api_client.upload_media.assert_called_once()
+        mock_api_client.post_tweet.assert_called_once()
+        # media_idsが渡されていることを確認
+        call_args = mock_api_client.post_tweet.call_args
+        assert call_args.kwargs.get("media_ids") == ["media_id_123"]
+    
+    def test_post_level_up_image_upload_failure_still_posts(self, updater_with_s3, mock_api_client, mock_s3_client):
+        """画像アップロード失敗時も投稿自体は成功することを確認"""
+        mock_api_client.upload_media.return_value = None  # アップロード失敗
+        mock_api_client.post_tweet.return_value = {"data": {"id": "tweet_123"}}
+        
+        xp_breakdown = {"oshi_post": 25.0, "group_post": 10.0, "like": 8.0, "repost": 5.0}
+        
+        result = updater_with_s3.post_level_up_announcement(10, xp_breakdown, 500)
+        
+        assert result is True
+        # media_idsはNone（画像なし）
+        call_args = mock_api_client.post_tweet.call_args
+        assert call_args.kwargs.get("media_ids") is None
+    
+    def test_post_level_up_s3_error_still_posts(self, updater_with_s3, mock_api_client, mock_s3_client):
+        """S3エラー時も投稿自体は成功することを確認"""
+        mock_s3_client.get_object.side_effect = Exception("S3 Error")
+        mock_api_client.post_tweet.return_value = {"data": {"id": "tweet_123"}}
+        
+        xp_breakdown = {"oshi_post": 25.0, "group_post": 10.0, "like": 8.0, "repost": 5.0}
+        
+        result = updater_with_s3.post_level_up_announcement(10, xp_breakdown, 500)
+        
+        assert result is True
+        # media_idsはNone（画像なし）
+        call_args = mock_api_client.post_tweet.call_args
+        assert call_args.kwargs.get("media_ids") is None
+    
+    def test_post_level_up_without_s3_client(self, mock_api_client):
+        """S3クライアントなしの場合は画像なしで投稿"""
+        updater = ProfileUpdater(api_client=mock_api_client)
+        mock_api_client.post_tweet.return_value = {"data": {"id": "tweet_123"}}
+        
+        xp_breakdown = {"oshi_post": 25.0, "group_post": 10.0, "like": 8.0, "repost": 5.0}
+        
+        result = updater.post_level_up_announcement(10, xp_breakdown, 500)
+        
+        assert result is True
+        mock_api_client.upload_media.assert_not_called()
+        call_args = mock_api_client.post_tweet.call_args
+        assert call_args.kwargs.get("media_ids") is None

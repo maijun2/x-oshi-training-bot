@@ -323,6 +323,7 @@ class XAPIClient:
         self,
         text: str,
         quote_tweet_id: Optional[str] = None,
+        media_ids: Optional[list[str]] = None,
     ) -> Dict[str, Any]:
         """
         ツイートを投稿（v2 + OAuth 1.0a認証）
@@ -330,6 +331,7 @@ class XAPIClient:
         Args:
             text: ツイート本文
             quote_tweet_id: 引用するツイートID
+            media_ids: 添付するメディアIDのリスト
         
         Returns:
             投稿結果
@@ -337,6 +339,8 @@ class XAPIClient:
         json_data = {"text": text}
         if quote_tweet_id:
             json_data["quote_tweet_id"] = quote_tweet_id
+        if media_ids:
+            json_data["media"] = {"media_ids": media_ids}
         
         # ツイート投稿にはOAuth 1.0a認証が必要
         return self.request_v2("POST", "/tweets", json_data=json_data, use_oauth=True)
@@ -409,3 +413,52 @@ class XAPIClient:
             f"/users/{bot_user_id}/tweets",
             params=params,
         )
+    
+    def upload_media(self, image_data: bytes) -> Optional[str]:
+        """
+        画像をアップロードしてmedia_idを取得（v1.1）
+        
+        Args:
+            image_data: 画像のバイナリデータ
+        
+        Returns:
+            media_id文字列（失敗時はNone）
+        """
+        try:
+            # Base64エンコード
+            image_base64 = base64.b64encode(image_data).decode("utf-8")
+            
+            credentials = self._load_credentials()
+            url = "https://upload.twitter.com/1.1/media/upload.json"
+            
+            # OAuth認証ヘッダーを構築
+            auth_header = self._build_oauth_header("POST", url, credentials)
+            
+            headers = {
+                "Authorization": auth_header,
+            }
+            
+            response = requests.post(
+                url=url,
+                headers=headers,
+                data={"media_data": image_base64},
+                timeout=60,
+            )
+            
+            if not response.ok:
+                logger.error(f"Media upload error: {response.status_code}")
+                response.raise_for_status()
+            
+            result = response.json()
+            media_id = result.get("media_id_string")
+            
+            if media_id:
+                logger.info(f"Media uploaded successfully: {media_id}")
+                return media_id
+            else:
+                logger.error("Media upload response missing media_id_string")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Failed to upload media: {e}")
+            return None

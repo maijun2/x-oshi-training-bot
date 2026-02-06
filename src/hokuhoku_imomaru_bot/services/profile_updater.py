@@ -27,6 +27,9 @@ LEVEL_UP_TEMPLATE = """レベルが{level}にあがったｲﾓ🍠
 # 日本時間のタイムゾーン
 JST = timezone(timedelta(hours=9))
 
+# レベルアップ画像のS3キー
+LEVEL_UP_IMAGE_KEY = "level_up_image.png"
+
 
 class ProfileUpdater:
     """
@@ -34,16 +37,22 @@ class ProfileUpdater:
     
     Attributes:
         api_client: XAPIClientインスタンス
+        s3_client: boto3 S3クライアント（オプション）
+        bucket_name: S3バケット名（オプション）
     """
     
-    def __init__(self, api_client):
+    def __init__(self, api_client, s3_client=None, bucket_name: str = None):
         """
         ProfileUpdaterを初期化
         
         Args:
             api_client: XAPIClientインスタンス
+            s3_client: boto3 S3クライアント（レベルアップ画像取得用）
+            bucket_name: S3バケット名
         """
         self.api_client = api_client
+        self.s3_client = s3_client
+        self.bucket_name = bucket_name
     
     def get_current_month_jst(self) -> str:
         """
@@ -176,7 +185,7 @@ class ProfileUpdater:
         next_level_xp: int,
     ) -> bool:
         """
-        レベルアップを報告する投稿を送信
+        レベルアップを報告する投稿を送信（画像付き）
         
         Args:
             level: 新しいレベル
@@ -190,11 +199,18 @@ class ProfileUpdater:
         try:
             text = self.generate_level_up_text(level, xp_breakdown, next_level_xp)
             
-            # X API v2で投稿
-            result = self.api_client.post_tweet(text)
+            # S3から画像を取得してアップロード
+            media_ids = None
+            if self.s3_client and self.bucket_name:
+                media_id = self._upload_level_up_image()
+                if media_id:
+                    media_ids = [media_id]
+            
+            # X API v2で投稿（画像付き）
+            result = self.api_client.post_tweet(text, media_ids=media_ids)
             
             if result:
-                logger.info(f"Level up announcement posted: Lv.{level}")
+                logger.info(f"Level up announcement posted: Lv.{level} (with_image={media_ids is not None})")
                 return True
             else:
                 logger.warning("Level up announcement post returned False")
@@ -203,6 +219,29 @@ class ProfileUpdater:
         except Exception as e:
             logger.error(f"Failed to post level up announcement: {e}")
             return False
+    
+    def _upload_level_up_image(self) -> Optional[str]:
+        """
+        S3からレベルアップ画像を取得してXにアップロード
+        
+        Returns:
+            media_id文字列（失敗時はNone）
+        """
+        try:
+            # S3から画像を取得
+            response = self.s3_client.get_object(
+                Bucket=self.bucket_name,
+                Key=LEVEL_UP_IMAGE_KEY,
+            )
+            image_data = response["Body"].read()
+            
+            # Xにアップロード
+            media_id = self.api_client.upload_media(image_data)
+            return media_id
+            
+        except Exception as e:
+            logger.error(f"Failed to upload level up image: {e}")
+            return None
     
     def update_profile_on_level_up(
         self,

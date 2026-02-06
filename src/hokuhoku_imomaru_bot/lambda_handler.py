@@ -98,7 +98,11 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             bucket_name=ASSETS_BUCKET_NAME,
         )
         
-        profile_updater = ProfileUpdater(api_client=x_api_client)
+        profile_updater = ProfileUpdater(
+            api_client=x_api_client,
+            s3_client=s3_client,
+            bucket_name=ASSETS_BUCKET_NAME,
+        )
         
         daily_reporter = DailyReporter(api_client=x_api_client)
         
@@ -260,7 +264,7 @@ def _process_bot_logic(
         
         all_tweets.append(tweet)
     
-    # 推しのリツイートを処理
+    # 推しのリツイートを処理（XP加算のみ、引用ポストなし）
     for tweet in oshi_retweets:
         log_event(
             level=LogLevel.INFO,
@@ -269,26 +273,20 @@ def _process_bot_logic(
             message=f"Oshi retweet detected: {tweet.id}",
         )
         
-        # リツイート用の固定応答を投稿（冪等性制御付き）
-        posted = _post_retweet_quote_safe(
-            tweet=tweet,
-            post_type="oshi",
-            ai_generator=ai_generator,
-            x_api_client=x_api_client,
-            state_store=state_store,
-        )
-        
-        # 投稿成功時のみXPを加算（既に処理済みの場合はスキップ）
-        if posted:
-            result["quotes_posted"] += 1
+        # 冪等性チェック（既に処理済みならスキップ）
+        try:
+            state_store.acquire_tweet_lock(tweet.id, "retweet_oshi")
             
-            # リポストのXPを加算
+            # リポストのXPを加算（引用ポストはしない）
             xp = xp_calculator.calculate_xp(ActivityType.REPOST)
             state.cumulative_xp += xp
             state.daily_xp += xp
             state.repost_count += 1
             state.daily_repost_count += 1
             result["xp_gained"] += xp
+            
+        except TweetAlreadyProcessedError:
+            pass  # 既に処理済み - スキップ
         
         all_tweets.append(tweet)
     
@@ -324,7 +322,7 @@ def _process_bot_logic(
         
         all_tweets.append(tweet)
     
-    # グループのリツイートを処理
+    # グループのリツイートを処理（XP加算のみ、引用ポストなし）
     for tweet in group_retweets:
         log_event(
             level=LogLevel.INFO,
@@ -333,26 +331,20 @@ def _process_bot_logic(
             message=f"Group retweet detected: {tweet.id}",
         )
         
-        # リツイート用の固定応答を投稿（冪等性制御付き）
-        posted = _post_retweet_quote_safe(
-            tweet=tweet,
-            post_type="group",
-            ai_generator=ai_generator,
-            x_api_client=x_api_client,
-            state_store=state_store,
-        )
-        
-        # 投稿成功時のみXPを加算（既に処理済みの場合はスキップ）
-        if posted:
-            result["quotes_posted"] += 1
+        # 冪等性チェック（既に処理済みならスキップ）
+        try:
+            state_store.acquire_tweet_lock(tweet.id, "retweet_group")
             
-            # リポストのXPを加算
+            # リポストのXPを加算（引用ポストはしない）
             xp = xp_calculator.calculate_xp(ActivityType.REPOST)
             state.cumulative_xp += xp
             state.daily_xp += xp
             state.repost_count += 1
             state.daily_repost_count += 1
             result["xp_gained"] += xp
+            
+        except TweetAlreadyProcessedError:
+            pass  # 既に処理済み - スキップ
         
         all_tweets.append(tweet)
     
@@ -496,50 +488,6 @@ def _post_quote_safe(
         
     except Exception as e:
         handle_api_error(e, f"post_quote_{post_type}")
-        return False
-
-
-def _post_retweet_quote_safe(
-    tweet: Tweet,
-    post_type: str,
-    ai_generator: AIGenerator,
-    x_api_client: XAPIClient,
-    state_store: StateStore,
-) -> bool:
-    """
-    リツイート（リポスト）に対する引用ポストを安全に投稿（冪等性制御付き）
-    
-    Args:
-        tweet: 引用するツイート
-        post_type: "oshi" または "group"
-        ai_generator: AIGeneratorインスタンス
-        x_api_client: XAPIClientインスタンス
-        state_store: StateStoreインスタンス
-    
-    Returns:
-        投稿成功の可否（既に処理済みの場合もFalse）
-    """
-    try:
-        # ロックを取得（既に処理済みの場合は例外が発生）
-        state_store.acquire_tweet_lock(tweet.id, f"retweet_quote_{post_type}")
-        
-        # リツイート用の固定応答を取得
-        response_text = ai_generator.generate_retweet_response(post_type)
-        
-        # 引用ポスト
-        x_api_client.post_tweet(
-            text=response_text,
-            quote_tweet_id=tweet.id,
-        )
-        
-        return True
-        
-    except TweetAlreadyProcessedError:
-        # 既に処理済み - スキップ（XP加算もスキップするためFalseを返す）
-        return False
-        
-    except Exception as e:
-        handle_api_error(e, f"post_retweet_quote_{post_type}")
         return False
 
 

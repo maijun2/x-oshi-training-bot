@@ -541,6 +541,174 @@ class TestLambdaHandler:
             lambda_handler(event, context)
 
 
+class TestRetweetProcessing:
+    """リツイート処理のテスト（XP加算のみ、引用ポストなし）"""
+    
+    def test_oshi_retweet_xp_only_no_quote(self):
+        """推しのリツイート検知時はXP加算のみで引用ポストしない"""
+        state = BotState()
+        state_store = MagicMock(spec=StateStore)
+        state_store.reset_daily_counts.return_value = state
+        
+        # リツイートのツイート
+        oshi_retweet = Tweet(
+            id="123456789",
+            text="RT @someone: 元の投稿",
+            author_id="oshi_user_id",
+            is_retweet=True,
+        )
+        
+        timeline_monitor = MagicMock(spec=TimelineMonitor)
+        timeline_monitor.check_oshi_timeline.return_value = [oshi_retweet]
+        timeline_monitor.check_group_timeline.return_value = []
+        timeline_monitor.filter_original_posts.return_value = []  # オリジナルはなし
+        timeline_monitor.filter_retweets.side_effect = lambda tweets: [t for t in tweets if t.is_retweet]
+        
+        xp_calculator = XPCalculator()
+        level_manager = MagicMock(spec=LevelManager)
+        level_manager.check_level_up.return_value = (False, 1)
+        
+        ai_generator = MagicMock(spec=AIGenerator)
+        image_compositor = MagicMock(spec=ImageCompositor)
+        profile_updater = MagicMock(spec=ProfileUpdater)
+        
+        daily_reporter = MagicMock(spec=DailyReporter)
+        daily_reporter.should_post_daily_report.return_value = False
+        
+        x_api_client = MagicMock()
+        
+        result = _process_bot_logic(
+            state=state,
+            state_store=state_store,
+            timeline_monitor=timeline_monitor,
+            xp_calculator=xp_calculator,
+            level_manager=level_manager,
+            ai_generator=ai_generator,
+            image_compositor=image_compositor,
+            profile_updater=profile_updater,
+            daily_reporter=daily_reporter,
+            x_api_client=x_api_client,
+        )
+        
+        # XPは加算される（REPOST = 0.5）
+        assert result["xp_gained"] == 0.5
+        assert state.repost_count == 1
+        assert state.daily_repost_count == 1
+        assert state.cumulative_xp == 0.5
+        
+        # 引用ポストはされない
+        assert result["quotes_posted"] == 0
+        x_api_client.post_tweet.assert_not_called()
+        ai_generator.generate_response.assert_not_called()
+        ai_generator.generate_retweet_response.assert_not_called()
+    
+    def test_group_retweet_xp_only_no_quote(self):
+        """グループのリツイート検知時はXP加算のみで引用ポストしない"""
+        state = BotState()
+        state_store = MagicMock(spec=StateStore)
+        state_store.reset_daily_counts.return_value = state
+        
+        group_retweet = Tweet(
+            id="987654321",
+            text="RT @someone: 元の投稿",
+            author_id="group_user_id",
+            is_retweet=True,
+        )
+        
+        timeline_monitor = MagicMock(spec=TimelineMonitor)
+        timeline_monitor.check_oshi_timeline.return_value = []
+        timeline_monitor.check_group_timeline.return_value = [group_retweet]
+        timeline_monitor.filter_original_posts.return_value = []
+        timeline_monitor.filter_retweets.side_effect = lambda tweets: [t for t in tweets if t.is_retweet]
+        
+        xp_calculator = XPCalculator()
+        level_manager = MagicMock(spec=LevelManager)
+        level_manager.check_level_up.return_value = (False, 1)
+        
+        ai_generator = MagicMock(spec=AIGenerator)
+        image_compositor = MagicMock(spec=ImageCompositor)
+        profile_updater = MagicMock(spec=ProfileUpdater)
+        
+        daily_reporter = MagicMock(spec=DailyReporter)
+        daily_reporter.should_post_daily_report.return_value = False
+        
+        x_api_client = MagicMock()
+        
+        result = _process_bot_logic(
+            state=state,
+            state_store=state_store,
+            timeline_monitor=timeline_monitor,
+            xp_calculator=xp_calculator,
+            level_manager=level_manager,
+            ai_generator=ai_generator,
+            image_compositor=image_compositor,
+            profile_updater=profile_updater,
+            daily_reporter=daily_reporter,
+            x_api_client=x_api_client,
+        )
+        
+        # XPは加算される
+        assert result["xp_gained"] == 0.5
+        assert state.repost_count == 1
+        
+        # 引用ポストはされない
+        assert result["quotes_posted"] == 0
+        x_api_client.post_tweet.assert_not_called()
+    
+    def test_retweet_idempotency(self):
+        """リツイート処理の冪等性（既に処理済みならスキップ）"""
+        from src.hokuhoku_imomaru_bot.services import TweetAlreadyProcessedError
+        
+        state = BotState()
+        state_store = MagicMock(spec=StateStore)
+        state_store.reset_daily_counts.return_value = state
+        state_store.acquire_tweet_lock.side_effect = TweetAlreadyProcessedError("Already processed")
+        
+        oshi_retweet = Tweet(
+            id="123456789",
+            text="RT @someone: 元の投稿",
+            author_id="oshi_user_id",
+            is_retweet=True,
+        )
+        
+        timeline_monitor = MagicMock(spec=TimelineMonitor)
+        timeline_monitor.check_oshi_timeline.return_value = [oshi_retweet]
+        timeline_monitor.check_group_timeline.return_value = []
+        timeline_monitor.filter_original_posts.return_value = []
+        timeline_monitor.filter_retweets.side_effect = lambda tweets: [t for t in tweets if t.is_retweet]
+        
+        xp_calculator = XPCalculator()
+        level_manager = MagicMock(spec=LevelManager)
+        level_manager.check_level_up.return_value = (False, 1)
+        
+        ai_generator = MagicMock(spec=AIGenerator)
+        image_compositor = MagicMock(spec=ImageCompositor)
+        profile_updater = MagicMock(spec=ProfileUpdater)
+        
+        daily_reporter = MagicMock(spec=DailyReporter)
+        daily_reporter.should_post_daily_report.return_value = False
+        
+        x_api_client = MagicMock()
+        
+        result = _process_bot_logic(
+            state=state,
+            state_store=state_store,
+            timeline_monitor=timeline_monitor,
+            xp_calculator=xp_calculator,
+            level_manager=level_manager,
+            ai_generator=ai_generator,
+            image_compositor=image_compositor,
+            profile_updater=profile_updater,
+            daily_reporter=daily_reporter,
+            x_api_client=x_api_client,
+        )
+        
+        # 既に処理済みなのでXPは加算されない
+        assert result["xp_gained"] == 0.0
+        assert state.repost_count == 0
+        assert state.cumulative_xp == 0.0
+
+
 class TestMultiplePostsDetection:
     """複数投稿検出のテスト"""
     
