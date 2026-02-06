@@ -184,36 +184,36 @@ class TimelineMonitor:
     
     def is_oshi_post(self, tweet: Tweet) -> bool:
         """
-        推しの純粋な投稿かどうかを判定
-        引用リポストやリプライは除外
+        推しの投稿かどうかを判定
+        オリジナル投稿と引用リポストを含む（リプライは除外）
         
         Args:
             tweet: 判定するツイート
         
         Returns:
-            推しの純粋な投稿の場合True
+            推しの投稿の場合True
         """
         return (
             tweet.author_id == self.oshi_user_id
-            and not tweet.is_quote_tweet
             and not tweet.is_reply
+            and not tweet.is_retweet
         )
     
     def is_group_post(self, tweet: Tweet) -> bool:
         """
-        グループの純粋な投稿かどうかを判定
-        引用リポストやリプライは除外
+        グループの投稿かどうかを判定
+        オリジナル投稿と引用リポストを含む（リプライは除外）
         
         Args:
             tweet: 判定するツイート
         
         Returns:
-            グループの純粋な投稿の場合True
+            グループの投稿の場合True
         """
         return (
             tweet.author_id == self.group_user_id
-            and not tweet.is_quote_tweet
             and not tweet.is_reply
+            and not tweet.is_retweet
         )
     
     def classify_tweet(self, tweet: Tweet) -> Optional[str]:
@@ -234,17 +234,17 @@ class TimelineMonitor:
     
     def filter_original_posts(self, tweets: List[Tweet]) -> List[Tweet]:
         """
-        純粋な投稿（引用リポスト・リプライ・リツイート除外）のみをフィルタリング
+        オリジナル投稿と引用リポスト（リプライ・リツイート除外）をフィルタリング
         
         Args:
             tweets: フィルタリングするツイートリスト
         
         Returns:
-            純粋な投稿のみのリスト
+            オリジナル投稿と引用リポストのリスト
         """
         return [
             tweet for tweet in tweets
-            if not tweet.is_quote_tweet and not tweet.is_reply and not tweet.is_retweet
+            if not tweet.is_reply and not tweet.is_retweet
         ]
     
     def filter_retweets(self, tweets: List[Tweet]) -> List[Tweet]:

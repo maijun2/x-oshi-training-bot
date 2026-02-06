@@ -185,7 +185,7 @@ class TestTimelineMonitor:
         assert monitor.is_oshi_post(tweet) is False
     
     def test_is_oshi_post_false_quote_tweet(self, monitor):
-        """推しの引用リポストは純粋な投稿ではない"""
+        """推しの引用リポストも投稿として判定される"""
         tweet = Tweet(
             id="1",
             text="推しの引用リポスト",
@@ -194,7 +194,7 @@ class TestTimelineMonitor:
             is_reply=False,
         )
         
-        assert monitor.is_oshi_post(tweet) is False
+        assert monitor.is_oshi_post(tweet) is True
     
     def test_is_oshi_post_false_reply(self, monitor):
         """推しのリプライは純粋な投稿ではない"""
@@ -233,7 +233,7 @@ class TestTimelineMonitor:
         assert monitor.is_group_post(tweet) is False
     
     def test_is_group_post_false_quote_tweet(self, monitor):
-        """グループの引用リポストは純粋な投稿ではない"""
+        """グループの引用リポストも投稿として判定される"""
         tweet = Tweet(
             id="1",
             text="グループの引用リポスト",
@@ -242,7 +242,7 @@ class TestTimelineMonitor:
             is_reply=False,
         )
         
-        assert monitor.is_group_post(tweet) is False
+        assert monitor.is_group_post(tweet) is True
     
     def test_classify_tweet_oshi(self, monitor):
         """推しの投稿を正しく分類"""
@@ -280,8 +280,8 @@ class TestTimelineMonitor:
         
         assert monitor.classify_tweet(tweet) is None
     
-    def test_classify_tweet_oshi_quote_returns_none(self, monitor):
-        """推しの引用リポストは分類されない"""
+    def test_classify_tweet_oshi_quote_returns_oshi(self, monitor):
+        """推しの引用リポストはoshiとして分類される"""
         tweet = Tweet(
             id="1",
             text="推しの引用リポスト",
@@ -290,22 +290,25 @@ class TestTimelineMonitor:
             is_reply=False,
         )
         
-        assert monitor.classify_tweet(tweet) is None
+        assert monitor.classify_tweet(tweet) == "oshi"
     
     def test_filter_original_posts(self, monitor):
-        """純粋な投稿のみをフィルタリング"""
+        """オリジナル投稿と引用リポストをフィルタリング（リプライ・リツイート除外）"""
         tweets = [
             Tweet(id="1", text="純粋な投稿", author_id="user1", is_quote_tweet=False, is_reply=False),
             Tweet(id="2", text="引用リポスト", author_id="user2", is_quote_tweet=True, is_reply=False),
             Tweet(id="3", text="リプライ", author_id="user3", is_quote_tweet=False, is_reply=True),
             Tweet(id="4", text="純粋な投稿2", author_id="user4", is_quote_tweet=False, is_reply=False),
+            Tweet(id="5", text="リツイート", author_id="user5", is_quote_tweet=False, is_reply=False, is_retweet=True),
         ]
         
         filtered = monitor.filter_original_posts(tweets)
         
-        assert len(filtered) == 2
+        # 純粋な投稿(1, 4)と引用リポスト(2)が含まれる、リプライ(3)とリツイート(5)は除外
+        assert len(filtered) == 3
         assert filtered[0].id == "1"
-        assert filtered[1].id == "4"
+        assert filtered[1].id == "2"
+        assert filtered[2].id == "4"
     
     def test_check_timeline_api_error(self, monitor, mock_api_client):
         """APIエラー時の例外処理"""

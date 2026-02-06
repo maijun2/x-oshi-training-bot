@@ -156,10 +156,10 @@ class TestPostClassificationProperty:
         """
         Feature: hokuhoku-imomaru-bot, Property 1: 投稿タイプの正確な分類
         
-        推しの引用リポストやリプライは分類されないべき
+        推しのリプライは分類されないべき（引用リポストは分類される）
         """
-        # 引用リポストまたはリプライの場合のみテスト
-        assume(is_quote or is_reply)
+        # リプライの場合のみテスト（引用リポストは採点対象）
+        assume(is_reply)
         
         monitor = create_monitor()
         tweet = Tweet(
@@ -191,10 +191,10 @@ class TestPostClassificationProperty:
         """
         Feature: hokuhoku-imomaru-bot, Property 1: 投稿タイプの正確な分類
         
-        グループの引用リポストやリプライは分類されないべき
+        グループのリプライは分類されないべき（引用リポストは分類される）
         """
-        # 引用リポストまたはリプライの場合のみテスト
-        assume(is_quote or is_reply)
+        # リプライの場合のみテスト（引用リポストは採点対象）
+        assume(is_reply)
         
         monitor = create_monitor()
         tweet = Tweet(
@@ -208,6 +208,62 @@ class TestPostClassificationProperty:
         classification = monitor.classify_tweet(tweet)
         
         assert classification is None
+    
+    @settings(max_examples=100)
+    @given(
+        tweet_id=st.text(min_size=1, max_size=20),
+        tweet_text=st.text(max_size=280),
+    )
+    def test_oshi_quote_tweet_classified_as_oshi(
+        self,
+        tweet_id,
+        tweet_text,
+    ):
+        """
+        Feature: hokuhoku-imomaru-bot, Property 1: 投稿タイプの正確な分類
+        
+        推しの引用リポストは「oshi」として分類されるべき
+        """
+        monitor = create_monitor()
+        tweet = Tweet(
+            id=tweet_id,
+            text=tweet_text,
+            author_id=OSHI_USER_ID,
+            is_quote_tweet=True,
+            is_reply=False,
+        )
+        
+        classification = monitor.classify_tweet(tweet)
+        
+        assert classification == "oshi"
+    
+    @settings(max_examples=100)
+    @given(
+        tweet_id=st.text(min_size=1, max_size=20),
+        tweet_text=st.text(max_size=280),
+    )
+    def test_group_quote_tweet_classified_as_group(
+        self,
+        tweet_id,
+        tweet_text,
+    ):
+        """
+        Feature: hokuhoku-imomaru-bot, Property 1: 投稿タイプの正確な分類
+        
+        グループの引用リポストは「group」として分類されるべき
+        """
+        monitor = create_monitor()
+        tweet = Tweet(
+            id=tweet_id,
+            text=tweet_text,
+            author_id=GROUP_USER_ID,
+            is_quote_tweet=True,
+            is_reply=False,
+        )
+        
+        classification = monitor.classify_tweet(tweet)
+        
+        assert classification == "group"
 
 
 class TestTimelineFilteringProperty:
