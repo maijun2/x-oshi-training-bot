@@ -4,6 +4,9 @@ AWS CDKスタック定義
 DynamoDB、S3、Lambda、EventBridge、Secrets Manager、IAMロールを含む
 サーバーレスアーキテクチャを定義します。
 """
+import os
+from pathlib import Path
+from dotenv import load_dotenv
 from aws_cdk import (
     Stack,
     RemovalPolicy,
@@ -35,6 +38,15 @@ class ImomaruBotStack(Stack):
 
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
+
+        # .envファイルから環境変数を読み込む
+        env_path = Path(__file__).parent.parent.parent.parent / ".env"
+        load_dotenv(env_path)
+        
+        # XアカウントユーザーIDを環境変数から取得
+        oshi_user_id = os.getenv("OSHI_USER_ID", "")
+        group_user_id = os.getenv("GROUP_USER_ID", "")
+        bot_user_id = os.getenv("BOT_USER_ID", "")
 
         # DynamoDB テーブル: BotState
         # ボットの状態（累積XP、現在レベル、最新Tweet ID、活動カウント）を保存
@@ -149,9 +161,9 @@ class ImomaruBotStack(Stack):
                 "XP_TABLE_NAME": self.xp_table.table_name,
                 "ASSETS_BUCKET_NAME": self.assets_bucket.bucket_name,
                 "SECRET_NAME": self.x_api_secret.secret_name,
-                "OSHI_USER_ID": "",  # デプロイ後に設定
-                "GROUP_USER_ID": "",  # デプロイ後に設定
-                "BOT_USER_ID": "",  # デプロイ後に設定
+                "OSHI_USER_ID": oshi_user_id,
+                "GROUP_USER_ID": group_user_id,
+                "BOT_USER_ID": bot_user_id,
             },
             description="Imomaru Bot - Main Handler",
         )
