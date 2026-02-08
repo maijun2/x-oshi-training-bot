@@ -183,7 +183,7 @@ class ImomaruBotStack(Stack):
 
         # AgentCore Runtime 呼び出し権限を付与
         # InvokeAgentRuntime は runtime-endpoint/DEFAULT サブリソースにもアクセスするためワイルドカード必須
-        agentcore_runtime_arn = f"arn:aws:bedrock-agentcore:{self.region}:{self.account}:runtime/x_bot_supervisor-vA2jSJGGe0"
+        agentcore_runtime_arn = os.getenv("AGENTCORE_RUNTIME_ARN", "")
         self.lambda_role.add_to_policy(
             iam.PolicyStatement(
                 effect=iam.Effect.ALLOW,
