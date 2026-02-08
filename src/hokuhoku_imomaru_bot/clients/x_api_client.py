@@ -324,15 +324,17 @@ class XAPIClient:
         text: str,
         quote_tweet_id: Optional[str] = None,
         media_ids: Optional[list[str]] = None,
+        reply_to_tweet_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         ツイートを投稿（v2 + OAuth 1.0a認証）
-        
+
         Args:
             text: ツイート本文
             quote_tweet_id: 引用するツイートID
             media_ids: 添付するメディアIDのリスト
-        
+            reply_to_tweet_id: リプライ先のツイートID（スレッド投稿用）
+
         Returns:
             投稿結果
         """
@@ -341,7 +343,9 @@ class XAPIClient:
             json_data["quote_tweet_id"] = quote_tweet_id
         if media_ids:
             json_data["media"] = {"media_ids": media_ids}
-        
+        if reply_to_tweet_id:
+            json_data["reply"] = {"in_reply_to_tweet_id": reply_to_tweet_id}
+
         # ツイート投稿にはOAuth 1.0a認証が必要
         return self.request_v2("POST", "/tweets", json_data=json_data, use_oauth=True)
     

@@ -414,8 +414,8 @@ def _process_bot_logic(
             state.current_level, state.cumulative_xp
         ) or 0
         
-        success = daily_reporter.post_daily_report(state, next_level_xp)
-        if success:
+        report_tweet_id = daily_reporter.post_daily_report(state, next_level_xp)
+        if report_tweet_id:
             state.last_daily_report_date = daily_reporter.get_today_date_jst(current_time)
             state = state_store.reset_daily_counts(state)
             result["daily_report_posted"] = True
@@ -425,6 +425,20 @@ def _process_bot_logic(
                 event_type=EventType.DAILY_REPORT,
                 message="Daily report posted",
             )
+            
+            # ポスト分析スレッドを投稿
+            analysis_posted = daily_reporter.post_analysis_thread(
+                reply_to_tweet_id=report_tweet_id,
+                oshi_user_id=OSHI_USER_ID,
+                latest_tweet_id=state.latest_tweet_id or "0",
+            )
+            if analysis_posted:
+                result["post_analysis_posted"] = True
+                log_event(
+                    level=LogLevel.INFO,
+                    event_type=EventType.DAILY_REPORT,
+                    message="Post analysis thread posted",
+                )
     
     # 状態を保存
     state_store.save_state(state)

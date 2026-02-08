@@ -169,32 +169,32 @@ class TestDailyReporter:
     
     # post_daily_report()のテスト
     def test_post_daily_report_success(self, reporter, mock_api_client):
-        """日報投稿が成功することを確認"""
-        mock_api_client.post_tweet.return_value = True
+        """日報投稿が成功した場合にツイートIDを返すことを確認"""
+        mock_api_client.post_tweet.return_value = {"data": {"id": "123456789"}}
         state = create_test_state()
         
         result = reporter.post_daily_report(state, 500)
         
-        assert result is True
+        assert result == "123456789"
         mock_api_client.post_tweet.assert_called_once()
     
     def test_post_daily_report_failure(self, reporter, mock_api_client):
-        """日報投稿が失敗した場合にFalseを返すことを確認"""
-        mock_api_client.post_tweet.return_value = False
+        """日報投稿が失敗した場合にNoneを返すことを確認"""
+        mock_api_client.post_tweet.return_value = {}
         state = create_test_state()
         
         result = reporter.post_daily_report(state, 500)
         
-        assert result is False
+        assert result is None
     
     def test_post_daily_report_exception(self, reporter, mock_api_client):
-        """日報投稿で例外が発生した場合にFalseを返すことを確認"""
+        """日報投稿で例外が発生した場合にNoneを返すことを確認"""
         mock_api_client.post_tweet.side_effect = Exception("API Error")
         state = create_test_state()
         
         result = reporter.post_daily_report(state, 500)
         
-        assert result is False
+        assert result is None
     
     # get_today_date_jst()のテスト
     def test_get_today_date_jst(self, reporter):

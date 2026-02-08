@@ -181,6 +181,18 @@ class ImomaruBotStack(Stack):
             )
         )
 
+        # AgentCore Runtime 呼び出し権限を付与
+        agentcore_runtime_arn = f"arn:aws:bedrock-agentcore:{self.region}:{self.account}:runtime/x_bot_supervisor-vA2jSJGGe0"
+        self.lambda_role.add_to_policy(
+            iam.PolicyStatement(
+                effect=iam.Effect.ALLOW,
+                actions=[
+                    "bedrock-agentcore:InvokeAgentRuntime",
+                ],
+                resources=[agentcore_runtime_arn],
+            )
+        )
+
         # Lambda関数: メインロジック
         self.bot_lambda = lambda_.Function(
             self,
@@ -202,6 +214,7 @@ class ImomaruBotStack(Stack):
                 "OSHI_USER_ID": oshi_user_id,
                 "GROUP_USER_ID": group_user_id,
                 "BOT_USER_ID": bot_user_id,
+                "AGENTCORE_RUNTIME_ARN": agentcore_runtime_arn,
             },
             description="Imomaru Bot - Main Handler",
         )

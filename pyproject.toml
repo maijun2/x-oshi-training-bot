@@ -15,6 +15,7 @@ dependencies = [
     "moto>=4.2.0",
     "pytest-cov>=4.1.0",
     "botocore[crt]>=1.42.39",
+    "bedrock-agentcore>=0.1.0",
 ]
 
 [build-system]

@@ -9,6 +9,7 @@ from .error_handler import (
     BotError,
     CriticalError,
 )
+from .agentcore_runtime import invoke_agent_runtime
 
 __all__ = [
     "log_event",
@@ -19,4 +20,5 @@ __all__ = [
     "generate_response_with_fallback",
     "BotError",
     "CriticalError",
+    "invoke_agent_runtime",
 ]
