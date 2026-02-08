@@ -34,6 +34,13 @@ DAILY_REPORT_HOUR = 21
 POST_ANALYSIS_PREFIX = "🔍 今日のポスト分析ｲﾓ🍠\n"
 MAX_TEXT_LENGTH = 140
 
+# 朝コンテンツの設定
+YOUTUBE_PREFIX = "🎬 YouTube新着ｲﾓ🍠\n"
+TRANSLATION_PREFIX = "🌎 English Reportｲﾓ🍠\n"
+
+# 推し投稿が少ない日の閾値（この件数以下なら朝コンテンツを投稿）
+LOW_ACTIVITY_THRESHOLD = 3
+
 
 class DailyReporter:
     """
@@ -183,9 +190,15 @@ class DailyReporter:
                 f"ユーザーID {oshi_user_id} の最新ポストへのリプライを分析して、"
                 f"ファンの反応をポジティブな内容を中心に要約・報告してください。"
                 f"\n\n出力フォーマットの指定: "
-                f"回答は短い日本語プレーンテキストで簡潔に出力してください。"
+                f"あなたは「ほくほくいも丸くん🍠」というキャラクターです。"
+                f"語尾は必ず「◯◯ｲﾓ🍠」の形式にしてください（例：「嬉しいｲﾓ🍠」「すごいｲﾓ🍠」）。"
+                f"回答は短い日本語プレーンテキストで、改行区切りで見やすく出力してください。"
                 f"Markdown記法（#や**や-）は使わないでください。"
-                f"絵文字は1〜2個まで。件数などの数値情報を含めてください。"
+                f"以下のフォーマット例に従ってください:\n"
+                f"リプライ○件を分析したｲﾓ🍠\n"
+                f"💜 ファンの反応：（一言まとめ）\n"
+                f"✨ 注目：（特に盛り上がった話題）\n"
+                f"（数値情報）ｲﾓ～🍠"
             )
             context = {
                 "source": "imomaru-bot-handler",
@@ -320,3 +333,183 @@ class DailyReporter:
                 return truncated[:pos + len(sep)]
 
         return truncated
+
+    def should_post_morning_content(
+        self,
+        prev_daily_oshi_count: int,
+        current_time: Optional[datetime] = None,
+    ) -> bool:
+        """
+        朝のコンテンツ（YouTube/翻訳）を投稿すべきか判定
+
+        前日の推し投稿が少ない日（閾値以下）の朝9時台に投稿する。
+
+        Args:
+            prev_daily_oshi_count: 前日の推し投稿数
+            current_time: 現在時刻
+
+        Returns:
+            投稿すべきかどうか
+        """
+        if current_time is None:
+            current_time = datetime.now(timezone.utc)
+
+        jst_time = current_time.astimezone(JST)
+
+        # 朝9時台（9:00〜9:59）のみ
+        if jst_time.hour != 9:
+            return False
+
+        return prev_daily_oshi_count <= LOW_ACTIVITY_THRESHOLD
+
+    def should_post_translation(
+        self,
+        current_time: Optional[datetime] = None,
+    ) -> bool:
+        """
+        翻訳投稿を行うべきか判定（日曜のみ）
+
+        Args:
+            current_time: 現在時刻
+
+        Returns:
+            翻訳投稿を行うべきかどうか
+        """
+        if current_time is None:
+            current_time = datetime.now(timezone.utc)
+
+        jst_time = current_time.astimezone(JST)
+        return jst_time.weekday() == 6  # 日曜日
+
+    def post_youtube_search(
+        self,
+        oshi_user_id: str,
+    ) -> bool:
+        """
+        YouTube新着検索結果を単独ポストとして投稿する
+
+        AgentCore Runtime でYouTube検索を実行し、新着があれば投稿する。
+
+        Args:
+            oshi_user_id: 推しのXアカウントユーザーID
+
+        Returns:
+            投稿成功の可否（新着なしの場合もFalse）
+        """
+        try:
+            prompt = (
+                f"「甘木ジュリ」または「びっくえんじぇる」の最新YouTube動画を1件検索してください。"
+                f"\n\n出力フォーマットの指定: "
+                f"あなたは「ほくほくいも丸くん🍠」というキャラクターです。"
+                f"語尾は必ず「◯◯ｲﾓ🍠」の形式にしてください。"
+                f"回答は短い日本語プレーンテキストで改行区切りで出力してください。"
+                f"Markdown記法は使わないでください。"
+                f"動画が見つからない場合は「新着なし」とだけ返してください。"
+                f"以下のフォーマット例に従ってください:\n"
+                f"じゅりちゃんの新着動画を見つけたｲﾓ🍠\n"
+                f"📺 （動画タイトル）\n"
+                f"（再生数や投稿日の情報）ｲﾓ～🍠"
+            )
+            context = {
+                "source": "imomaru-bot-handler",
+                "request_type": "youtube_search",
+                "user_id": oshi_user_id,
+            }
+
+            yt_result = invoke_agent_runtime(
+                prompt=prompt,
+                context=context,
+                timeout=120,
+            )
+
+            if not yt_result["success"]:
+                logger.error(f"AgentCore Runtime YouTube search failed: {yt_result['error']}")
+                return False
+
+            body = self._extract_analysis_text(yt_result["response"])
+            if not body or "新着なし" in body:
+                logger.info("No new YouTube videos found")
+                return False
+
+            max_body_len = MAX_TEXT_LENGTH - len(YOUTUBE_PREFIX)
+            body = self._truncate_analysis(body, max_body_len)
+            tweet_text = f"{YOUTUBE_PREFIX}{body}"
+
+            result = self.api_client.post_tweet(text=tweet_text)
+            if result:
+                tweet_id = result.get("data", {}).get("id")
+                logger.info(f"YouTube search posted: {tweet_id}")
+                return True
+
+            return False
+
+        except Exception as e:
+            logger.error(f"Failed to post YouTube search: {e}")
+            return False
+
+    def post_translation(
+        self,
+        oshi_user_id: str,
+    ) -> bool:
+        """
+        人気ポストの翻訳を単独ポストとして投稿する（日曜のみ）
+
+        AgentCore Runtime でいいね・リポストが多い記事を1つ選んで翻訳する。
+
+        Args:
+            oshi_user_id: 推しのXアカウントユーザーID
+
+        Returns:
+            投稿成功の可否
+        """
+        try:
+            prompt = (
+                f"ユーザーID {oshi_user_id} の最近のポストの中から、"
+                f"いいねやリポストが最も多い人気ポストを1つ選んで、"
+                f"元気なアイドル口調を維持したまま英語に翻訳してください。"
+                f"\n\n出力フォーマットの指定: "
+                f"あなたは「ほくほくいも丸くん🍠」というキャラクターです。"
+                f"語尾は必ず「◯◯ｲﾓ🍠」の形式にしてください。"
+                f"回答は短い日本語プレーンテキストで改行区切りで出力してください。"
+                f"Markdown記法は使わないでください。"
+                f"以下のフォーマット例に従ってください:\n"
+                f"今週の人気ポストを翻訳したｲﾓ🍠\n"
+                f"🌎 （英語翻訳）\n"
+                f"いいね○件の人気ポストｲﾓ～🍠"
+            )
+            context = {
+                "source": "imomaru-bot-handler",
+                "request_type": "translation",
+                "user_id": oshi_user_id,
+            }
+
+            tr_result = invoke_agent_runtime(
+                prompt=prompt,
+                context=context,
+                timeout=120,
+            )
+
+            if not tr_result["success"]:
+                logger.error(f"AgentCore Runtime translation failed: {tr_result['error']}")
+                return False
+
+            body = self._extract_analysis_text(tr_result["response"])
+            if not body:
+                logger.warning("AgentCore Runtime translation returned empty response")
+                return False
+
+            max_body_len = MAX_TEXT_LENGTH - len(TRANSLATION_PREFIX)
+            body = self._truncate_analysis(body, max_body_len)
+            tweet_text = f"{TRANSLATION_PREFIX}{body}"
+
+            result = self.api_client.post_tweet(text=tweet_text)
+            if result:
+                tweet_id = result.get("data", {}).get("id")
+                logger.info(f"Translation posted: {tweet_id}")
+                return True
+
+            return False
+
+        except Exception as e:
+            logger.error(f"Failed to post translation: {e}")
+            return False

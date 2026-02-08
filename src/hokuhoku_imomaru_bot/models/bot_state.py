@@ -55,6 +55,8 @@ class BotState:
     total_received_retweets: int = 0   # ボット投稿への累積リポスト数
     # 感情画像添付制限（1日1回）
     daily_image_posted: bool = False   # 本日の画像添付済みフラグ
+    # 前日の推し投稿数（朝のYouTube/翻訳投稿判定用）
+    prev_daily_oshi_count: int = 0
 
     def to_dict(self) -> dict:
         """
@@ -83,6 +85,7 @@ class BotState:
             "total_received_likes": self.total_received_likes,
             "total_received_retweets": self.total_received_retweets,
             "daily_image_posted": self.daily_image_posted,
+            "prev_daily_oshi_count": self.prev_daily_oshi_count,
         }
         return result
 
@@ -116,6 +119,7 @@ class BotState:
             total_received_likes=int(data.get("total_received_likes", 0)),
             total_received_retweets=int(data.get("total_received_retweets", 0)),
             daily_image_posted=bool(data.get("daily_image_posted", False)),
+            prev_daily_oshi_count=int(data.get("prev_daily_oshi_count", 0)),
         )
 
     def get_xp_breakdown(self) -> dict:

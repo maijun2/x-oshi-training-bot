@@ -203,6 +203,7 @@ class StateStore:
         Returns:
             リセット後のBotState
         """
+        state.prev_daily_oshi_count = state.daily_oshi_count
         state.daily_oshi_count = 0
         state.daily_group_count = 0
         state.daily_repost_count = 0

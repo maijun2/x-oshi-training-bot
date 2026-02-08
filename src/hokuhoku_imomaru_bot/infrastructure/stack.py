@@ -319,11 +319,11 @@ class ImomaruBotStack(Stack):
                     expression="IF(invocations > 0, (invocations - errors) / invocations * 100, 100)",
                     using_metrics={
                         "invocations": self.bot_lambda.metric_invocations(
-                            period=Duration.days(1),
+                            period=Duration.seconds(300),
                             statistic="Sum",
                         ),
                         "errors": self.bot_lambda.metric_errors(
-                            period=Duration.days(1),
+                            period=Duration.seconds(300),
                             statistic="Sum",
                         ),
                     },
