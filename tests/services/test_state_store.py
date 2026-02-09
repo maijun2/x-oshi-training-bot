@@ -401,3 +401,77 @@ def test_is_tweet_processed_error():
 
     store = StateStore(mock_client)
     assert store.is_tweet_processed("tweet_001") is False
+
+
+def test_load_state_raises_on_dynamodb_error():
+    """load_stateがDynamoDBエラー時に例外を再送出することを確認"""
+    from unittest.mock import MagicMock
+    mock_client = MagicMock()
+    mock_client.get_item.side_effect = Exception("DynamoDB connection error")
+
+    store = StateStore(mock_client)
+
+    with pytest.raises(Exception, match="DynamoDB connection error"):
+        store.load_state()
+
+
+def test_save_state_raises_on_dynamodb_error():
+    """save_stateがDynamoDBエラー時に例外を再送出することを確認"""
+    from unittest.mock import MagicMock
+    mock_client = MagicMock()
+    mock_client.put_item.side_effect = Exception("DynamoDB write error")
+
+    store = StateStore(mock_client)
+    state = BotState(cumulative_xp=10.0, current_level=2)
+
+    with pytest.raises(Exception, match="DynamoDB write error"):
+        store.save_state(state)
+
+
+def test_load_xp_table_with_pagination():
+    """load_xp_tableがページネーションを正しく処理することを確認"""
+    from unittest.mock import MagicMock
+
+    mock_client = MagicMock()
+    # 1回目: LastEvaluatedKey付き（次ページあり）
+    mock_client.scan.side_effect = [
+        {
+            "Items": [
+                {"level": {"N": "1"}, "required_xp": {"N": "0"}},
+                {"level": {"N": "2"}, "required_xp": {"N": "7"}},
+            ],
+            "LastEvaluatedKey": {"level": {"N": "2"}},
+        },
+        # 2回目: 最終ページ
+        {
+            "Items": [
+                {"level": {"N": "3"}, "required_xp": {"N": "23"}},
+            ],
+        },
+    ]
+
+    store = StateStore(mock_client)
+    xp_table = store.load_xp_table()
+
+    assert len(xp_table) == 3
+    assert xp_table[1] == 0
+    assert xp_table[2] == 7
+    assert xp_table[3] == 23
+    assert mock_client.scan.call_count == 2
+
+
+def test_acquire_tweet_lock_raises_on_other_client_error():
+    """acquire_tweet_lockがConditionalCheckFailedException以外のClientErrorを再送出することを確認"""
+    from unittest.mock import MagicMock
+    from botocore.exceptions import ClientError
+
+    mock_client = MagicMock()
+    mock_client.put_item.side_effect = ClientError(
+        {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "Rate exceeded"}},
+        "PutItem",
+    )
+
+    store = StateStore(mock_client)
+
+    with pytest.raises(ClientError):
+        store.acquire_tweet_lock("tweet_999", "quote_oshi")
