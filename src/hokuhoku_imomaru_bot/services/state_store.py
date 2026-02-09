@@ -90,6 +90,7 @@ class StateStore:
                     total_received_likes=int(item.get("total_received_likes", {}).get("N", 0)),
                     total_received_retweets=int(item.get("total_received_retweets", {}).get("N", 0)),
                     daily_image_posted=item.get("daily_image_posted", {}).get("BOOL", False),
+                    prev_daily_oshi_count=int(item.get("prev_daily_oshi_count", {}).get("N", 0)),
                 )
             
             logger.info("No existing state found, returning default state")
@@ -130,6 +131,7 @@ class StateStore:
                 "total_received_likes": {"N": str(state.total_received_likes)},
                 "total_received_retweets": {"N": str(state.total_received_retweets)},
                 "daily_image_posted": {"BOOL": state.daily_image_posted},
+                "prev_daily_oshi_count": {"N": str(state.prev_daily_oshi_count)},
             }
             
             # latest_tweet_idがNoneでない場合のみ追加

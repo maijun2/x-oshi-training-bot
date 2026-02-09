@@ -7,6 +7,7 @@ import pytest
 import boto3
 from moto import mock_aws
 from src.hokuhoku_imomaru_bot.services import StateStore
+from src.hokuhoku_imomaru_bot.services import TweetAlreadyProcessedError
 from src.hokuhoku_imomaru_bot.models import BotState
 
 
@@ -252,3 +253,151 @@ def test_reset_daily_counts_resets_image_posted_flag(dynamodb_client):
     reset_state = store.reset_daily_counts(state)
 
     assert reset_state.daily_image_posted is False
+
+
+def test_save_and_load_state_with_profile_update_month(dynamodb_client):
+    """last_profile_update_monthを含む状態を保存・読み込みできることを確認"""
+    store = StateStore(dynamodb_client)
+
+    state = BotState(
+        cumulative_xp=200.0,
+        current_level=10,
+        last_profile_update_month="2024-01",
+    )
+    store.save_state(state)
+
+    loaded = store.load_state()
+    assert loaded.last_profile_update_month == "2024-01"
+
+
+def test_save_and_load_state_with_prev_daily_oshi_count(dynamodb_client):
+    """prev_daily_oshi_countを含む状態を保存・読み込みできることを確認"""
+    store = StateStore(dynamodb_client)
+
+    state = BotState(
+        cumulative_xp=50.0,
+        current_level=3,
+        prev_daily_oshi_count=5,
+    )
+    store.save_state(state)
+
+    loaded = store.load_state()
+    assert loaded.prev_daily_oshi_count == 5
+
+
+@pytest.fixture
+def dynamodb_client_with_all_tables():
+    """全テーブルを含むモックDynamoDBクライアント"""
+    with mock_aws():
+        client = boto3.client("dynamodb", region_name="ap-northeast-1")
+
+        # BotStateテーブル
+        client.create_table(
+            TableName="imomaru-bot-state",
+            KeySchema=[{"AttributeName": "state_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "state_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        # XPTableテーブル
+        client.create_table(
+            TableName="imomaru-bot-xp-table",
+            KeySchema=[{"AttributeName": "level", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "level", "AttributeType": "N"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        # ProcessedTweetsテーブル
+        client.create_table(
+            TableName="imomaru-bot-processed-tweets",
+            KeySchema=[{"AttributeName": "tweet_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "tweet_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        # EmotionImagesテーブル
+        client.create_table(
+            TableName="imomaru-bot-emotion-images",
+            KeySchema=[{"AttributeName": "emotion_key", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "emotion_key", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+
+        yield client
+
+
+def test_get_emotion_image_filename_found(dynamodb_client_with_all_tables):
+    """感情画像ファイル名を取得できることを確認"""
+    client = dynamodb_client_with_all_tables
+    store = StateStore(client)
+
+    # テストデータ投入
+    client.put_item(
+        TableName="imomaru-bot-emotion-images",
+        Item={
+            "emotion_key": {"S": "joy"},
+            "filename": {"S": "imomaru_joy.png"},
+        },
+    )
+
+    result = store.get_emotion_image_filename("joy")
+    assert result == "imomaru_joy.png"
+
+
+def test_get_emotion_image_filename_not_found(dynamodb_client_with_all_tables):
+    """存在しない感情キーでNoneを返すことを確認"""
+    store = StateStore(dynamodb_client_with_all_tables)
+
+    result = store.get_emotion_image_filename("nonexistent")
+    assert result is None
+
+
+def test_get_emotion_image_filename_error():
+    """DynamoDBエラー時にNoneを返すことを確認"""
+    from unittest.mock import MagicMock
+    mock_client = MagicMock()
+    mock_client.get_item.side_effect = Exception("DynamoDB error")
+
+    store = StateStore(mock_client)
+    result = store.get_emotion_image_filename("joy")
+    assert result is None
+
+
+def test_acquire_tweet_lock_success(dynamodb_client_with_all_tables):
+    """ツイートロックを取得できることを確認"""
+    store = StateStore(dynamodb_client_with_all_tables)
+
+    result = store.acquire_tweet_lock("tweet_001", "quote_oshi")
+    assert result is True
+
+
+def test_acquire_tweet_lock_already_processed(dynamodb_client_with_all_tables):
+    """既に処理済みのツイートでTweetAlreadyProcessedErrorが発生することを確認"""
+    store = StateStore(dynamodb_client_with_all_tables)
+
+    store.acquire_tweet_lock("tweet_002", "quote_oshi")
+
+    with pytest.raises(TweetAlreadyProcessedError):
+        store.acquire_tweet_lock("tweet_002", "quote_oshi")
+
+
+def test_is_tweet_processed_true(dynamodb_client_with_all_tables):
+    """処理済みツイートがTrueを返すことを確認"""
+    store = StateStore(dynamodb_client_with_all_tables)
+
+    store.acquire_tweet_lock("tweet_003", "quote_oshi")
+    assert store.is_tweet_processed("tweet_003") is True
+
+
+def test_is_tweet_processed_false(dynamodb_client_with_all_tables):
+    """未処理ツイートがFalseを返すことを確認"""
+    store = StateStore(dynamodb_client_with_all_tables)
+
+    assert store.is_tweet_processed("tweet_999") is False
+
+
+def test_is_tweet_processed_error():
+    """DynamoDBエラー時にFalseを返すことを確認"""
+    from unittest.mock import MagicMock
+    mock_client = MagicMock()
+    mock_client.get_item.side_effect = Exception("DynamoDB error")
+
+    store = StateStore(mock_client)
+    assert store.is_tweet_processed("tweet_001") is False

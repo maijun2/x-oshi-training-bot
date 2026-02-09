@@ -16,6 +16,8 @@ from src.hokuhoku_imomaru_bot.lambda_handler import (
     _check_timeline_safe,
     _post_quote_safe,
     _update_profile_on_level_up,
+    _get_emotion_image_media_id,
+    _check_engagement_safe,
 )
 from src.hokuhoku_imomaru_bot.models import BotState
 from src.hokuhoku_imomaru_bot.services import (
@@ -770,3 +772,441 @@ class TestMultiplePostsDetection:
         assert state.oshi_post_count == 2
         assert state.group_post_count == 1
         assert state.cumulative_xp == 12.0
+
+
+class TestGetEmotionImageMediaId:
+    """_get_emotion_image_media_id関数のテスト"""
+
+    def test_returns_media_id_on_success(self):
+        """正常系: 感情分類→画像取得→アップロードが成功"""
+        ai_generator = MagicMock(spec=AIGenerator)
+        ai_generator.classify_emotion.return_value = "joy"
+
+        state_store = MagicMock(spec=StateStore)
+        state_store.get_emotion_image_filename.return_value = "imomaru_joy.png"
+
+        s3_client = MagicMock()
+        s3_client.get_object.return_value = {
+            "Body": MagicMock(read=lambda: b"fake_image_data"),
+        }
+
+        x_api_client = MagicMock()
+        x_api_client.upload_media.return_value = "media_123"
+
+        result = _get_emotion_image_media_id(
+            response_text="嬉しいｲﾓ🍠",
+            ai_generator=ai_generator,
+            state_store=state_store,
+            x_api_client=x_api_client,
+            s3_client=s3_client,
+            bucket_name="test-bucket",
+        )
+
+        assert result == "media_123"
+        s3_client.get_object.assert_called_once_with(
+            Bucket="test-bucket",
+            Key="emotions/imomaru_joy.png",
+        )
+
+    def test_returns_none_when_no_emotion(self):
+        """感情分類がNoneの場合"""
+        ai_generator = MagicMock(spec=AIGenerator)
+        ai_generator.classify_emotion.return_value = None
+
+        result = _get_emotion_image_media_id(
+            response_text="テスト",
+            ai_generator=ai_generator,
+            state_store=MagicMock(),
+            x_api_client=MagicMock(),
+            s3_client=MagicMock(),
+            bucket_name="test-bucket",
+        )
+
+        assert result is None
+
+    def test_returns_none_when_no_filename(self):
+        """画像ファイル名が見つからない場合"""
+        ai_generator = MagicMock(spec=AIGenerator)
+        ai_generator.classify_emotion.return_value = "joy"
+
+        state_store = MagicMock(spec=StateStore)
+        state_store.get_emotion_image_filename.return_value = None
+
+        result = _get_emotion_image_media_id(
+            response_text="テスト",
+            ai_generator=ai_generator,
+            state_store=state_store,
+            x_api_client=MagicMock(),
+            s3_client=MagicMock(),
+            bucket_name="test-bucket",
+        )
+
+        assert result is None
+
+    def test_returns_none_on_exception(self):
+        """例外発生時にNoneを返す"""
+        ai_generator = MagicMock(spec=AIGenerator)
+        ai_generator.classify_emotion.side_effect = Exception("Bedrock error")
+
+        result = _get_emotion_image_media_id(
+            response_text="テスト",
+            ai_generator=ai_generator,
+            state_store=MagicMock(),
+            x_api_client=MagicMock(),
+            s3_client=MagicMock(),
+            bucket_name="test-bucket",
+        )
+
+        assert result is None
+
+
+class TestPostQuoteSafeWithEmotionImage:
+    """_post_quote_safe の感情画像添付パスのテスト"""
+
+    def test_attaches_emotion_image_for_oshi(self):
+        """推し投稿で感情画像が添付されることを確認"""
+        tweet = Tweet(id="123", text="元の投稿", author_id="user")
+        state = BotState(daily_image_posted=False)
+
+        ai_generator = MagicMock(spec=AIGenerator)
+        ai_generator.generate_response.return_value = "嬉しいｲﾓ🍠"
+        ai_generator.classify_emotion.return_value = "joy"
+
+        x_api_client = MagicMock()
+        x_api_client.post_tweet.return_value = {"data": {"id": "999"}}
+        x_api_client.upload_media.return_value = "media_456"
+
+        state_store = MagicMock(spec=StateStore)
+        state_store.acquire_tweet_lock.return_value = True
+        state_store.get_emotion_image_filename.return_value = "imomaru_joy.png"
+
+        s3_client = MagicMock()
+        s3_client.get_object.return_value = {
+            "Body": MagicMock(read=lambda: b"image_data"),
+        }
+
+        result = _post_quote_safe(
+            tweet=tweet,
+            post_type="oshi",
+            ai_generator=ai_generator,
+            x_api_client=x_api_client,
+            state_store=state_store,
+            state=state,
+            s3_client=s3_client,
+            bucket_name="test-bucket",
+        )
+
+        assert result is True
+        assert state.daily_image_posted is True
+        x_api_client.post_tweet.assert_called_once_with(
+            text="嬉しいｲﾓ🍠",
+            quote_tweet_id="123",
+            media_ids=["media_456"],
+        )
+
+    def test_no_image_when_already_posted_today(self):
+        """本日既に画像添付済みの場合は画像なしで投稿"""
+        tweet = Tweet(id="123", text="元の投稿", author_id="user")
+        state = BotState(daily_image_posted=True)
+
+        ai_generator = MagicMock(spec=AIGenerator)
+        ai_generator.generate_response.return_value = "応答"
+
+        x_api_client = MagicMock()
+        x_api_client.post_tweet.return_value = {"data": {"id": "999"}}
+
+        state_store = MagicMock(spec=StateStore)
+        state_store.acquire_tweet_lock.return_value = True
+
+        result = _post_quote_safe(
+            tweet=tweet,
+            post_type="oshi",
+            ai_generator=ai_generator,
+            x_api_client=x_api_client,
+            state_store=state_store,
+            state=state,
+            s3_client=MagicMock(),
+            bucket_name="test-bucket",
+        )
+
+        assert result is True
+        x_api_client.post_tweet.assert_called_once_with(
+            text="応答",
+            quote_tweet_id="123",
+            media_ids=None,
+        )
+
+
+class TestCheckEngagementSafe:
+    """_check_engagement_safe関数のテスト"""
+
+    def test_calculates_engagement_xp(self):
+        """エンゲージメントXPが正しく計算されることを確認"""
+        x_api_client = MagicMock()
+        x_api_client.get_my_tweets_with_metrics.return_value = {
+            "data": [
+                {"public_metrics": {"like_count": 10, "retweet_count": 3}},
+                {"public_metrics": {"like_count": 5, "retweet_count": 2}},
+            ],
+        }
+
+        xp_calculator = XPCalculator()
+        state = BotState(total_received_likes=5, total_received_retweets=2)
+        result = {
+            "xp_gained": 0.0,
+            "new_likes": 0,
+            "new_retweets": 0,
+        }
+
+        total_xp = _check_engagement_safe(
+            x_api_client=x_api_client,
+            xp_calculator=xp_calculator,
+            state=state,
+            result=result,
+            bot_user_id="bot_001",
+        )
+
+        # 新しいいいね: 15 - 5 = 10, 新しいリツイート: 5 - 2 = 3
+        assert result["new_likes"] == 10
+        assert result["new_retweets"] == 3
+        assert state.total_received_likes == 15
+        assert state.total_received_retweets == 5
+        assert total_xp > 0
+
+    def test_no_tweets_returns_zero(self):
+        """ツイートがない場合に0を返すことを確認"""
+        x_api_client = MagicMock()
+        x_api_client.get_my_tweets_with_metrics.return_value = {}
+
+        state = BotState()
+        result = {"xp_gained": 0.0, "new_likes": 0, "new_retweets": 0}
+
+        total_xp = _check_engagement_safe(
+            x_api_client=x_api_client,
+            xp_calculator=XPCalculator(),
+            state=state,
+            result=result,
+            bot_user_id="bot_001",
+        )
+
+        assert total_xp == 0.0
+
+    def test_handles_api_error(self):
+        """APIエラー時に0を返すことを確認"""
+        x_api_client = MagicMock()
+        x_api_client.get_my_tweets_with_metrics.side_effect = Exception("API Error")
+
+        state = BotState()
+        result = {"xp_gained": 0.0, "new_likes": 0, "new_retweets": 0}
+
+        total_xp = _check_engagement_safe(
+            x_api_client=x_api_client,
+            xp_calculator=XPCalculator(),
+            state=state,
+            result=result,
+            bot_user_id="bot_001",
+        )
+
+        assert total_xp == 0.0
+
+    def test_no_new_engagement(self):
+        """新しいエンゲージメントがない場合"""
+        x_api_client = MagicMock()
+        x_api_client.get_my_tweets_with_metrics.return_value = {
+            "data": [
+                {"public_metrics": {"like_count": 5, "retweet_count": 2}},
+            ],
+        }
+
+        state = BotState(total_received_likes=5, total_received_retweets=2)
+        result = {"xp_gained": 0.0, "new_likes": 0, "new_retweets": 0}
+
+        total_xp = _check_engagement_safe(
+            x_api_client=x_api_client,
+            xp_calculator=XPCalculator(),
+            state=state,
+            result=result,
+            bot_user_id="bot_001",
+        )
+
+        assert total_xp == 0.0
+        assert result["new_likes"] == 0
+        assert result["new_retweets"] == 0
+
+
+class TestMorningContentIntegration:
+    """朝コンテンツ（YouTube/翻訳）の統合テスト"""
+
+    def test_morning_content_youtube_posted(self):
+        """朝9時台で推し投稿が少ない日にYouTubeが投稿されることを確認"""
+        state = BotState(prev_daily_oshi_count=2)
+        state_store = MagicMock(spec=StateStore)
+        state_store.reset_daily_counts.return_value = state
+
+        timeline_monitor = MagicMock(spec=TimelineMonitor)
+        timeline_monitor.check_oshi_timeline.return_value = []
+        timeline_monitor.check_group_timeline.return_value = []
+        timeline_monitor.filter_original_posts.return_value = []
+        timeline_monitor.filter_retweets.return_value = []
+
+        xp_calculator = XPCalculator()
+        level_manager = MagicMock(spec=LevelManager)
+        level_manager.check_level_up.return_value = (False, 1)
+
+        ai_generator = MagicMock(spec=AIGenerator)
+        image_compositor = MagicMock(spec=ImageCompositor)
+        profile_updater = MagicMock(spec=ProfileUpdater)
+
+        daily_reporter = MagicMock(spec=DailyReporter)
+        daily_reporter.should_post_daily_report.return_value = False
+        daily_reporter.should_post_morning_content.return_value = True
+        daily_reporter.post_youtube_search.return_value = True
+        daily_reporter.should_post_translation.return_value = False
+
+        x_api_client = MagicMock()
+        x_api_client.get_my_tweets_with_metrics.return_value = {}
+
+        result = _process_bot_logic(
+            state=state,
+            state_store=state_store,
+            timeline_monitor=timeline_monitor,
+            xp_calculator=xp_calculator,
+            level_manager=level_manager,
+            ai_generator=ai_generator,
+            image_compositor=image_compositor,
+            profile_updater=profile_updater,
+            daily_reporter=daily_reporter,
+            x_api_client=x_api_client,
+        )
+
+        assert result.get("youtube_posted") is True
+        daily_reporter.post_youtube_search.assert_called_once()
+
+    def test_morning_content_translation_on_sunday(self):
+        """日曜の朝に翻訳が投稿されることを確認"""
+        state = BotState(prev_daily_oshi_count=1)
+        state_store = MagicMock(spec=StateStore)
+        state_store.reset_daily_counts.return_value = state
+
+        timeline_monitor = MagicMock(spec=TimelineMonitor)
+        timeline_monitor.check_oshi_timeline.return_value = []
+        timeline_monitor.check_group_timeline.return_value = []
+        timeline_monitor.filter_original_posts.return_value = []
+        timeline_monitor.filter_retweets.return_value = []
+
+        xp_calculator = XPCalculator()
+        level_manager = MagicMock(spec=LevelManager)
+        level_manager.check_level_up.return_value = (False, 1)
+
+        daily_reporter = MagicMock(spec=DailyReporter)
+        daily_reporter.should_post_daily_report.return_value = False
+        daily_reporter.should_post_morning_content.return_value = True
+        daily_reporter.post_youtube_search.return_value = False
+        daily_reporter.should_post_translation.return_value = True
+        daily_reporter.post_translation.return_value = True
+
+        x_api_client = MagicMock()
+        x_api_client.get_my_tweets_with_metrics.return_value = {}
+
+        result = _process_bot_logic(
+            state=state,
+            state_store=state_store,
+            timeline_monitor=timeline_monitor,
+            xp_calculator=xp_calculator,
+            level_manager=level_manager,
+            ai_generator=MagicMock(spec=AIGenerator),
+            image_compositor=MagicMock(spec=ImageCompositor),
+            profile_updater=MagicMock(spec=ProfileUpdater),
+            daily_reporter=daily_reporter,
+            x_api_client=x_api_client,
+        )
+
+        assert result.get("translation_posted") is True
+
+    def test_morning_content_skipped_when_high_activity(self):
+        """推し投稿が多い日は朝コンテンツがスキップされることを確認"""
+        state = BotState(prev_daily_oshi_count=5)
+        state_store = MagicMock(spec=StateStore)
+
+        timeline_monitor = MagicMock(spec=TimelineMonitor)
+        timeline_monitor.check_oshi_timeline.return_value = []
+        timeline_monitor.check_group_timeline.return_value = []
+        timeline_monitor.filter_original_posts.return_value = []
+        timeline_monitor.filter_retweets.return_value = []
+
+        level_manager = MagicMock(spec=LevelManager)
+        level_manager.check_level_up.return_value = (False, 1)
+
+        daily_reporter = MagicMock(spec=DailyReporter)
+        daily_reporter.should_post_daily_report.return_value = False
+        daily_reporter.should_post_morning_content.return_value = False
+
+        x_api_client = MagicMock()
+        x_api_client.get_my_tweets_with_metrics.return_value = {}
+
+        result = _process_bot_logic(
+            state=state,
+            state_store=state_store,
+            timeline_monitor=timeline_monitor,
+            xp_calculator=XPCalculator(),
+            level_manager=level_manager,
+            ai_generator=MagicMock(spec=AIGenerator),
+            image_compositor=MagicMock(spec=ImageCompositor),
+            profile_updater=MagicMock(spec=ProfileUpdater),
+            daily_reporter=daily_reporter,
+            x_api_client=x_api_client,
+        )
+
+        assert "youtube_posted" not in result
+        daily_reporter.post_youtube_search.assert_not_called()
+
+
+class TestDailyReportWithAnalysisThread:
+    """日報投稿+エゴサ分析スレッドの統合テスト"""
+
+    def test_analysis_thread_posted_after_daily_report(self):
+        """日報投稿後にエゴサ分析スレッドが投稿されることを確認"""
+        state = BotState(latest_tweet_id="12345")
+        state_store = MagicMock(spec=StateStore)
+        state_store.reset_daily_counts.return_value = state
+
+        timeline_monitor = MagicMock(spec=TimelineMonitor)
+        timeline_monitor.check_oshi_timeline.return_value = []
+        timeline_monitor.check_group_timeline.return_value = []
+        timeline_monitor.filter_original_posts.return_value = []
+        timeline_monitor.filter_retweets.return_value = []
+
+        level_manager = MagicMock(spec=LevelManager)
+        level_manager.check_level_up.return_value = (False, 1)
+        level_manager.get_xp_to_next_level.return_value = 100
+
+        daily_reporter = MagicMock(spec=DailyReporter)
+        daily_reporter.should_post_daily_report.return_value = True
+        daily_reporter.post_daily_report.return_value = "report_tweet_id"
+        daily_reporter.get_today_date_jst.return_value = "2024-01-15"
+        daily_reporter.post_analysis_thread.return_value = True
+        daily_reporter.should_post_morning_content.return_value = False
+
+        x_api_client = MagicMock()
+        x_api_client.get_my_tweets_with_metrics.return_value = {}
+
+        result = _process_bot_logic(
+            state=state,
+            state_store=state_store,
+            timeline_monitor=timeline_monitor,
+            xp_calculator=XPCalculator(),
+            level_manager=level_manager,
+            ai_generator=MagicMock(spec=AIGenerator),
+            image_compositor=MagicMock(spec=ImageCompositor),
+            profile_updater=MagicMock(spec=ProfileUpdater),
+            daily_reporter=daily_reporter,
+            x_api_client=x_api_client,
+        )
+
+        assert result["daily_report_posted"] is True
+        assert result.get("post_analysis_posted") is True
+        daily_reporter.post_analysis_thread.assert_called_once_with(
+            reply_to_tweet_id="report_tweet_id",
+            oshi_user_id="",  # テスト環境ではOSHI_USER_IDは空
+            latest_tweet_id="12345",
+        )
