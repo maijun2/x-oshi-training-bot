@@ -217,3 +217,38 @@ def test_reset_daily_counts(dynamodb_client):
     # 累積カウントは変更されていないことを確認
     assert reset_state.cumulative_xp == 100.0
     assert reset_state.current_level == 5
+
+
+def test_reset_daily_counts_saves_prev_oshi_count(dynamodb_client):
+    """reset_daily_counts()がprev_daily_oshi_countに前日の値を保存することを確認"""
+    store = StateStore(dynamodb_client)
+
+    state = BotState(
+        daily_oshi_count=7,
+        daily_group_count=3,
+        daily_repost_count=5,
+        daily_like_count=10,
+        daily_xp=20.0,
+        prev_daily_oshi_count=0,
+    )
+
+    reset_state = store.reset_daily_counts(state)
+
+    # 前日の推し投稿数が保存されている
+    assert reset_state.prev_daily_oshi_count == 7
+    # 当日カウントはリセット
+    assert reset_state.daily_oshi_count == 0
+
+
+def test_reset_daily_counts_resets_image_posted_flag(dynamodb_client):
+    """reset_daily_counts()がdaily_image_postedフラグをリセットすることを確認"""
+    store = StateStore(dynamodb_client)
+
+    state = BotState(
+        daily_image_posted=True,
+        daily_oshi_count=1,
+    )
+
+    reset_state = store.reset_daily_counts(state)
+
+    assert reset_state.daily_image_posted is False

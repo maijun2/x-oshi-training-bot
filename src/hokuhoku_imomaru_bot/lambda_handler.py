@@ -461,6 +461,7 @@ def _process_bot_logic(
         if daily_reporter.should_post_translation(current_time):
             translation_posted = daily_reporter.post_translation(
                 oshi_user_id=OSHI_USER_ID,
+                latest_tweet_id=state.latest_tweet_id or "0",
             )
             if translation_posted:
                 result["translation_posted"] = True

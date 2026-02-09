@@ -452,6 +452,7 @@ class DailyReporter:
     def post_translation(
         self,
         oshi_user_id: str,
+        latest_tweet_id: str = "0",
     ) -> bool:
         """
         人気ポストの翻訳を単独ポストとして投稿する（日曜のみ）
@@ -460,6 +461,7 @@ class DailyReporter:
 
         Args:
             oshi_user_id: 推しのXアカウントユーザーID
+            latest_tweet_id: 分析対象の起点ツイートID
 
         Returns:
             投稿成功の可否
@@ -483,6 +485,7 @@ class DailyReporter:
                 "source": "imomaru-bot-handler",
                 "request_type": "translation",
                 "user_id": oshi_user_id,
+                "latest_post_id": latest_tweet_id,
             }
 
             tr_result = invoke_agent_runtime(
