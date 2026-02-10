@@ -199,6 +199,10 @@ def _process_bot_logic(
     
     initial_level = state.current_level
     
+    # ポスト分析用に前回の latest_tweet_id を保持
+    # （今回処理したツイートも分析対象に含めるため）
+    previous_latest_tweet_id = state.latest_tweet_id or "0"
+    
     # ボット投稿へのエンゲージメントをチェック
     engagement_xp = _check_engagement_safe(
         x_api_client=x_api_client,
@@ -430,7 +434,7 @@ def _process_bot_logic(
             analysis_posted = daily_reporter.post_analysis_thread(
                 reply_to_tweet_id=report_tweet_id,
                 oshi_user_id=OSHI_USER_ID,
-                latest_tweet_id=state.latest_tweet_id or "0",
+                latest_tweet_id=previous_latest_tweet_id,
             )
             if analysis_posted:
                 result["post_analysis_posted"] = True
