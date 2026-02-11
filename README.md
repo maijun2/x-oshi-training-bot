@@ -13,7 +13,6 @@ X（旧Twitter）育成ボット - AWSサーバーレスアーキテクチャ
 - 📈 **レベルアップ**: DQ3勇者の経験値テーブルに基づいてレベルアップ
 - 🖼️ **プロフィール更新**: レベルアップ時にプロフィール画像と名前を自動更新、レベルアップ投稿に画像添付
 - 📊 **日報投稿**: 毎日21:00 JST以降に活動報告を投稿
-- 🔍 **エゴサ分析**: 日報投稿のスレッドとして、推しのポストへのファンの反応を分析・報告（AgentCore Runtime）
 - 🎬 **YouTube新着検索**: 推しの投稿が少ない日の朝に、関連YouTube動画を検索して投稿（AgentCore Runtime）
 - 🌎 **翻訳投稿**: 日曜の朝に人気ポストを英語翻訳して投稿（AgentCore Runtime、週1回）
 
@@ -26,7 +25,7 @@ EventBridge Scheduler → Lambda → X API
                           ↓
                     Bedrock (AI生成)
                           ↓
-                    AgentCore Runtime (エゴサ分析・YouTube検索・翻訳)
+                    AgentCore Runtime (YouTube検索・翻訳)
                           ↓
                     S3 (画像アセット)
                           ↓
@@ -149,7 +148,7 @@ AGENTCORE_RUNTIME_ARN=arn:aws:bedrock-agentcore:ap-northeast-1:ACCOUNT_ID:runtim
 **注意**: 
 - これらはXのユーザーIDです。ユーザー名（@xxx）ではありません。
 - `BOT_USER_ID` はボット自身の投稿へのエンゲージメント（いいね・リポスト）を追跡するために使用します。
-- `AGENTCORE_RUNTIME_ARN` はAgentCore Runtime のSupervisor AgentのARNです。エゴサ分析・YouTube検索・翻訳機能に使用します。
+- `AGENTCORE_RUNTIME_ARN` はAgentCore Runtime のSupervisor AgentのARNです。YouTube検索・翻訳機能に使用します。
 - `.env`ファイルは`.gitignore`で除外されているため、リポジトリにはコミットされません。
 
 ### 2. CDKブートストラップ（初回のみ）
@@ -250,7 +249,6 @@ aws s3 cp emotions/ s3://imomaru-bot-assets-ACCOUNT_ID/emotions/ --recursive --r
 | 朝9時（日曜） | 人気ポスト翻訳（単独ポスト） | 前日の推し投稿3件以下 |
 | 夜21時 | タイムライン監視・引用ポスト | 毎日 |
 | 夜21時 | 日報投稿 | 毎日 |
-| 夜21時 | エゴサ分析スレッド | 日報投稿成功後 |
 
 ## XPレートと投稿ルール
 
