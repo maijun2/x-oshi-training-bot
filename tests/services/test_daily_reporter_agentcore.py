@@ -1,7 +1,7 @@
 """
 DailyReporter AgentCore Runtime連携機能のユニットテスト
 
-post_analysis_thread, post_youtube_search, post_translation,
+post_youtube_search, post_translation,
 should_post_morning_content, should_post_translation,
 _extract_analysis_text, _truncate_analysis を検証
 """
@@ -13,7 +13,6 @@ from src.hokuhoku_imomaru_bot.services.daily_reporter import (
     DailyReporter,
     JST,
     MAX_TEXT_LENGTH,
-    POST_ANALYSIS_PREFIX,
     YOUTUBE_PREFIX,
     TRANSLATION_PREFIX,
     LOW_ACTIVITY_THRESHOLD,
@@ -219,95 +218,6 @@ class TestTruncateAnalysis:
         text = "a" * 50
         result = DailyReporter._truncate_analysis(text, 50)
         assert result == text
-
-
-# ========================================
-# post_analysis_thread のテスト
-# ========================================
-
-class TestPostAnalysisThread:
-    """post_analysis_thread メソッドのテスト"""
-
-    @patch("src.hokuhoku_imomaru_bot.services.daily_reporter.invoke_agent_runtime")
-    def test_success(self, mock_invoke, reporter, mock_api_client):
-        """正常系: 分析結果をスレッド投稿"""
-        mock_invoke.return_value = {
-            "success": True,
-            "response": "リプライ5件を分析したｲﾓ🍠\n💜 ファンの反応：とても好意的\n✨ 注目：新曲が話題",
-        }
-        mock_api_client.post_tweet.return_value = {"data": {"id": "999"}}
-
-        result = reporter.post_analysis_thread(
-            reply_to_tweet_id="123",
-            oshi_user_id="456",
-            latest_tweet_id="789",
-        )
-
-        assert result is True
-        mock_api_client.post_tweet.assert_called_once()
-        call_kwargs = mock_api_client.post_tweet.call_args.kwargs
-        assert call_kwargs["reply_to_tweet_id"] == "123"
-        assert POST_ANALYSIS_PREFIX in call_kwargs["text"]
-
-    @patch("src.hokuhoku_imomaru_bot.services.daily_reporter.invoke_agent_runtime")
-    def test_agent_failure(self, mock_invoke, reporter, mock_api_client):
-        """AgentCore Runtime失敗時にFalseを返す"""
-        mock_invoke.return_value = {
-            "success": False,
-            "response": "",
-            "error": "ThrottlingException",
-        }
-
-        result = reporter.post_analysis_thread(
-            reply_to_tweet_id="123",
-            oshi_user_id="456",
-        )
-
-        assert result is False
-        mock_api_client.post_tweet.assert_not_called()
-
-    @patch("src.hokuhoku_imomaru_bot.services.daily_reporter.invoke_agent_runtime")
-    def test_empty_response(self, mock_invoke, reporter, mock_api_client):
-        """空レスポンス時にFalseを返す"""
-        mock_invoke.return_value = {
-            "success": True,
-            "response": "",
-        }
-
-        result = reporter.post_analysis_thread(
-            reply_to_tweet_id="123",
-            oshi_user_id="456",
-        )
-
-        assert result is False
-
-    @patch("src.hokuhoku_imomaru_bot.services.daily_reporter.invoke_agent_runtime")
-    def test_tweet_post_failure(self, mock_invoke, reporter, mock_api_client):
-        """ツイート投稿失敗時にFalseを返す"""
-        mock_invoke.return_value = {
-            "success": True,
-            "response": "分析結果ｲﾓ🍠",
-        }
-        mock_api_client.post_tweet.return_value = {}
-
-        result = reporter.post_analysis_thread(
-            reply_to_tweet_id="123",
-            oshi_user_id="456",
-        )
-
-        assert result is False
-
-    @patch("src.hokuhoku_imomaru_bot.services.daily_reporter.invoke_agent_runtime")
-    def test_exception_handling(self, mock_invoke, reporter, mock_api_client):
-        """例外発生時にFalseを返す"""
-        mock_invoke.side_effect = Exception("Unexpected error")
-
-        result = reporter.post_analysis_thread(
-            reply_to_tweet_id="123",
-            oshi_user_id="456",
-        )
-
-        assert result is False
 
 
 # ========================================

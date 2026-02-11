@@ -1161,11 +1161,11 @@ class TestMorningContentIntegration:
         daily_reporter.post_youtube_search.assert_not_called()
 
 
-class TestDailyReportWithAnalysisThread:
-    """日報投稿+エゴサ分析スレッドの統合テスト"""
+class TestDailyReportPosted:
+    """日報投稿の統合テスト"""
 
-    def test_analysis_thread_posted_after_daily_report(self):
-        """日報投稿後にエゴサ分析スレッドが投稿されることを確認"""
+    def test_daily_report_posted_and_counts_reset(self):
+        """日報投稿後にdaily_countsがリセットされることを確認"""
         state = BotState(latest_tweet_id="12345")
         state_store = MagicMock(spec=StateStore)
         state_store.reset_daily_counts.return_value = state
@@ -1184,7 +1184,6 @@ class TestDailyReportWithAnalysisThread:
         daily_reporter.should_post_daily_report.return_value = True
         daily_reporter.post_daily_report.return_value = "report_tweet_id"
         daily_reporter.get_today_date_jst.return_value = "2024-01-15"
-        daily_reporter.post_analysis_thread.return_value = True
         daily_reporter.should_post_morning_content.return_value = False
 
         x_api_client = MagicMock()
@@ -1204,72 +1203,4 @@ class TestDailyReportWithAnalysisThread:
         )
 
         assert result["daily_report_posted"] is True
-        assert result.get("post_analysis_posted") is True
-        daily_reporter.post_analysis_thread.assert_called_once_with(
-            reply_to_tweet_id="report_tweet_id",
-            oshi_user_id="",  # テスト環境ではOSHI_USER_IDは空
-            latest_tweet_id="12345",
-        )
-
-    def test_analysis_thread_uses_previous_latest_tweet_id(self):
-        """新規ツイート処理後もポスト分析には前回のlatest_tweet_idが使われることを確認
-
-        今回処理したツイートも分析対象に含めるため、ツイート処理前のIDを渡す。
-        """
-        # 前回の最新ID: 10000、今回検出するツイートID: 20000
-        state = BotState(latest_tweet_id="10000")
-        state_store = MagicMock(spec=StateStore)
-        state_store.acquire_tweet_lock.return_value = True
-        state_store.reset_daily_counts.side_effect = lambda s: s
-
-        new_tweet = Tweet(
-            id="20000",
-            text="新しい投稿だよ！",
-            author_id="oshi_user",
-            created_at="2024-01-15T12:00:00Z",
-        )
-
-        timeline_monitor = MagicMock(spec=TimelineMonitor)
-        timeline_monitor.check_oshi_timeline.return_value = [new_tweet]
-        timeline_monitor.check_group_timeline.return_value = []
-        timeline_monitor.filter_original_posts.side_effect = lambda tweets: tweets
-        timeline_monitor.filter_retweets.return_value = []
-
-        ai_generator = MagicMock(spec=AIGenerator)
-        ai_generator.generate_response.return_value = "応援ｲﾓ🍠"
-
-        level_manager = MagicMock(spec=LevelManager)
-        level_manager.check_level_up.return_value = (False, 1)
-        level_manager.get_xp_to_next_level.return_value = 100
-
-        daily_reporter = MagicMock(spec=DailyReporter)
-        daily_reporter.should_post_daily_report.return_value = True
-        daily_reporter.post_daily_report.return_value = "report_tweet_id"
-        daily_reporter.get_today_date_jst.return_value = "2024-01-15"
-        daily_reporter.post_analysis_thread.return_value = True
-        daily_reporter.should_post_morning_content.return_value = False
-
-        x_api_client = MagicMock()
-        x_api_client.get_my_tweets_with_metrics.return_value = {}
-
-        result = _process_bot_logic(
-            state=state,
-            state_store=state_store,
-            timeline_monitor=timeline_monitor,
-            xp_calculator=XPCalculator(),
-            level_manager=level_manager,
-            ai_generator=ai_generator,
-            image_compositor=MagicMock(spec=ImageCompositor),
-            profile_updater=MagicMock(spec=ProfileUpdater),
-            daily_reporter=daily_reporter,
-            x_api_client=x_api_client,
-        )
-
-        # state.latest_tweet_id は 20000 に更新されているが、
-        # ポスト分析には前回の 10000 が渡される
-        assert state.latest_tweet_id == "20000"
-        daily_reporter.post_analysis_thread.assert_called_once_with(
-            reply_to_tweet_id="report_tweet_id",
-            oshi_user_id="",
-            latest_tweet_id="10000",
-        )
+        state_store.reset_daily_counts.assert_called_once()

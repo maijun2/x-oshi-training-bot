@@ -30,11 +30,8 @@ DAILY_REPORT_TEMPLATE = """今日の活動報告ｲﾓ🍠
 # 日報投稿時刻（21:00 JST以降）
 DAILY_REPORT_HOUR = 21
 
-# ポスト分析スレッドの設定
-POST_ANALYSIS_PREFIX = "🔍 今日のポスト分析ｲﾓ🍠\n"
-MAX_TEXT_LENGTH = 140
-
 # 朝コンテンツの設定
+MAX_TEXT_LENGTH = 140
 YOUTUBE_PREFIX = "🎬 YouTube新着ｲﾓ🍠\n"
 TRANSLATION_PREFIX = "🌎 English Reportｲﾓ🍠\n"
 
@@ -165,87 +162,6 @@ class DailyReporter:
         jst_time = current_time.astimezone(JST)
         return jst_time.strftime("%Y-%m-%d")
 
-    def post_analysis_thread(
-        self,
-        reply_to_tweet_id: str,
-        oshi_user_id: str,
-        latest_tweet_id: str = "0",
-    ) -> bool:
-        """
-        日報投稿にスレッドとしてポスト分析結果を投稿する
-
-        AgentCore Runtime でエゴサ分析を実行し、結果を日報のリプライとして投稿する。
-
-        Args:
-            reply_to_tweet_id: リプライ先の日報ツイートID
-            oshi_user_id: 推しのXアカウントユーザーID
-            latest_tweet_id: 分析対象の起点ツイートID
-
-        Returns:
-            投稿成功の可否
-        """
-        try:
-            # AgentCore Runtime でエゴサ分析を実行
-            prompt = (
-                f"ユーザーID {oshi_user_id} の最新ポストへのリプライを分析して、"
-                f"ファンの反応をポジティブな内容を中心に要約・報告してください。"
-                f"\n\n出力フォーマットの指定: "
-                f"あなたは「ほくほくいも丸くん🍠」というキャラクターです。"
-                f"語尾は必ず「◯◯ｲﾓ🍠」の形式にしてください（例：「嬉しいｲﾓ🍠」「すごいｲﾓ🍠」）。"
-                f"回答は短い日本語プレーンテキストで、改行区切りで見やすく出力してください。"
-                f"Markdown記法（#や**や-）は使わないでください。"
-                f"以下のフォーマット例に従ってください:\n"
-                f"リプライ○件を分析したｲﾓ🍠\n"
-                f"💜 ファンの反応：（一言まとめ）\n"
-                f"✨ 注目：（特に盛り上がった話題）\n"
-                f"（数値情報）ｲﾓ～🍠"
-            )
-            context = {
-                "source": "imomaru-bot-handler",
-                "request_type": "ego_search",
-                "user_id": oshi_user_id,
-                "latest_post_id": latest_tweet_id,
-            }
-
-            ego_result = invoke_agent_runtime(
-                prompt=prompt,
-                context=context,
-                timeout=120,
-            )
-
-            if not ego_result["success"]:
-                logger.error(f"AgentCore Runtime failed: {ego_result['error']}")
-                return False
-
-            # レスポンスからテキストを抽出・整形
-            body = self._extract_analysis_text(ego_result["response"])
-            if not body:
-                logger.warning("AgentCore Runtime returned empty response")
-                return False
-
-            # 140文字制限に合わせて切り詰め
-            max_body_len = MAX_TEXT_LENGTH - len(POST_ANALYSIS_PREFIX)
-            body = self._truncate_analysis(body, max_body_len)
-
-            tweet_text = f"{POST_ANALYSIS_PREFIX}{body}"
-
-            # スレッドとしてリプライ投稿
-            result = self.api_client.post_tweet(
-                text=tweet_text,
-                reply_to_tweet_id=reply_to_tweet_id,
-            )
-
-            if result:
-                new_id = result.get("data", {}).get("id")
-                logger.info(f"Post analysis thread posted: {new_id}")
-                return True
-            else:
-                logger.warning("Post analysis thread returned empty result")
-                return False
-
-        except Exception as e:
-            logger.error(f"Failed to post analysis thread: {e}")
-            return False
 
     @staticmethod
     def _extract_analysis_text(raw: str) -> str:
