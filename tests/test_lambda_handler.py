@@ -1038,14 +1038,13 @@ class TestMorningContentIntegration:
     """朝コンテンツ（YouTube/翻訳）の統合テスト"""
 
     def test_morning_content_youtube_posted(self):
-        """朝9時台で推し投稿が少ない日にYouTubeが投稿されることを確認"""
+        """core_timeモードの朝10時台で推し投稿が少ない日にYouTubeが投稿されることを確認"""
         state = BotState(prev_daily_oshi_count=2)
         state_store = MagicMock(spec=StateStore)
         state_store.reset_daily_counts.return_value = state
 
         timeline_monitor = MagicMock(spec=TimelineMonitor)
         timeline_monitor.check_oshi_timeline.return_value = []
-        timeline_monitor.check_group_timeline.return_value = []
         timeline_monitor.filter_original_posts.return_value = []
         timeline_monitor.filter_retweets.return_value = []
 
@@ -1058,13 +1057,11 @@ class TestMorningContentIntegration:
         profile_updater = MagicMock(spec=ProfileUpdater)
 
         daily_reporter = MagicMock(spec=DailyReporter)
-        daily_reporter.should_post_daily_report.return_value = False
         daily_reporter.should_post_morning_content.return_value = True
         daily_reporter.post_youtube_search.return_value = True
         daily_reporter.should_post_translation.return_value = False
 
         x_api_client = MagicMock()
-        x_api_client.get_my_tweets_with_metrics.return_value = {}
 
         result = _process_bot_logic(
             state=state,
@@ -1077,20 +1074,20 @@ class TestMorningContentIntegration:
             profile_updater=profile_updater,
             daily_reporter=daily_reporter,
             x_api_client=x_api_client,
+            execution_mode="core_time",
         )
 
         assert result.get("youtube_posted") is True
         daily_reporter.post_youtube_search.assert_called_once()
 
     def test_morning_content_translation_on_sunday(self):
-        """日曜の朝に翻訳が投稿されることを確認"""
+        """日曜のcore_timeモードで翻訳が投稿されることを確認"""
         state = BotState(prev_daily_oshi_count=1)
         state_store = MagicMock(spec=StateStore)
         state_store.reset_daily_counts.return_value = state
 
         timeline_monitor = MagicMock(spec=TimelineMonitor)
         timeline_monitor.check_oshi_timeline.return_value = []
-        timeline_monitor.check_group_timeline.return_value = []
         timeline_monitor.filter_original_posts.return_value = []
         timeline_monitor.filter_retweets.return_value = []
 
@@ -1099,14 +1096,12 @@ class TestMorningContentIntegration:
         level_manager.check_level_up.return_value = (False, 1)
 
         daily_reporter = MagicMock(spec=DailyReporter)
-        daily_reporter.should_post_daily_report.return_value = False
         daily_reporter.should_post_morning_content.return_value = True
         daily_reporter.post_youtube_search.return_value = False
         daily_reporter.should_post_translation.return_value = True
         daily_reporter.post_translation.return_value = True
 
         x_api_client = MagicMock()
-        x_api_client.get_my_tweets_with_metrics.return_value = {}
 
         result = _process_bot_logic(
             state=state,
@@ -1119,6 +1114,7 @@ class TestMorningContentIntegration:
             profile_updater=MagicMock(spec=ProfileUpdater),
             daily_reporter=daily_reporter,
             x_api_client=x_api_client,
+            execution_mode="core_time",
         )
 
         assert result.get("translation_posted") is True
@@ -1130,7 +1126,6 @@ class TestMorningContentIntegration:
 
         timeline_monitor = MagicMock(spec=TimelineMonitor)
         timeline_monitor.check_oshi_timeline.return_value = []
-        timeline_monitor.check_group_timeline.return_value = []
         timeline_monitor.filter_original_posts.return_value = []
         timeline_monitor.filter_retweets.return_value = []
 
@@ -1138,11 +1133,23 @@ class TestMorningContentIntegration:
         level_manager.check_level_up.return_value = (False, 1)
 
         daily_reporter = MagicMock(spec=DailyReporter)
-        daily_reporter.should_post_daily_report.return_value = False
         daily_reporter.should_post_morning_content.return_value = False
 
         x_api_client = MagicMock()
-        x_api_client.get_my_tweets_with_metrics.return_value = {}
+
+        result = _process_bot_logic(
+            state=state,
+            state_store=state_store,
+            timeline_monitor=timeline_monitor,
+            xp_calculator=XPCalculator(),
+            level_manager=level_manager,
+            ai_generator=MagicMock(spec=AIGenerator),
+            image_compositor=MagicMock(spec=ImageCompositor),
+            profile_updater=MagicMock(spec=ProfileUpdater),
+            daily_reporter=daily_reporter,
+            x_api_client=x_api_client,
+            execution_mode="core_time",
+        )
 
         result = _process_bot_logic(
             state=state,
@@ -1204,3 +1211,242 @@ class TestDailyReportPosted:
 
         assert result["daily_report_posted"] is True
         state_store.reset_daily_counts.assert_called_once()
+
+# ========================================
+# スケジュール最適化: 実行モードテスト
+# ========================================
+
+from hypothesis import given, settings as hypothesis_settings
+from hypothesis import strategies as st
+
+
+class TestProperty2ExecutionModeRoundTrip:
+    """
+    **Property 2: 実行モードのラウンドトリップ**
+
+    For any Lambda invocation event containing an execution_mode field,
+    the result dictionary returned by _process_bot_logic SHALL contain
+    the same execution_mode value.
+
+    **Validates: Requirements 2.1, 2.6**
+    """
+
+    @given(mode=st.sampled_from(["core_time", "daily_report"]))
+    @hypothesis_settings(max_examples=100)
+    def test_execution_mode_round_trip(self, mode):
+        """実行モードが結果辞書にそのまま含まれる"""
+        state = BotState()
+        state_store = MagicMock(spec=StateStore)
+        state_store.reset_daily_counts.return_value = state
+
+        timeline_monitor = MagicMock(spec=TimelineMonitor)
+        timeline_monitor.check_oshi_timeline.return_value = []
+        timeline_monitor.check_group_timeline.return_value = []
+        timeline_monitor.filter_original_posts.return_value = []
+        timeline_monitor.filter_retweets.return_value = []
+
+        level_manager = MagicMock(spec=LevelManager)
+        level_manager.check_level_up.return_value = (False, 1)
+
+        daily_reporter = MagicMock(spec=DailyReporter)
+        daily_reporter.should_post_daily_report.return_value = False
+        daily_reporter.should_post_morning_content.return_value = False
+
+        x_api_client = MagicMock()
+        x_api_client.get_my_tweets_with_metrics.return_value = {}
+
+        result = _process_bot_logic(
+            state=state,
+            state_store=state_store,
+            timeline_monitor=timeline_monitor,
+            xp_calculator=XPCalculator(),
+            level_manager=level_manager,
+            ai_generator=MagicMock(spec=AIGenerator),
+            image_compositor=MagicMock(spec=ImageCompositor),
+            profile_updater=MagicMock(spec=ProfileUpdater),
+            daily_reporter=daily_reporter,
+            x_api_client=x_api_client,
+            execution_mode=mode,
+        )
+
+        assert result["execution_mode"] == mode
+
+
+class TestCoreTimeMode:
+    """core_timeモードのユニットテスト"""
+
+    def test_core_time_skips_engagement_and_group(self):
+        """core_timeモードでエンゲージメント・グループがスキップされる"""
+        state = BotState()
+        state_store = MagicMock(spec=StateStore)
+        state_store.reset_daily_counts.return_value = state
+
+        timeline_monitor = MagicMock(spec=TimelineMonitor)
+        timeline_monitor.check_oshi_timeline.return_value = []
+        timeline_monitor.check_group_timeline.return_value = []
+        timeline_monitor.filter_original_posts.return_value = []
+        timeline_monitor.filter_retweets.return_value = []
+
+        level_manager = MagicMock(spec=LevelManager)
+        level_manager.check_level_up.return_value = (False, 1)
+
+        daily_reporter = MagicMock(spec=DailyReporter)
+        daily_reporter.should_post_daily_report.return_value = False
+        daily_reporter.should_post_morning_content.return_value = False
+
+        x_api_client = MagicMock()
+
+        result = _process_bot_logic(
+            state=state,
+            state_store=state_store,
+            timeline_monitor=timeline_monitor,
+            xp_calculator=XPCalculator(),
+            level_manager=level_manager,
+            ai_generator=MagicMock(spec=AIGenerator),
+            image_compositor=MagicMock(spec=ImageCompositor),
+            profile_updater=MagicMock(spec=ProfileUpdater),
+            daily_reporter=daily_reporter,
+            x_api_client=x_api_client,
+            execution_mode="core_time",
+        )
+
+        assert result["execution_mode"] == "core_time"
+        # エンゲージメントチェックはスキップ
+        x_api_client.get_my_tweets_with_metrics.assert_not_called()
+        # グループタイムラインはスキップ
+        timeline_monitor.check_group_timeline.assert_not_called()
+        # 推しタイムラインは実行される
+        timeline_monitor.check_oshi_timeline.assert_called_once()
+        # 日報投稿判定はスキップ
+        daily_reporter.should_post_daily_report.assert_not_called()
+
+    def test_core_time_executes_oshi_timeline(self):
+        """core_timeモードで推しタイムラインが実行される"""
+        state = BotState()
+        state_store = MagicMock(spec=StateStore)
+        state_store.reset_daily_counts.return_value = state
+
+        oshi_tweet = Tweet(id="111", text="推し投稿", author_id="oshi")
+
+        timeline_monitor = MagicMock(spec=TimelineMonitor)
+        timeline_monitor.check_oshi_timeline.return_value = [oshi_tweet]
+        timeline_monitor.filter_original_posts.side_effect = lambda t: t
+        timeline_monitor.filter_retweets.return_value = []
+
+        level_manager = MagicMock(spec=LevelManager)
+        level_manager.check_level_up.return_value = (False, 1)
+
+        ai_generator = MagicMock(spec=AIGenerator)
+        ai_generator.generate_response.return_value = "応答ｲﾓ🍠"
+
+        daily_reporter = MagicMock(spec=DailyReporter)
+        daily_reporter.should_post_morning_content.return_value = False
+
+        x_api_client = MagicMock()
+        x_api_client.post_tweet.return_value = {"data": {"id": "999"}}
+
+        result = _process_bot_logic(
+            state=state,
+            state_store=state_store,
+            timeline_monitor=timeline_monitor,
+            xp_calculator=XPCalculator(),
+            level_manager=level_manager,
+            ai_generator=ai_generator,
+            image_compositor=MagicMock(spec=ImageCompositor),
+            profile_updater=MagicMock(spec=ProfileUpdater),
+            daily_reporter=daily_reporter,
+            x_api_client=x_api_client,
+            execution_mode="core_time",
+        )
+
+        assert result["oshi_posts_detected"] == 1
+        assert result["quotes_posted"] == 1
+
+
+class TestDailyReportMode:
+    """daily_reportモードのユニットテスト"""
+
+    def test_daily_report_executes_all(self):
+        """daily_reportモードで全処理が実行される"""
+        state = BotState()
+        state_store = MagicMock(spec=StateStore)
+        state_store.reset_daily_counts.return_value = state
+
+        timeline_monitor = MagicMock(spec=TimelineMonitor)
+        timeline_monitor.check_oshi_timeline.return_value = []
+        timeline_monitor.check_group_timeline.return_value = []
+        timeline_monitor.filter_original_posts.return_value = []
+        timeline_monitor.filter_retweets.return_value = []
+
+        level_manager = MagicMock(spec=LevelManager)
+        level_manager.check_level_up.return_value = (False, 1)
+
+        daily_reporter = MagicMock(spec=DailyReporter)
+        daily_reporter.should_post_daily_report.return_value = False
+        daily_reporter.should_post_morning_content.return_value = False
+
+        x_api_client = MagicMock()
+        x_api_client.get_my_tweets_with_metrics.return_value = {}
+
+        result = _process_bot_logic(
+            state=state,
+            state_store=state_store,
+            timeline_monitor=timeline_monitor,
+            xp_calculator=XPCalculator(),
+            level_manager=level_manager,
+            ai_generator=MagicMock(spec=AIGenerator),
+            image_compositor=MagicMock(spec=ImageCompositor),
+            profile_updater=MagicMock(spec=ProfileUpdater),
+            daily_reporter=daily_reporter,
+            x_api_client=x_api_client,
+            execution_mode="daily_report",
+        )
+
+        assert result["execution_mode"] == "daily_report"
+        # エンゲージメントチェックが実行される
+        x_api_client.get_my_tweets_with_metrics.assert_called_once()
+        # グループタイムラインが実行される
+        timeline_monitor.check_group_timeline.assert_called_once()
+        # 推しタイムラインも実行される
+        timeline_monitor.check_oshi_timeline.assert_called_once()
+
+    def test_fallback_to_daily_report_when_no_mode(self):
+        """execution_mode未指定時にdaily_reportにフォールバック"""
+        state = BotState()
+        state_store = MagicMock(spec=StateStore)
+        state_store.reset_daily_counts.return_value = state
+
+        timeline_monitor = MagicMock(spec=TimelineMonitor)
+        timeline_monitor.check_oshi_timeline.return_value = []
+        timeline_monitor.check_group_timeline.return_value = []
+        timeline_monitor.filter_original_posts.return_value = []
+        timeline_monitor.filter_retweets.return_value = []
+
+        level_manager = MagicMock(spec=LevelManager)
+        level_manager.check_level_up.return_value = (False, 1)
+
+        daily_reporter = MagicMock(spec=DailyReporter)
+        daily_reporter.should_post_daily_report.return_value = False
+        daily_reporter.should_post_morning_content.return_value = False
+
+        x_api_client = MagicMock()
+        x_api_client.get_my_tweets_with_metrics.return_value = {}
+
+        # execution_modeを指定しない（デフォルト値を使用）
+        result = _process_bot_logic(
+            state=state,
+            state_store=state_store,
+            timeline_monitor=timeline_monitor,
+            xp_calculator=XPCalculator(),
+            level_manager=level_manager,
+            ai_generator=MagicMock(spec=AIGenerator),
+            image_compositor=MagicMock(spec=ImageCompositor),
+            profile_updater=MagicMock(spec=ProfileUpdater),
+            daily_reporter=daily_reporter,
+            x_api_client=x_api_client,
+        )
+
+        assert result["execution_mode"] == "daily_report"
+        # 全処理が実行される
+        x_api_client.get_my_tweets_with_metrics.assert_called_once()
+        timeline_monitor.check_group_timeline.assert_called_once()

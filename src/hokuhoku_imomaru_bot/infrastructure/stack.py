@@ -7,6 +7,7 @@ DynamoDB、S3、Lambda、EventBridge、Secrets Manager、IAMロールを含む
 import os
 from pathlib import Path
 from dotenv import load_dotenv
+import json
 from aws_cdk import (
     Stack,
     RemovalPolicy,
@@ -17,8 +18,7 @@ from aws_cdk import (
     aws_secretsmanager as secretsmanager,
     aws_iam as iam,
     aws_lambda as lambda_,
-    aws_events as events,
-    aws_events_targets as targets,
+    aws_scheduler as scheduler,
     aws_cloudwatch as cloudwatch,
     aws_sns as sns,
     aws_cloudwatch_actions as cw_actions,
@@ -223,39 +223,56 @@ class ImomaruBotStack(Stack):
             description="Imomaru Bot - Main Handler",
         )
 
-        # EventBridge Rule: 朝9時（JST）のスケジュール
-        # cron(分 時 日 月 曜日 年) - UTCで指定するため、JST 9:00 = UTC 0:00
-        self.morning_schedule = events.Rule(
+        # EventBridge Scheduler用IAMロール
+        self.scheduler_role = iam.Role(
             self,
-            "MorningSchedule",
-            rule_name="imomaru-bot-morning-schedule",
-            schedule=events.Schedule.cron(
-                minute="0",
-                hour="0",  # UTC 0:00 = JST 9:00
-                month="*",
-                week_day="*",
-                year="*",
-            ),
-            description="ほくほくいも丸くん - 朝9時（JST）のスケジュール",
+            "SchedulerRole",
+            assumed_by=iam.ServicePrincipal("scheduler.amazonaws.com"),
+            description="EventBridge Scheduler Role for Imomaru Bot",
         )
-        self.morning_schedule.add_target(targets.LambdaFunction(self.bot_lambda))
+        self.bot_lambda.grant_invoke(self.scheduler_role)
 
-        # EventBridge Rule: 夜21時（JST）のスケジュール
-        # JST 21:00 = UTC 12:00
-        self.evening_schedule = events.Rule(
+        # Core Time Schedules（3つ）: 推しタイムライン監視に集中
+        core_time_configs = [
+            ("Morning", 10, 15),    # 10:00 JST, 15分ウィンドウ
+            ("Afternoon", 13, 23),  # 13:00 JST, 23分ウィンドウ
+            ("Evening", 18, 3),     # 18:00 JST, 3分ウィンドウ
+        ]
+        for name, hour_jst, window_min in core_time_configs:
+            scheduler.CfnSchedule(
+                self,
+                f"CoreTime{name}Schedule",
+                schedule_expression=f"cron(0 {hour_jst} * * ? *)",
+                schedule_expression_timezone="Asia/Tokyo",
+                flexible_time_window=scheduler.CfnSchedule.FlexibleTimeWindowProperty(
+                    mode="FLEXIBLE",
+                    maximum_window_in_minutes=window_min,
+                ),
+                target=scheduler.CfnSchedule.TargetProperty(
+                    arn=self.bot_lambda.function_arn,
+                    role_arn=self.scheduler_role.role_arn,
+                    input=json.dumps({"execution_mode": "core_time"}),
+                ),
+                description=f"ほくほくいも丸くん - コアタイム{name}（{hour_jst}:00 JST ±{window_min}分）",
+            )
+
+        # Daily Report Schedule（1つ）: 23:58 JST固定、全処理実行
+        scheduler.CfnSchedule(
             self,
-            "EveningSchedule",
-            rule_name="imomaru-bot-evening-schedule",
-            schedule=events.Schedule.cron(
-                minute="0",
-                hour="12",  # UTC 12:00 = JST 21:00
-                month="*",
-                week_day="*",
-                year="*",
+            "DailyReportSchedule",
+            schedule_expression="cron(58 23 * * ? *)",
+            schedule_expression_timezone="Asia/Tokyo",
+            flexible_time_window=scheduler.CfnSchedule.FlexibleTimeWindowProperty(
+                mode="FLEXIBLE",
+                maximum_window_in_minutes=1,
             ),
-            description="ほくほくいも丸くん - 夜21時（JST）のスケジュール",
+            target=scheduler.CfnSchedule.TargetProperty(
+                arn=self.bot_lambda.function_arn,
+                role_arn=self.scheduler_role.role_arn,
+                input=json.dumps({"execution_mode": "daily_report"}),
+            ),
+            description="ほくほくいも丸くん - 日報（23:58 JST）",
         )
-        self.evening_schedule.add_target(targets.LambdaFunction(self.bot_lambda))
 
         # ========================================
         # CloudWatch ダッシュボード & アラーム

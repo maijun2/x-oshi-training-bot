@@ -64,6 +64,9 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         message="Lambda execution started",
     )
     
+    # 実行モードを抽出（デフォルト: daily_report）
+    execution_mode = event.get("execution_mode", "daily_report")
+    
     try:
         # AWSクライアントの初期化
         dynamodb_client = boto3.client("dynamodb")
@@ -129,6 +132,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             x_api_client=x_api_client,
             s3_client=s3_client,
             bucket_name=ASSETS_BUCKET_NAME,
+            execution_mode=execution_mode,
         )
         
         log_event(
@@ -164,6 +168,7 @@ def _process_bot_logic(
     x_api_client: XAPIClient,
     s3_client = None,
     bucket_name: str = None,
+    execution_mode: str = "daily_report",
 ) -> Dict[str, Any]:
     """
     ボットのメインロジックを実行
@@ -186,6 +191,7 @@ def _process_bot_logic(
         処理結果
     """
     result = {
+        "execution_mode": execution_mode,
         "oshi_posts_detected": 0,
         "group_posts_detected": 0,
         "xp_gained": 0.0,
@@ -197,16 +203,18 @@ def _process_bot_logic(
         "new_retweets": 0,
     }
     
+    is_core_time = (execution_mode == "core_time")
     initial_level = state.current_level
     
-    # ボット投稿へのエンゲージメントをチェック
-    engagement_xp = _check_engagement_safe(
-        x_api_client=x_api_client,
-        xp_calculator=xp_calculator,
-        state=state,
-        result=result,
-        bot_user_id=BOT_USER_ID,
-    )
+    # ボット投稿へのエンゲージメントをチェック（daily_reportのみ）
+    if not is_core_time:
+        engagement_xp = _check_engagement_safe(
+            x_api_client=x_api_client,
+            xp_calculator=xp_calculator,
+            state=state,
+            result=result,
+            bot_user_id=BOT_USER_ID,
+        )
     
     # タイムラインをチェック
     log_event(
@@ -222,12 +230,15 @@ def _process_bot_logic(
         "oshi_timeline",
     )
     
-    # グループのタイムラインをチェック
-    group_tweets = _check_timeline_safe(
-        timeline_monitor.check_group_timeline,
-        state.latest_tweet_id,
-        "group_timeline",
-    )
+    # グループのタイムラインをチェック（daily_reportのみ）
+    if not is_core_time:
+        group_tweets = _check_timeline_safe(
+            timeline_monitor.check_group_timeline,
+            state.latest_tweet_id,
+            "group_timeline",
+        )
+    else:
+        group_tweets = []
     
     # 純粋な投稿のみをフィルタリング
     oshi_original = timeline_monitor.filter_original_posts(oshi_tweets)
@@ -407,9 +418,9 @@ def _process_bot_logic(
             profile_updater=profile_updater,
         )
     
-    # 日報投稿チェック
+    # 日報投稿チェック（daily_reportのみ）
     current_time = datetime.now(timezone.utc)
-    if daily_reporter.should_post_daily_report(state, current_time):
+    if not is_core_time and daily_reporter.should_post_daily_report(state, current_time):
         next_level_xp = level_manager.get_xp_to_next_level(
             state.current_level, state.cumulative_xp
         ) or 0
@@ -426,8 +437,8 @@ def _process_bot_logic(
                 message="Daily report posted",
             )
     
-    # 朝コンテンツ（YouTube検索・翻訳）チェック
-    if daily_reporter.should_post_morning_content(
+    # 朝コンテンツ（YouTube検索・翻訳）チェック（core_timeのみ）
+    if is_core_time and daily_reporter.should_post_morning_content(
         prev_daily_oshi_count=state.prev_daily_oshi_count,
         current_time=current_time,
     ):

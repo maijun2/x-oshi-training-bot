@@ -3,8 +3,11 @@ CDKスタックのユニットテスト
 
 要件 9.1: CDKスタックに必要なリソースが含まれることを検証
 """
+import json
 import aws_cdk as cdk
 from aws_cdk import assertions
+from hypothesis import given, settings
+from hypothesis import strategies as st
 from src.hokuhoku_imomaru_bot.infrastructure.stack import ImomaruBotStack
 
 
@@ -399,87 +402,160 @@ def test_lambda_function_has_environment_variables():
 
 def test_eventbridge_schedules_created():
     """
-    要件 9.4: EventBridgeスケジュールが正しく作成されることを確認
-    
+    要件 9.4: EventBridge Schedulerが正しく作成されることを確認
+
     検証項目:
-    - 朝9時（JST）と夜21時（JST）の2つのスケジュールが作成される
+    - Core Time × 3 + Daily Report × 1 = 4つのScheduleが作成される
     """
     app = cdk.App()
     stack = ImomaruBotStack(app, "test-stack")
     template = assertions.Template.from_stack(stack)
-    
-    # EventBridge Ruleが2つ作成されることを確認
-    template.resource_count_is("AWS::Events::Rule", 2)
+
+    template.resource_count_is("AWS::Scheduler::Schedule", 4)
 
 
-def test_morning_schedule_configuration():
+def test_core_time_morning_schedule_configuration():
     """
-    要件 9.4: 朝9時（JST）のスケジュールが正しく設定されることを確認
+    要件 1.1, 1.3: 朝10時（JST）のコアタイムスケジュールが正しく設定されることを確認
     """
     app = cdk.App()
     stack = ImomaruBotStack(app, "test-stack")
     template = assertions.Template.from_stack(stack)
-    
-    # 朝のスケジュール（UTC 0:00 = JST 9:00）
-    # CDKのcron形式: cron(分 時 ? 月 曜日 *)
-    template.has_resource_properties("AWS::Events::Rule", {
-        "Name": "imomaru-bot-morning-schedule",
-        "ScheduleExpression": "cron(0 0 ? * * *)",
-        "Description": "ほくほくいも丸くん - 朝9時（JST）のスケジュール",
-        "State": "ENABLED",
+
+    template.has_resource_properties("AWS::Scheduler::Schedule", {
+        "ScheduleExpression": "cron(0 10 * * ? *)",
+        "ScheduleExpressionTimezone": "Asia/Tokyo",
+        "FlexibleTimeWindow": {
+            "Mode": "FLEXIBLE",
+            "MaximumWindowInMinutes": 15,
+        },
     })
 
 
-def test_evening_schedule_configuration():
+def test_core_time_afternoon_schedule_configuration():
     """
-    要件 9.4: 夜21時（JST）のスケジュールが正しく設定されることを確認
+    要件 1.1, 1.3: 昼13時（JST）のコアタイムスケジュールが正しく設定されることを確認
     """
     app = cdk.App()
     stack = ImomaruBotStack(app, "test-stack")
     template = assertions.Template.from_stack(stack)
-    
-    # 夜のスケジュール（UTC 12:00 = JST 21:00）
-    template.has_resource_properties("AWS::Events::Rule", {
-        "Name": "imomaru-bot-evening-schedule",
-        "ScheduleExpression": "cron(0 12 ? * * *)",
-        "Description": "ほくほくいも丸くん - 夜21時（JST）のスケジュール",
-        "State": "ENABLED",
+
+    template.has_resource_properties("AWS::Scheduler::Schedule", {
+        "ScheduleExpression": "cron(0 13 * * ? *)",
+        "ScheduleExpressionTimezone": "Asia/Tokyo",
+        "FlexibleTimeWindow": {
+            "Mode": "FLEXIBLE",
+            "MaximumWindowInMinutes": 23,
+        },
     })
 
 
-def test_eventbridge_targets_lambda():
+def test_core_time_evening_schedule_configuration():
     """
-    要件 9.4: EventBridgeスケジュールがLambda関数をターゲットにすることを確認
+    要件 1.1, 1.3: 夕方18時（JST）のコアタイムスケジュールが正しく設定されることを確認
     """
     app = cdk.App()
     stack = ImomaruBotStack(app, "test-stack")
     template = assertions.Template.from_stack(stack)
-    
-    # EventBridge RuleがLambda関数をターゲットにしていることを確認
-    template.has_resource_properties("AWS::Events::Rule", {
-        "Targets": assertions.Match.array_with([
-            assertions.Match.object_like({
-                "Arn": assertions.Match.object_like({
-                    "Fn::GetAtt": assertions.Match.array_with([
-                        assertions.Match.string_like_regexp("BotLambda.*"),
-                        "Arn"
-                    ])
+
+    template.has_resource_properties("AWS::Scheduler::Schedule", {
+        "ScheduleExpression": "cron(0 18 * * ? *)",
+        "ScheduleExpressionTimezone": "Asia/Tokyo",
+        "FlexibleTimeWindow": {
+            "Mode": "FLEXIBLE",
+            "MaximumWindowInMinutes": 3,
+        },
+    })
+
+
+def test_daily_report_schedule_configuration():
+    """
+    要件 1.2, 1.4: 日報スケジュール（23:58 JST）が正しく設定されることを確認
+    """
+    app = cdk.App()
+    stack = ImomaruBotStack(app, "test-stack")
+    template = assertions.Template.from_stack(stack)
+
+    template.has_resource_properties("AWS::Scheduler::Schedule", {
+        "ScheduleExpression": "cron(58 23 * * ? *)",
+        "ScheduleExpressionTimezone": "Asia/Tokyo",
+        "FlexibleTimeWindow": {
+            "Mode": "FLEXIBLE",
+            "MaximumWindowInMinutes": 1,
+        },
+    })
+
+
+def test_scheduler_targets_lambda():
+    """
+    要件 1.5: 全スケジュールがLambda関数をターゲットにすることを確認
+    """
+    app = cdk.App()
+    stack = ImomaruBotStack(app, "test-stack")
+    template = assertions.Template.from_stack(stack)
+
+    # 全Scheduler::ScheduleリソースのターゲットARNがLambdaを指すことを確認
+    template.all_resources_properties("AWS::Scheduler::Schedule", {
+        "Target": assertions.Match.object_like({
+            "Arn": assertions.Match.object_like({
+                "Fn::GetAtt": assertions.Match.array_with([
+                    assertions.Match.string_like_regexp("BotLambda.*"),
+                    "Arn",
+                ])
+            }),
+        }),
+    })
+
+
+def test_scheduler_role_created():
+    """
+    要件 1.5: Scheduler用IAMロールが作成されLambda invoke権限を持つことを確認
+    """
+    app = cdk.App()
+    stack = ImomaruBotStack(app, "test-stack")
+    template = assertions.Template.from_stack(stack)
+
+    template.has_resource_properties("AWS::IAM::Role", {
+        "AssumeRolePolicyDocument": {
+            "Statement": assertions.Match.array_with([
+                assertions.Match.object_like({
+                    "Action": "sts:AssumeRole",
+                    "Effect": "Allow",
+                    "Principal": {
+                        "Service": "scheduler.amazonaws.com",
+                    },
                 })
-            })
-        ])
+            ])
+        },
+        "Description": "EventBridge Scheduler Role for Imomaru Bot",
     })
 
 
-def test_lambda_permission_for_eventbridge():
+def test_flexible_time_window_values():
     """
-    EventBridgeがLambda関数を呼び出す権限を持つことを確認
+    要件 1.3, 1.4: FlexibleTimeWindowの設定値が正しいことを確認
+
+    - Morning: 15分, Afternoon: 23分, Evening: 3分, DailyReport: 1分
     """
     app = cdk.App()
     stack = ImomaruBotStack(app, "test-stack")
     template = assertions.Template.from_stack(stack)
-    
-    # Lambda Permission（EventBridgeからの呼び出し許可）が作成されることを確認
-    template.resource_count_is("AWS::Lambda::Permission", 2)  # 朝と夜の2つ
+
+    # 全スケジュールがFLEXIBLEモードであることを確認
+    template.all_resources_properties("AWS::Scheduler::Schedule", {
+        "FlexibleTimeWindow": assertions.Match.object_like({
+            "Mode": "FLEXIBLE",
+        }),
+    })
+
+    # 各ウィンドウ値が存在することを確認
+    for window_min in [15, 23, 3, 1]:
+        template.has_resource_properties("AWS::Scheduler::Schedule", {
+            "FlexibleTimeWindow": {
+                "Mode": "FLEXIBLE",
+                "MaximumWindowInMinutes": window_min,
+            },
+        })
 
 
 
@@ -496,7 +572,7 @@ def test_cdk_stack_all_resources():
     - S3バケット: 1つ
     - Secrets Managerシークレット: 1つ
     - Lambda関数: 1つ
-    - EventBridge Rule: 2つ
+    - EventBridge Scheduler: 4つ
     - IAMロール: 1つ以上
     """
     app = cdk.App()
@@ -508,7 +584,7 @@ def test_cdk_stack_all_resources():
     template.resource_count_is("AWS::S3::Bucket", 1)
     template.resource_count_is("AWS::SecretsManager::Secret", 1)
     template.resource_count_is("AWS::Lambda::Function", 1)
-    template.resource_count_is("AWS::Events::Rule", 2)
+    template.resource_count_is("AWS::Scheduler::Schedule", 4)
 
 
 def test_cdk_stack_lambda_timeout():
@@ -721,3 +797,49 @@ def test_alarms_monitor_correct_lambda():
             })
         ])
     })
+
+
+
+# ============================================
+# Property-Based Tests (スケジュール最適化)
+# ============================================
+
+class TestProperty1AllSchedulesHaveExecutionMode:
+    """
+    **Property 1: 全スケジュールにexecution_modeが含まれる**
+
+    For any EventBridge Schedulerリソース in the synthesized CDK template,
+    the target input payload SHALL contain a valid execution_mode field
+    with value core_time or daily_report.
+
+    **Validates: Requirements 1.6**
+    """
+
+    def _get_all_schedule_inputs(self):
+        """CDKテンプレートから全Schedulerリソースのターゲット入力を取得"""
+        app = cdk.App()
+        stack = ImomaruBotStack(app, "test-stack")
+        template = assertions.Template.from_stack(stack)
+        schedules = template.find_resources("AWS::Scheduler::Schedule")
+        inputs = []
+        for logical_id, resource in schedules.items():
+            target = resource["Properties"]["Target"]
+            raw_input = target["Input"]
+            parsed = json.loads(raw_input)
+            inputs.append((logical_id, parsed))
+        return inputs
+
+    @given(schedule_index=st.integers(min_value=0, max_value=3))
+    @settings(max_examples=100)
+    def test_all_schedules_have_valid_execution_mode(self, schedule_index):
+        """全スケジュールのターゲット入力に有効なexecution_modeが含まれる"""
+        all_inputs = self._get_all_schedule_inputs()
+        assert len(all_inputs) == 4, f"Expected 4 schedules, got {len(all_inputs)}"
+
+        logical_id, parsed_input = all_inputs[schedule_index]
+        assert "execution_mode" in parsed_input, (
+            f"Schedule {logical_id} missing execution_mode in target input"
+        )
+        assert parsed_input["execution_mode"] in ("core_time", "daily_report"), (
+            f"Schedule {logical_id} has invalid execution_mode: {parsed_input['execution_mode']}"
+        )

@@ -27,8 +27,8 @@ DAILY_REPORT_TEMPLATE = """今日の活動報告ｲﾓ🍠
 現在Lv.{current_level} → 次まで{next_level_xp} XP
 #さつまいもの民 #びっくえんじぇる"""
 
-# 日報投稿時刻（21:00 JST以降）
-DAILY_REPORT_HOUR = 21
+# 日報投稿時刻（23:00 JST以降）
+DAILY_REPORT_HOUR = 23
 
 # 朝コンテンツの設定
 MAX_TEXT_LENGTH = 140
@@ -272,8 +272,8 @@ class DailyReporter:
 
         jst_time = current_time.astimezone(JST)
 
-        # 朝9時台（9:00〜9:59）のみ
-        if jst_time.hour != 9:
+        # 朝10時台（10:00〜10:59）のみ
+        if jst_time.hour != 10:
             return False
 
         return prev_daily_oshi_count <= LOW_ACTIVITY_THRESHOLD

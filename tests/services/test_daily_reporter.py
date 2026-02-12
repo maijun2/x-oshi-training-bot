@@ -59,16 +59,6 @@ class TestDailyReporter:
     
     # should_post_daily_report()のテスト
     def test_should_post_at_21_00_jst(self, reporter):
-        """21:00 JSTで日報投稿すべきと判定されることを確認"""
-        state = create_test_state(last_daily_report_date=None)
-        # 21:00 JST = 12:00 UTC
-        current_time = datetime(2024, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
-        
-        result = reporter.should_post_daily_report(state, current_time)
-        
-        assert result is True
-    
-    def test_should_post_at_23_00_jst(self, reporter):
         """23:00 JSTで日報投稿すべきと判定されることを確認"""
         state = create_test_state(last_daily_report_date=None)
         # 23:00 JST = 14:00 UTC
@@ -78,11 +68,21 @@ class TestDailyReporter:
         
         assert result is True
     
-    def test_should_not_post_before_21_00_jst(self, reporter):
-        """21:00 JST前は日報投稿すべきでないと判定されることを確認"""
+    def test_should_post_at_23_00_jst(self, reporter):
+        """23:58 JSTで日報投稿すべきと判定されることを確認"""
         state = create_test_state(last_daily_report_date=None)
-        # 20:59 JST = 11:59 UTC
-        current_time = datetime(2024, 1, 15, 11, 59, 0, tzinfo=timezone.utc)
+        # 23:58 JST = 14:58 UTC
+        current_time = datetime(2024, 1, 15, 14, 58, 0, tzinfo=timezone.utc)
+        
+        result = reporter.should_post_daily_report(state, current_time)
+        
+        assert result is True
+    
+    def test_should_not_post_before_21_00_jst(self, reporter):
+        """23:00 JST前は日報投稿すべきでないと判定されることを確認"""
+        state = create_test_state(last_daily_report_date=None)
+        # 22:59 JST = 13:59 UTC
+        current_time = datetime(2024, 1, 15, 13, 59, 0, tzinfo=timezone.utc)
         
         result = reporter.should_post_daily_report(state, current_time)
         
@@ -91,8 +91,8 @@ class TestDailyReporter:
     def test_should_not_post_if_already_posted_today(self, reporter):
         """今日既に投稿済みの場合は日報投稿すべきでないと判定されることを確認"""
         state = create_test_state(last_daily_report_date="2024-01-15")
-        # 21:00 JST = 12:00 UTC
-        current_time = datetime(2024, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+        # 23:00 JST = 14:00 UTC
+        current_time = datetime(2024, 1, 15, 14, 0, 0, tzinfo=timezone.utc)
         
         result = reporter.should_post_daily_report(state, current_time)
         
@@ -101,8 +101,8 @@ class TestDailyReporter:
     def test_should_post_if_posted_yesterday(self, reporter):
         """昨日投稿済みの場合は日報投稿すべきと判定されることを確認"""
         state = create_test_state(last_daily_report_date="2024-01-14")
-        # 21:00 JST on 2024-01-15 = 12:00 UTC
-        current_time = datetime(2024, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+        # 23:00 JST on 2024-01-15 = 14:00 UTC
+        current_time = datetime(2024, 1, 15, 14, 0, 0, tzinfo=timezone.utc)
         
         result = reporter.should_post_daily_report(state, current_time)
         

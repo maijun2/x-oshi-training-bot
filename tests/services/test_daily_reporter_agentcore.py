@@ -36,38 +36,38 @@ def reporter(mock_api_client):
 class TestShouldPostMorningContent:
     """朝コンテンツ投稿判定のテスト"""
 
-    def test_true_at_9am_with_low_activity(self, reporter):
-        """9時台 & 推し投稿が閾値以下 → True"""
-        # 9:30 JST = 0:30 UTC
-        t = datetime(2024, 1, 15, 0, 30, 0, tzinfo=timezone.utc)
+    def test_true_at_10am_with_low_activity(self, reporter):
+        """10時台 & 推し投稿が閾値以下 → True"""
+        # 10:30 JST = 1:30 UTC
+        t = datetime(2024, 1, 15, 1, 30, 0, tzinfo=timezone.utc)
         assert reporter.should_post_morning_content(2, t) is True
 
-    def test_false_at_8am(self, reporter):
-        """8時台 → False"""
-        # 8:30 JST = 23:30 UTC (前日)
-        t = datetime(2024, 1, 14, 23, 30, 0, tzinfo=timezone.utc)
+    def test_false_at_9am(self, reporter):
+        """9時台 → False"""
+        # 9:30 JST = 0:30 UTC
+        t = datetime(2024, 1, 15, 0, 30, 0, tzinfo=timezone.utc)
         assert reporter.should_post_morning_content(0, t) is False
 
-    def test_false_at_10am(self, reporter):
-        """10時台 → False"""
-        # 10:00 JST = 1:00 UTC
-        t = datetime(2024, 1, 15, 1, 0, 0, tzinfo=timezone.utc)
+    def test_false_at_11am(self, reporter):
+        """11時台 → False"""
+        # 11:00 JST = 2:00 UTC
+        t = datetime(2024, 1, 15, 2, 0, 0, tzinfo=timezone.utc)
         assert reporter.should_post_morning_content(0, t) is False
 
     def test_false_with_high_activity(self, reporter):
         """推し投稿が閾値超 → False"""
-        # 9:00 JST = 0:00 UTC
-        t = datetime(2024, 1, 15, 0, 0, 0, tzinfo=timezone.utc)
+        # 10:00 JST = 1:00 UTC
+        t = datetime(2024, 1, 15, 1, 0, 0, tzinfo=timezone.utc)
         assert reporter.should_post_morning_content(4, t) is False
 
     def test_true_at_threshold_boundary(self, reporter):
         """推し投稿がちょうど閾値 → True"""
-        t = datetime(2024, 1, 15, 0, 0, 0, tzinfo=timezone.utc)
+        t = datetime(2024, 1, 15, 1, 0, 0, tzinfo=timezone.utc)
         assert reporter.should_post_morning_content(LOW_ACTIVITY_THRESHOLD, t) is True
 
     def test_true_with_zero_activity(self, reporter):
         """推し投稿0件 → True"""
-        t = datetime(2024, 1, 15, 0, 0, 0, tzinfo=timezone.utc)
+        t = datetime(2024, 1, 15, 1, 0, 0, tzinfo=timezone.utc)
         assert reporter.should_post_morning_content(0, t) is True
 
 
