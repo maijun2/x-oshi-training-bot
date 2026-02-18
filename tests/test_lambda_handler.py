@@ -31,6 +31,7 @@ from src.hokuhoku_imomaru_bot.services import (
     ProfileUpdater,
     DailyReporter,
 )
+from src.hokuhoku_imomaru_bot.services.daily_reporter import JST
 
 
 class TestProcessBotLogic:
@@ -1033,6 +1034,77 @@ class TestCheckEngagementSafe:
         assert result["new_likes"] == 0
         assert result["new_retweets"] == 0
 
+    def test_skips_when_already_checked_today(self):
+        """本日既にチェック済みの場合はスキップされることを確認"""
+        today_jst = datetime.now(JST).strftime("%Y-%m-%d")
+        state = BotState(
+            last_engagement_check_date=today_jst,
+            total_received_likes=10,
+            total_received_retweets=5,
+        )
+        result = {"xp_gained": 0.0, "new_likes": 0, "new_retweets": 0}
+
+        x_api_client = MagicMock()
+
+        total_xp = _check_engagement_safe(
+            x_api_client=x_api_client,
+            xp_calculator=XPCalculator(),
+            state=state,
+            result=result,
+            bot_user_id="bot_001",
+        )
+
+        assert total_xp == 0.0
+        # APIは呼ばれない
+        x_api_client.get_my_tweets_with_metrics.assert_not_called()
+        # 状態は変更されない
+        assert state.total_received_likes == 10
+        assert state.total_received_retweets == 5
+
+    def test_updates_date_after_successful_check(self):
+        """チェック成功後にlast_engagement_check_dateが更新されることを確認"""
+        x_api_client = MagicMock()
+        x_api_client.get_my_tweets_with_metrics.return_value = {
+            "data": [
+                {"public_metrics": {"like_count": 5, "retweet_count": 2}},
+            ],
+        }
+
+        state = BotState(last_engagement_check_date=None)
+        result = {"xp_gained": 0.0, "new_likes": 0, "new_retweets": 0}
+
+        _check_engagement_safe(
+            x_api_client=x_api_client,
+            xp_calculator=XPCalculator(),
+            state=state,
+            result=result,
+            bot_user_id="bot_001",
+        )
+
+        today_jst = datetime.now(JST).strftime("%Y-%m-%d")
+        assert state.last_engagement_check_date == today_jst
+
+    def test_calls_api_with_max_results_20(self):
+        """APIがmax_results=20で呼ばれることを確認"""
+        x_api_client = MagicMock()
+        x_api_client.get_my_tweets_with_metrics.return_value = {}
+
+        state = BotState()
+        result = {"xp_gained": 0.0, "new_likes": 0, "new_retweets": 0}
+
+        _check_engagement_safe(
+            x_api_client=x_api_client,
+            xp_calculator=XPCalculator(),
+            state=state,
+            result=result,
+            bot_user_id="bot_001",
+        )
+
+        x_api_client.get_my_tweets_with_metrics.assert_called_once_with(
+            bot_user_id="bot_001",
+            max_results=20,
+        )
+
 
 class TestMorningContentIntegration:
     """朝コンテンツ（YouTube/翻訳）の統合テスト"""
@@ -1450,3 +1522,136 @@ class TestDailyReportMode:
         # 全処理が実行される
         x_api_client.get_my_tweets_with_metrics.assert_called_once()
         timeline_monitor.check_group_timeline.assert_called_once()
+
+# ========================================
+# エンゲージメントチェック最適化: プロパティテスト
+# ========================================
+
+
+class TestProperty2SameDaySkipGuard:
+    """
+    **Property 2: 同日スキップガード**
+
+    For any BotState where `last_engagement_check_date` equals the current JST date,
+    calling `_check_engagement_safe` should return `0.0` and should not modify
+    `state.total_received_likes` or `state.total_received_retweets`.
+
+    **Validates: Requirements 2.2, 4.2**
+
+    Feature: engagement-check-optimization, Property 2: 同日スキップガード
+    """
+
+    @given(
+        total_likes=st.integers(min_value=0, max_value=10000),
+        total_retweets=st.integers(min_value=0, max_value=10000),
+    )
+    @hypothesis_settings(max_examples=100)
+    def test_same_day_skip_returns_zero_and_preserves_state(self, total_likes, total_retweets):
+        """同日実行時は0.0を返し、いいね・リポスト数を変更しない"""
+        today_jst = datetime.now(JST).strftime("%Y-%m-%d")
+        state = BotState(
+            last_engagement_check_date=today_jst,
+            total_received_likes=total_likes,
+            total_received_retweets=total_retweets,
+        )
+        result = {"xp_gained": 0.0, "new_likes": 0, "new_retweets": 0}
+
+        x_api_client = MagicMock()
+
+        total_xp = _check_engagement_safe(
+            x_api_client=x_api_client,
+            xp_calculator=XPCalculator(),
+            state=state,
+            result=result,
+            bot_user_id="bot_001",
+        )
+
+        assert total_xp == 0.0
+        assert state.total_received_likes == total_likes
+        assert state.total_received_retweets == total_retweets
+        # APIは呼ばれない
+        x_api_client.get_my_tweets_with_metrics.assert_not_called()
+
+
+class TestProperty3DateUpdateAfterExecution:
+    """
+    **Property 3: 実行後の日付更新**
+
+    For any BotState where `last_engagement_check_date` does not equal the current
+    JST date, after a successful execution of `_check_engagement_safe`,
+    `state.last_engagement_check_date` should equal the current JST date.
+
+    **Validates: Requirements 2.4, 2.5**
+
+    Feature: engagement-check-optimization, Property 3: 実行後の日付更新
+    """
+
+    @given(
+        past_date=st.one_of(
+            st.none(),
+            st.dates(
+                min_value=datetime(2020, 1, 1).date(),
+                max_value=datetime(2025, 12, 31).date(),
+            ).filter(
+                lambda d: d.strftime("%Y-%m-%d") != datetime.now(JST).strftime("%Y-%m-%d")
+            ).map(lambda d: d.strftime("%Y-%m-%d")),
+        )
+    )
+    @hypothesis_settings(max_examples=100)
+    def test_date_updated_after_successful_execution(self, past_date):
+        """成功実行後にlast_engagement_check_dateが今日のJST日付になる"""
+        state = BotState(last_engagement_check_date=past_date)
+        result = {"xp_gained": 0.0, "new_likes": 0, "new_retweets": 0}
+
+        x_api_client = MagicMock()
+        x_api_client.get_my_tweets_with_metrics.return_value = {
+            "data": [
+                {"public_metrics": {"like_count": 5, "retweet_count": 2}},
+            ],
+        }
+
+        _check_engagement_safe(
+            x_api_client=x_api_client,
+            xp_calculator=XPCalculator(),
+            state=state,
+            result=result,
+            bot_user_id="bot_001",
+        )
+
+        today_jst = datetime.now(JST).strftime("%Y-%m-%d")
+        assert state.last_engagement_check_date == today_jst
+
+
+class TestProperty4ErrorSafeReturn:
+    """
+    **Property 4: エラー時の安全な戻り値**
+
+    For any exception raised during the API call within `_check_engagement_safe`,
+    the function should catch the exception and return `0.0`.
+
+    **Validates: Requirements 4.1**
+
+    Feature: engagement-check-optimization, Property 4: エラー時の安全な戻り値
+    """
+
+    @given(
+        error_msg=st.text(min_size=1, max_size=100),
+    )
+    @hypothesis_settings(max_examples=100)
+    def test_error_returns_zero(self, error_msg):
+        """任意の例外発生時に0.0を返す"""
+        state = BotState()
+        result = {"xp_gained": 0.0, "new_likes": 0, "new_retweets": 0}
+
+        x_api_client = MagicMock()
+        x_api_client.get_my_tweets_with_metrics.side_effect = Exception(error_msg)
+
+        total_xp = _check_engagement_safe(
+            x_api_client=x_api_client,
+            xp_calculator=XPCalculator(),
+            state=state,
+            result=result,
+            bot_user_id="bot_001",
+        )
+
+        assert total_xp == 0.0

@@ -166,3 +166,38 @@ def test_bot_state_get_daily_xp_breakdown():
     assert breakdown["group_post"] == 2.0
     assert breakdown["repost"] == 2.0
     assert breakdown["like"] == 2.0
+
+
+# ========================================
+# エンゲージメントチェック最適化: プロパティテスト
+# ========================================
+
+from hypothesis import given, settings as hypothesis_settings
+from hypothesis import strategies as st
+
+
+class TestProperty1BotStateSerializationRoundTrip:
+    """
+    **Property 1: BotState シリアライゼーション ラウンドトリップ**
+
+    For any BotState instance with any valid `last_engagement_check_date` value
+    (None or a YYYY-MM-DD string), calling `to_dict()` then `from_dict()` on the
+    result should produce a BotState with the same `last_engagement_check_date` value.
+
+    **Validates: Requirements 1.2, 1.3**
+
+    Feature: engagement-check-optimization, Property 1: BotState シリアライゼーション ラウンドトリップ
+    """
+
+    @given(
+        date_value=st.one_of(
+            st.none(),
+            st.dates().map(lambda d: d.strftime("%Y-%m-%d")),
+        )
+    )
+    @hypothesis_settings(max_examples=100)
+    def test_last_engagement_check_date_round_trip(self, date_value):
+        """last_engagement_check_dateがto_dict→from_dictで保持される"""
+        state = BotState(last_engagement_check_date=date_value)
+        restored = BotState.from_dict(state.to_dict())
+        assert restored.last_engagement_check_date == state.last_engagement_check_date

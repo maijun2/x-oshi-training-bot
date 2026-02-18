@@ -265,7 +265,3 @@ aws s3 cp emotions/ s3://imomaru-bot-assets-ACCOUNT_ID/emotions/ --recursive --r
 | ボット投稿へのいいね | 0.1 | なし |
 
 ※感情画像添付は1日1回限定
-
-## ライセンス
-
-MIT License

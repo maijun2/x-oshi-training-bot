@@ -24,6 +24,7 @@ from .services import (
     ProfileUpdater,
     DailyReporter,
 )
+from .services.daily_reporter import JST
 from .utils import (
     log_event,
     EventType,
@@ -727,10 +728,20 @@ def _check_engagement_safe(
         獲得したXP
     """
     try:
-        # ボットの投稿のエンゲージメント情報を取得
+        # 1日1回制限チェック（JST基準）
+        today_jst = datetime.now(JST).strftime("%Y-%m-%d")
+        if state.last_engagement_check_date == today_jst:
+            log_event(
+                level=LogLevel.INFO,
+                event_type=EventType.TIMELINE_CHECK,
+                message="本日は集計済みのためエンゲージメントチェックをスキップ",
+            )
+            return 0.0
+
+        # ボットの投稿のエンゲージメント情報を取得（取得件数を20に制限）
         response = x_api_client.get_my_tweets_with_metrics(
             bot_user_id=bot_user_id,
-            max_results=100,
+            max_results=20,
         )
         
         if "data" not in response:
@@ -788,6 +799,9 @@ def _check_engagement_safe(
                 },
                 message=f"Engagement XP: {new_likes} likes (+{like_xp} XP), {new_retweets} retweets (+{retweet_xp} XP)",
             )
+        
+        # エンゲージメントチェック完了日を更新
+        state.last_engagement_check_date = today_jst
         
         return total_xp
         

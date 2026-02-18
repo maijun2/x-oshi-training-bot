@@ -28,6 +28,7 @@ class BotState:
         daily_like_count: 今日のいいね回数
         daily_xp: 今日の獲得XP
         last_daily_report_date: 最後の日報投稿日（YYYY-MM-DD形式）
+        last_engagement_check_date: エンゲージメントチェック最終実行日（YYYY-MM-DD形式、JST基準）
         last_profile_update_month: 最後のプロフィール更新月（YYYY-MM形式）
         total_received_likes: ボット投稿への累積いいね数
         total_received_retweets: ボット投稿への累積リポスト数
@@ -48,6 +49,8 @@ class BotState:
     daily_like_count: int = 0
     daily_xp: float = 0.0
     last_daily_report_date: Optional[str] = None
+    # エンゲージメントチェック最終実行日（YYYY-MM-DD形式、JST基準）
+    last_engagement_check_date: Optional[str] = None
     # プロフィール更新制限（月に一度）
     last_profile_update_month: Optional[str] = None  # YYYY-MM形式
     # ボット投稿へのエンゲージメント追跡
@@ -81,6 +84,7 @@ class BotState:
             "daily_like_count": self.daily_like_count,
             "daily_xp": self.daily_xp,
             "last_daily_report_date": self.last_daily_report_date,
+            "last_engagement_check_date": self.last_engagement_check_date,
             "last_profile_update_month": self.last_profile_update_month,
             "total_received_likes": self.total_received_likes,
             "total_received_retweets": self.total_received_retweets,
@@ -115,6 +119,7 @@ class BotState:
             daily_like_count=int(data.get("daily_like_count", 0)),
             daily_xp=float(data.get("daily_xp", 0.0)),
             last_daily_report_date=data.get("last_daily_report_date"),
+            last_engagement_check_date=data.get("last_engagement_check_date"),
             last_profile_update_month=data.get("last_profile_update_month"),
             total_received_likes=int(data.get("total_received_likes", 0)),
             total_received_retweets=int(data.get("total_received_retweets", 0)),
