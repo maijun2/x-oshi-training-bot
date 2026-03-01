@@ -13,16 +13,17 @@ X（旧Twitter）育成ボット - AWSサーバーレスアーキテクチャ
 - 📈 **レベルアップ**: DQ3勇者の経験値テーブルに基づいてレベルアップ
 - 🖼️ **プロフィール更新**: レベルアップ時にプロフィール画像と名前を自動更新、レベルアップ投稿に画像添付
 - 📊 **日報投稿**: 毎日23:58 JST以降に活動報告を投稿
-- 💰 **APIコスト最適化**: エンゲージメントチェックを1日1回（JST基準）に制限、取得件数を20件に削減
+- 💬 **リプライ機能**: 許可ユーザーからボット投稿へのリプライに対してAIが自動応答（冪等性制御・30日チェック付き）
+- 💰 **APIコスト最適化**: グループオリジナル投稿の引用ポスト停止（XP加算のみ継続）、エンゲージメントチェックを1日1回に制限
 - 🎬 **YouTube新着検索**: 推しの投稿が少ない日の朝に、関連YouTube動画を検索して投稿（AgentCore Runtime）
 - 🌎 **翻訳投稿**: 日曜の朝に人気ポストを英語翻訳して投稿（AgentCore Runtime、週1回）
 
 ## アーキテクチャ
 
 ```
-EventBridge Scheduler → Lambda → X API
+EventBridge Scheduler → Lambda → X API (投稿・リプライ)
                           ↓
-                    DynamoDB (状態管理)
+                    DynamoDB (状態管理・許可ユーザー・処理済みリプライ)
                           ↓
                     Bedrock (AI生成)
                           ↓
@@ -217,6 +218,24 @@ AWS_DEFAULT_REGION=ap-northeast-1 uv run python scripts/init_emotion_images.py
 aws s3 cp emotions/ s3://imomaru-bot-assets-ACCOUNT_ID/emotions/ --recursive --region ap-northeast-1
 ```
 
+### 6. 許可ユーザーリストの初期化
+
+リプライ機能の対象ユーザーをDynamoDBに登録:
+
+```bash
+source .venv/bin/activate && python3 -c "
+import boto3
+dynamodb = boto3.resource('dynamodb', region_name='ap-northeast-1')
+table = dynamodb.Table('imomaru-bot-allowed-users')
+table.put_item(Item={
+    'user_id': 'USER_ID',
+    'username': 'USERNAME',
+    'added_date': '2026-03-01',
+    'notes': 'メモ'
+})
+"
+```
+
 ## プロジェクト構造
 
 ```
@@ -228,7 +247,8 @@ aws s3 cp emotions/ s3://imomaru-bot-assets-ACCOUNT_ID/emotions/ --recursive --r
 │   └── dq3_xp_table.json          # DQ3経験値テーブルデータ
 ├── scripts/
 │   ├── init_xp_table.py           # 経験値テーブル初期化スクリプト
-│   └── init_emotion_images.py     # 感情画像マスタ初期化スクリプト
+│   ├── init_emotion_images.py     # 感情画像マスタ初期化スクリプト
+│   └── sync_lambda_package.sh     # Lambda パッケージ同期スクリプト
 ├── src/
 │   └── hokuhoku_imomaru_bot/
 │       ├── __init__.py
@@ -245,12 +265,12 @@ aws s3 cp emotions/ s3://imomaru-bot-assets-ACCOUNT_ID/emotions/ --recursive --r
 
 | 時刻 | 実行モード | 投稿内容 | 条件 |
 |------|-----------|---------|------|
-| 朝10時（±15分） | core_time | 推しタイムライン監視・引用ポスト | 毎日 |
+| 朝10時（±15分） | core_time | 推しタイムライン監視・引用ポスト・リプライ検出 | 毎日 |
 | 朝10時（±15分） | core_time | YouTube新着検索（単独ポスト） | 前日の推し投稿3件以下 & 新着あり |
 | 朝10時（日曜） | core_time | 人気ポスト翻訳（単独ポスト） | 前日の推し投稿3件以下 |
-| 昼13時（±23分） | core_time | 推しタイムライン監視・引用ポスト | 毎日 |
-| 夕方18時（±3分） | core_time | 推しタイムライン監視・引用ポスト | 毎日 |
-| 23:58（±1分） | daily_report | 全処理（推し+グループ監視・エンゲージメント・日報） | 毎日（エンゲージメントは1日1回） |
+| 昼13時（±23分） | core_time | 推しタイムライン監視・引用ポスト・リプライ検出 | 毎日 |
+| 夕方18時（±3分） | core_time | 推しタイムライン監視・引用ポスト・リプライ検出 | 毎日 |
+| 23:58（±1分） | daily_report | 全処理（推し+グループ監視・リプライ検出・エンゲージメント・日報） | 毎日（エンゲージメントは1日1回） |
 
 ## XPレートと投稿ルール
 
@@ -259,10 +279,11 @@ aws s3 cp emotions/ s3://imomaru-bot-assets-ACCOUNT_ID/emotions/ --recursive --r
 | 推しオリジナル投稿 | 5.0 | AI生成応答（感情画像添付あり※） |
 | 推し引用リポスト | 5.0 | AI生成応答（感情画像添付あり※） |
 | 推しリツイート | 0.5 | なし（XP加算のみ） |
-| グループオリジナル投稿 | 2.0 | AI生成応答 |
+| グループオリジナル投稿 | 2.0 | なし（コスト削減のため停止） |
 | グループ引用リポスト | 2.0 | AI生成応答 |
 | グループリツイート | 0.5 | なし（XP加算のみ） |
 | ボット投稿へのリポスト | 0.5 | なし |
 | ボット投稿へのいいね | 0.1 | なし |
+| 許可ユーザーからのリプライ | 0.0 | AI生成リプライ応答 |
 
 ※感情画像添付は1日1回限定
