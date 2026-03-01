@@ -11,9 +11,11 @@ from io import BytesIO
 from src.hokuhoku_imomaru_bot.services.ai_generator import (
     AIGenerator,
     PROMPT_TEMPLATE,
+    REPLY_PROMPT_TEMPLATE,
     MAX_TEXT_LENGTH,
     DEFAULT_RESPONSE_OSHI,
     DEFAULT_RESPONSE_GROUP,
+    DEFAULT_REPLY_RESPONSE_TEMPLATE,
 )
 
 
@@ -181,3 +183,147 @@ class TestAIGenerator:
         assert "#びっくえんじぇる" in DEFAULT_RESPONSE_OSHI
         assert "#さつまいもの民" in DEFAULT_RESPONSE_GROUP
         assert "#びっくえんじぇる" in DEFAULT_RESPONSE_GROUP
+
+
+class TestAIGeneratorReplyResponse:
+    """generate_reply_responseメソッドのテスト"""
+
+    @pytest.fixture
+    def mock_bedrock_client(self):
+        """モックBedrockクライアント"""
+        return Mock()
+
+    @pytest.fixture
+    def generator(self, mock_bedrock_client):
+        """AIGeneratorインスタンス"""
+        return AIGenerator(bedrock_client=mock_bedrock_client)
+
+    def _mock_bedrock_response(self, mock_bedrock_client, text):
+        """Bedrockモックレスポンスを設定"""
+        mock_response = {"content": [{"text": text}]}
+        mock_body = MagicMock()
+        mock_body.read.return_value = json.dumps(mock_response).encode()
+        mock_bedrock_client.invoke_model.return_value = {"body": mock_body}
+
+    def test_reply_response_success(self, generator, mock_bedrock_client):
+        """リプライ応答が正常に生成されること"""
+        self._mock_bedrock_response(
+            mock_bedrock_client,
+            "ありがとうｲﾓ🍠✨ #さつまいもの民 #びっくえんじぇる",
+        )
+
+        result = generator.generate_reply_response(
+            reply_text="いも丸くんかわいい！",
+            reply_username="test_user",
+            bot_tweet_text="今日も推し活ｲﾓ🍠",
+        )
+
+        assert "ｲﾓ🍠" in result or "#さつまいもの民" in result
+        mock_bedrock_client.invoke_model.assert_called_once()
+
+    def test_reply_prompt_uses_reply_template(self, generator, mock_bedrock_client):
+        """リプライ専用プロンプトテンプレートが使用されること"""
+        self._mock_bedrock_response(mock_bedrock_client, "テストｲﾓ🍠")
+
+        generator.generate_reply_response(
+            reply_text="テストリプライ",
+            reply_username="user123",
+            bot_tweet_text="ボット投稿",
+        )
+
+        call_args = mock_bedrock_client.invoke_model.call_args
+        request_body = json.loads(call_args.kwargs["body"])
+        prompt = request_body["messages"][0]["content"]
+
+        # REPLY_PROMPT_TEMPLATEの特徴的な文言が含まれること
+        assert "リプライを受け取りました" in prompt
+        assert "親しみを込めて応答すること" in prompt
+
+    def test_reply_prompt_contains_context(self, generator, mock_bedrock_client):
+        """プロンプトにリプライ元ツイート、ボット投稿、ユーザー名が含まれること"""
+        self._mock_bedrock_response(mock_bedrock_client, "テストｲﾓ🍠")
+
+        generator.generate_reply_response(
+            reply_text="最高のツイートですね！",
+            reply_username="imomaru_fan",
+            bot_tweet_text="甘木ジュリちゃん最高ｲﾓ🍠",
+        )
+
+        call_args = mock_bedrock_client.invoke_model.call_args
+        request_body = json.loads(call_args.kwargs["body"])
+        prompt = request_body["messages"][0]["content"]
+
+        assert "最高のツイートですね！" in prompt
+        assert "imomaru_fan" in prompt
+        assert "甘木ジュリちゃん最高ｲﾓ🍠" in prompt
+
+    def test_reply_response_truncated_when_long(self, generator, mock_bedrock_client):
+        """長いリプライ応答が140文字以内に切り詰められること"""
+        long_response = "あ" * 200 + "ｲﾓ🍠 #さつまいもの民 #びっくえんじぇる"
+        self._mock_bedrock_response(mock_bedrock_client, long_response)
+
+        result = generator.generate_reply_response(
+            reply_text="テスト",
+            reply_username="user",
+            bot_tweet_text="テスト",
+        )
+
+        assert len(result) <= MAX_TEXT_LENGTH
+
+    def test_reply_response_fallback_on_error(self, generator, mock_bedrock_client):
+        """Bedrock API失敗時にフォールバック応答が返されること"""
+        mock_bedrock_client.invoke_model.side_effect = Exception("Bedrock Error")
+
+        result = generator.generate_reply_response(
+            reply_text="テスト",
+            reply_username="test_user",
+            bot_tweet_text="テスト",
+        )
+
+        expected = DEFAULT_REPLY_RESPONSE_TEMPLATE.format(username="test_user")
+        assert result == expected
+
+    def test_reply_fallback_contains_username(self, generator, mock_bedrock_client):
+        """フォールバック応答にユーザー名が含まれること"""
+        mock_bedrock_client.invoke_model.side_effect = Exception("Error")
+
+        result = generator.generate_reply_response(
+            reply_text="テスト",
+            reply_username="my_username",
+            bot_tweet_text="テスト",
+        )
+
+        assert "@my_username" in result
+
+    def test_reply_fallback_contains_hashtags(self, generator, mock_bedrock_client):
+        """フォールバック応答にハッシュタグが含まれること"""
+        mock_bedrock_client.invoke_model.side_effect = Exception("Error")
+
+        result = generator.generate_reply_response(
+            reply_text="テスト",
+            reply_username="user",
+            bot_tweet_text="テスト",
+        )
+
+        assert "#さつまいもの民" in result
+        assert "#びっくえんじぇる" in result
+
+    def test_reply_fallback_within_limit(self):
+        """フォールバック応答テンプレートが140文字以内であること"""
+        # 長めのユーザー名でも140文字以内
+        result = DEFAULT_REPLY_RESPONSE_TEMPLATE.format(username="a" * 15)
+        assert len(result) <= MAX_TEXT_LENGTH
+
+    def test_reply_error_logs_warning(self, generator, mock_bedrock_client, caplog):
+        """Bedrock API失敗時にWARNINGログが出力されること"""
+        import logging
+        mock_bedrock_client.invoke_model.side_effect = Exception("Bedrock timeout")
+
+        with caplog.at_level(logging.WARNING):
+            generator.generate_reply_response(
+                reply_text="テスト",
+                reply_username="user",
+                bot_tweet_text="テスト",
+            )
+
+        assert "Failed to generate reply response" in caplog.text

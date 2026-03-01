@@ -115,6 +115,37 @@ class ImomaruBotStack(Stack):
             removal_policy=RemovalPolicy.RETAIN,  # 本番環境では削除しない
         )
 
+        # DynamoDB テーブル: AllowedUsers（許可ユーザーリスト）
+        # リプライ機能の対象ユーザーを管理
+        self.allowed_users_table = dynamodb.Table(
+            self,
+            "AllowedUsersTable",
+            table_name="imomaru-bot-allowed-users",
+            partition_key=dynamodb.Attribute(
+                name="user_id",
+                type=dynamodb.AttributeType.STRING
+            ),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,  # オンデマンド課金
+            encryption=dynamodb.TableEncryption.AWS_MANAGED,  # 保存時の暗号化
+            removal_policy=RemovalPolicy.RETAIN,  # 本番環境では削除しない
+        )
+
+        # DynamoDB テーブル: ProcessedReplies（処理済みリプライ）
+        # リプライの冪等性制御用（TTL: 60日）
+        self.processed_replies_table = dynamodb.Table(
+            self,
+            "ProcessedRepliesTable",
+            table_name="imomaru-bot-processed-replies",
+            partition_key=dynamodb.Attribute(
+                name="tweet_id",
+                type=dynamodb.AttributeType.STRING
+            ),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,  # オンデマンド課金
+            encryption=dynamodb.TableEncryption.AWS_MANAGED,  # 保存時の暗号化
+            removal_policy=RemovalPolicy.RETAIN,  # 本番環境では削除しない
+            time_to_live_attribute="ttl",  # TTL属性を有効化（60日後に自動削除）
+        )
+
         # S3 バケット: 画像アセット
         # プロフィール画像のベース画像とフォントファイルを保存
         self.assets_bucket = s3.Bucket(
@@ -158,6 +189,8 @@ class ImomaruBotStack(Stack):
         self.xp_table.grant_read_data(self.lambda_role)
         self.processed_tweets_table.grant_read_write_data(self.lambda_role)
         self.emotion_images_table.grant_read_data(self.lambda_role)
+        self.allowed_users_table.grant_read_data(self.lambda_role)  # 許可ユーザーテーブル読み取り
+        self.processed_replies_table.grant_read_write_data(self.lambda_role)  # 処理済みリプライテーブル読み書き
 
         # S3読み取り権限を付与
         self.assets_bucket.grant_read(self.lambda_role)
@@ -213,6 +246,8 @@ class ImomaruBotStack(Stack):
                 "XP_TABLE_NAME": self.xp_table.table_name,
                 "PROCESSED_TWEETS_TABLE_NAME": self.processed_tweets_table.table_name,
                 "EMOTION_IMAGES_TABLE_NAME": self.emotion_images_table.table_name,
+                "ALLOWED_USERS_TABLE_NAME": self.allowed_users_table.table_name,
+                "PROCESSED_REPLIES_TABLE_NAME": self.processed_replies_table.table_name,
                 "ASSETS_BUCKET_NAME": self.assets_bucket.bucket_name,
                 "SECRET_NAME": self.x_api_secret.secret_name,
                 "OSHI_USER_ID": oshi_user_id,

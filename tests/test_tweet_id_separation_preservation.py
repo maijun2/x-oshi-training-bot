@@ -26,6 +26,9 @@ from src.hokuhoku_imomaru_bot.services import (
     ImageCompositor,
     ProfileUpdater,
     DailyReporter,
+    ReplyMonitor,
+    AllowedUsersService,
+    ReplyProcessor,
 )
 
 
@@ -89,10 +92,17 @@ def _make_mocks(oshi_tweets=None, group_tweets=None):
     x_api_client = MagicMock()
     x_api_client.post_tweet.return_value = {"data": {"id": "999"}}
 
+    reply_monitor = MagicMock(spec=ReplyMonitor)
+    reply_monitor.detect_replies.return_value = []
+
+    allowed_users_service = MagicMock(spec=AllowedUsersService)
+    reply_processor = MagicMock(spec=ReplyProcessor)
+
     return (
         state, state_store, timeline_monitor, xp_calculator,
         level_manager, ai_generator, image_compositor,
         profile_updater, daily_reporter, x_api_client,
+        reply_monitor, allowed_users_service, reply_processor,
     )
 
 
@@ -115,12 +125,16 @@ def test_preservation_oshi_only_xp_and_counts(oshi_tweets):
         state, state_store, timeline_monitor, xp_calculator,
         level_manager, ai_generator, image_compositor,
         profile_updater, daily_reporter, x_api_client,
+        reply_monitor, allowed_users_service, reply_processor,
     ) = _make_mocks(oshi_tweets=oshi_tweets, group_tweets=[])
 
     result = _process_bot_logic(
         state=state,
         state_store=state_store,
         timeline_monitor=timeline_monitor,
+        reply_monitor=reply_monitor,
+        allowed_users_service=allowed_users_service,
+        reply_processor=reply_processor,
         xp_calculator=xp_calculator,
         level_manager=level_manager,
         ai_generator=ai_generator,
@@ -174,12 +188,16 @@ def test_preservation_group_only_xp_and_counts(group_tweets):
         state, state_store, timeline_monitor, xp_calculator,
         level_manager, ai_generator, image_compositor,
         profile_updater, daily_reporter, x_api_client,
+        reply_monitor, allowed_users_service, reply_processor,
     ) = _make_mocks(oshi_tweets=[], group_tweets=group_tweets)
 
     result = _process_bot_logic(
         state=state,
         state_store=state_store,
         timeline_monitor=timeline_monitor,
+        reply_monitor=reply_monitor,
+        allowed_users_service=allowed_users_service,
+        reply_processor=reply_processor,
         xp_calculator=xp_calculator,
         level_manager=level_manager,
         ai_generator=ai_generator,
@@ -206,8 +224,8 @@ def test_preservation_group_only_xp_and_counts(group_tweets):
     assert result["oshi_posts_detected"] == 0
     assert state.oshi_post_count == 0
 
-    # 引用ポストが投稿されること
-    assert result["quotes_posted"] == n
+    # グループオリジナル投稿は引用ポストしない（コスト削減対策）
+    assert result["quotes_posted"] == 0
 
     # latest_group_tweet_id がグループの最大IDで更新されること
     expected_max_id = str(max(int(t.id) for t in group_tweets))
@@ -237,6 +255,7 @@ def test_preservation_no_posts_state_unchanged(initial_xp, initial_level, initia
         state, state_store, timeline_monitor, xp_calculator,
         level_manager, ai_generator, image_compositor,
         profile_updater, daily_reporter, x_api_client,
+        reply_monitor, allowed_users_service, reply_processor,
     ) = _make_mocks(oshi_tweets=[], group_tweets=[])
 
     # 初期状態を設定
@@ -259,6 +278,9 @@ def test_preservation_no_posts_state_unchanged(initial_xp, initial_level, initia
         state=state,
         state_store=state_store,
         timeline_monitor=timeline_monitor,
+        reply_monitor=reply_monitor,
+        allowed_users_service=allowed_users_service,
+        reply_processor=reply_processor,
         xp_calculator=xp_calculator,
         level_manager=level_manager,
         ai_generator=ai_generator,
@@ -306,6 +328,7 @@ def test_preservation_core_time_skips_group_timeline(oshi_tweets):
         state, state_store, timeline_monitor, xp_calculator,
         level_manager, ai_generator, image_compositor,
         profile_updater, daily_reporter, x_api_client,
+        reply_monitor, allowed_users_service, reply_processor,
     ) = _make_mocks(oshi_tweets=oshi_tweets, group_tweets=[])
 
     # core_time モード用の設定
@@ -315,6 +338,9 @@ def test_preservation_core_time_skips_group_timeline(oshi_tweets):
         state=state,
         state_store=state_store,
         timeline_monitor=timeline_monitor,
+        reply_monitor=reply_monitor,
+        allowed_users_service=allowed_users_service,
+        reply_processor=reply_processor,
         xp_calculator=xp_calculator,
         level_manager=level_manager,
         ai_generator=ai_generator,
@@ -400,6 +426,7 @@ def test_preservation_translation_receives_correct_id(latest_oshi_tweet_id):
         state, state_store, timeline_monitor, xp_calculator,
         level_manager, ai_generator, image_compositor,
         profile_updater, daily_reporter, x_api_client,
+        reply_monitor, allowed_users_service, reply_processor,
     ) = _make_mocks(oshi_tweets=[], group_tweets=[])
 
     state.latest_oshi_tweet_id = latest_oshi_tweet_id
@@ -414,6 +441,9 @@ def test_preservation_translation_receives_correct_id(latest_oshi_tweet_id):
         state=state,
         state_store=state_store,
         timeline_monitor=timeline_monitor,
+        reply_monitor=reply_monitor,
+        allowed_users_service=allowed_users_service,
+        reply_processor=reply_processor,
         xp_calculator=xp_calculator,
         level_manager=level_manager,
         ai_generator=ai_generator,

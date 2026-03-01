@@ -64,6 +64,8 @@ class BotState:
     daily_image_posted: bool = False   # 本日の画像添付済みフラグ
     # 前日の推し投稿数（朝のYouTube/翻訳投稿判定用）
     prev_daily_oshi_count: int = 0
+    # リプライチェック用の最新Tweet ID
+    latest_reply_check_id: Optional[str] = None
 
     def to_dict(self) -> dict:
         """
@@ -96,6 +98,7 @@ class BotState:
             "total_received_retweets": self.total_received_retweets,
             "daily_image_posted": self.daily_image_posted,
             "prev_daily_oshi_count": self.prev_daily_oshi_count,
+            "latest_reply_check_id": self.latest_reply_check_id,
         }
         return result
 
@@ -138,6 +141,7 @@ class BotState:
             total_received_retweets=int(data.get("total_received_retweets", 0)),
             daily_image_posted=bool(data.get("daily_image_posted", False)),
             prev_daily_oshi_count=int(data.get("prev_daily_oshi_count", 0)),
+            latest_reply_check_id=data.get("latest_reply_check_id"),
         )
 
     def get_xp_breakdown(self) -> dict:

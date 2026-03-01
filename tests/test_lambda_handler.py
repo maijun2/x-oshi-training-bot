@@ -30,8 +30,20 @@ from src.hokuhoku_imomaru_bot.services import (
     ImageCompositor,
     ProfileUpdater,
     DailyReporter,
+    ReplyMonitor,
+    AllowedUsersService,
+    ReplyProcessor,
 )
 from src.hokuhoku_imomaru_bot.services.daily_reporter import JST
+
+
+def _make_reply_mocks():
+    """リプライ関連のモックを生成するヘルパー"""
+    reply_monitor = MagicMock(spec=ReplyMonitor)
+    reply_monitor.detect_replies.return_value = []
+    allowed_users_service = MagicMock(spec=AllowedUsersService)
+    reply_processor = MagicMock(spec=ReplyProcessor)
+    return reply_monitor, allowed_users_service, reply_processor
 
 
 class TestProcessBotLogic:
@@ -64,10 +76,14 @@ class TestProcessBotLogic:
         x_api_client = MagicMock()
         
         # 実行
+        reply_monitor, allowed_users_service, reply_processor = _make_reply_mocks()
         result = _process_bot_logic(
             state=state,
             state_store=state_store,
             timeline_monitor=timeline_monitor,
+            reply_monitor=reply_monitor,
+            allowed_users_service=allowed_users_service,
+            reply_processor=reply_processor,
             xp_calculator=xp_calculator,
             level_manager=level_manager,
             ai_generator=ai_generator,
@@ -118,10 +134,14 @@ class TestProcessBotLogic:
         x_api_client = MagicMock()
         x_api_client.post_tweet.return_value = {"data": {"id": "999"}}
         
+        reply_monitor, allowed_users_service, reply_processor = _make_reply_mocks()
         result = _process_bot_logic(
             state=state,
             state_store=state_store,
             timeline_monitor=timeline_monitor,
+            reply_monitor=reply_monitor,
+            allowed_users_service=allowed_users_service,
+            reply_processor=reply_processor,
             xp_calculator=xp_calculator,
             level_manager=level_manager,
             ai_generator=ai_generator,
@@ -172,10 +192,14 @@ class TestProcessBotLogic:
         x_api_client = MagicMock()
         x_api_client.post_tweet.return_value = {"data": {"id": "999"}}
         
+        reply_monitor, allowed_users_service, reply_processor = _make_reply_mocks()
         result = _process_bot_logic(
             state=state,
             state_store=state_store,
             timeline_monitor=timeline_monitor,
+            reply_monitor=reply_monitor,
+            allowed_users_service=allowed_users_service,
+            reply_processor=reply_processor,
             xp_calculator=xp_calculator,
             level_manager=level_manager,
             ai_generator=ai_generator,
@@ -189,6 +213,72 @@ class TestProcessBotLogic:
         assert result["xp_gained"] == 2.0
         assert state.group_post_count == 1
         assert state.daily_group_count == 1
+        
+        # 引用ポストがスキップされることを確認
+        assert result["quotes_posted"] == 0
+        x_api_client.post_tweet.assert_not_called()
+        
+        # AI_Generatorが呼び出されないことを確認
+        ai_generator.generate_response.assert_not_called()
+
+    def test_group_post_detected_logs_xp_only(self):
+        """グループオリジナル投稿検出時にXPのみ処理のログが出力されることを確認"""
+        state = BotState()
+        state_store = MagicMock(spec=StateStore)
+        state_store.reset_daily_counts.return_value = state
+        
+        group_tweet = Tweet(
+            id="987654321",
+            text="グループ投稿",
+            author_id="group_user_id",
+        )
+        
+        timeline_monitor = MagicMock(spec=TimelineMonitor)
+        timeline_monitor.check_oshi_timeline.return_value = []
+        timeline_monitor.check_group_timeline.return_value = [group_tweet]
+        timeline_monitor.filter_original_posts.side_effect = lambda tweets: tweets
+        timeline_monitor.filter_retweets.return_value = []
+        
+        xp_calculator = XPCalculator()
+        level_manager = MagicMock(spec=LevelManager)
+        level_manager.check_level_up.return_value = (False, 1)
+        
+        ai_generator = MagicMock(spec=AIGenerator)
+        image_compositor = MagicMock(spec=ImageCompositor)
+        profile_updater = MagicMock(spec=ProfileUpdater)
+        
+        daily_reporter = MagicMock(spec=DailyReporter)
+        daily_reporter.should_post_daily_report.return_value = False
+        
+        x_api_client = MagicMock()
+        
+        with patch("src.hokuhoku_imomaru_bot.lambda_handler.log_event") as mock_log:
+            reply_monitor, allowed_users_service, reply_processor = _make_reply_mocks()
+            _process_bot_logic(
+                state=state,
+                state_store=state_store,
+                timeline_monitor=timeline_monitor,
+                reply_monitor=reply_monitor,
+                allowed_users_service=allowed_users_service,
+                reply_processor=reply_processor,
+                xp_calculator=xp_calculator,
+                level_manager=level_manager,
+                ai_generator=ai_generator,
+                image_compositor=image_compositor,
+                profile_updater=profile_updater,
+                daily_reporter=daily_reporter,
+                x_api_client=x_api_client,
+            )
+            
+            # XPのみ処理のログが出力されることを確認
+            log_calls = [call for call in mock_log.call_args_list
+                        if "quote post skipped" in str(call)]
+            assert len(log_calls) == 1
+            log_data = log_calls[0].kwargs.get("data", {})
+            assert log_data["tweet_id"] == "987654321"
+            assert log_data["action"] == "xp_only"
+            assert log_data["quote_post_skipped"] is True
+            assert log_data["ai_generation_skipped"] is True
 
     
     def test_level_up(self):
@@ -225,10 +315,14 @@ class TestProcessBotLogic:
         
         x_api_client = MagicMock()
         
+        reply_monitor, allowed_users_service, reply_processor = _make_reply_mocks()
         result = _process_bot_logic(
             state=state,
             state_store=state_store,
             timeline_monitor=timeline_monitor,
+            reply_monitor=reply_monitor,
+            allowed_users_service=allowed_users_service,
+            reply_processor=reply_processor,
             xp_calculator=xp_calculator,
             level_manager=level_manager,
             ai_generator=ai_generator,
@@ -275,10 +369,14 @@ class TestProcessBotLogic:
         
         x_api_client = MagicMock()
         
+        reply_monitor, allowed_users_service, reply_processor = _make_reply_mocks()
         result = _process_bot_logic(
             state=state,
             state_store=state_store,
             timeline_monitor=timeline_monitor,
+            reply_monitor=reply_monitor,
+            allowed_users_service=allowed_users_service,
+            reply_processor=reply_processor,
             xp_calculator=xp_calculator,
             level_manager=level_manager,
             ai_generator=ai_generator,
@@ -330,10 +428,14 @@ class TestProcessBotLogic:
         x_api_client = MagicMock()
         x_api_client.post_tweet.return_value = {"data": {"id": "999"}}
         
+        reply_monitor, allowed_users_service, reply_processor = _make_reply_mocks()
         _process_bot_logic(
             state=state,
             state_store=state_store,
             timeline_monitor=timeline_monitor,
+            reply_monitor=reply_monitor,
+            allowed_users_service=allowed_users_service,
+            reply_processor=reply_processor,
             xp_calculator=xp_calculator,
             level_manager=level_manager,
             ai_generator=ai_generator,
@@ -593,10 +695,14 @@ class TestRetweetProcessing:
         
         x_api_client = MagicMock()
         
+        reply_monitor, allowed_users_service, reply_processor = _make_reply_mocks()
         result = _process_bot_logic(
             state=state,
             state_store=state_store,
             timeline_monitor=timeline_monitor,
+            reply_monitor=reply_monitor,
+            allowed_users_service=allowed_users_service,
+            reply_processor=reply_processor,
             xp_calculator=xp_calculator,
             level_manager=level_manager,
             ai_generator=ai_generator,
@@ -650,10 +756,14 @@ class TestRetweetProcessing:
         
         x_api_client = MagicMock()
         
+        reply_monitor, allowed_users_service, reply_processor = _make_reply_mocks()
         result = _process_bot_logic(
             state=state,
             state_store=state_store,
             timeline_monitor=timeline_monitor,
+            reply_monitor=reply_monitor,
+            allowed_users_service=allowed_users_service,
+            reply_processor=reply_processor,
             xp_calculator=xp_calculator,
             level_manager=level_manager,
             ai_generator=ai_generator,
@@ -706,10 +816,14 @@ class TestRetweetProcessing:
         
         x_api_client = MagicMock()
         
+        reply_monitor, allowed_users_service, reply_processor = _make_reply_mocks()
         result = _process_bot_logic(
             state=state,
             state_store=state_store,
             timeline_monitor=timeline_monitor,
+            reply_monitor=reply_monitor,
+            allowed_users_service=allowed_users_service,
+            reply_processor=reply_processor,
             xp_calculator=xp_calculator,
             level_manager=level_manager,
             ai_generator=ai_generator,
@@ -764,10 +878,14 @@ class TestMultiplePostsDetection:
         x_api_client = MagicMock()
         x_api_client.post_tweet.return_value = {"data": {"id": "999"}}
         
+        reply_monitor, allowed_users_service, reply_processor = _make_reply_mocks()
         result = _process_bot_logic(
             state=state,
             state_store=state_store,
             timeline_monitor=timeline_monitor,
+            reply_monitor=reply_monitor,
+            allowed_users_service=allowed_users_service,
+            reply_processor=reply_processor,
             xp_calculator=xp_calculator,
             level_manager=level_manager,
             ai_generator=ai_generator,
@@ -780,7 +898,7 @@ class TestMultiplePostsDetection:
         # 推し2件 + グループ1件
         assert result["oshi_posts_detected"] == 2
         assert result["group_posts_detected"] == 1
-        assert result["quotes_posted"] == 3
+        assert result["quotes_posted"] == 2  # 推しのみ引用ポスト（グループはスキップ）
         # XP: 推し5.0*2 + グループ2.0*1 = 12.0
         assert result["xp_gained"] == 12.0
         assert state.oshi_post_count == 2
@@ -1148,10 +1266,14 @@ class TestMorningContentIntegration:
 
         x_api_client = MagicMock()
 
+        reply_monitor, allowed_users_service, reply_processor = _make_reply_mocks()
         result = _process_bot_logic(
             state=state,
             state_store=state_store,
             timeline_monitor=timeline_monitor,
+            reply_monitor=reply_monitor,
+            allowed_users_service=allowed_users_service,
+            reply_processor=reply_processor,
             xp_calculator=xp_calculator,
             level_manager=level_manager,
             ai_generator=ai_generator,
@@ -1188,10 +1310,14 @@ class TestMorningContentIntegration:
 
         x_api_client = MagicMock()
 
+        reply_monitor, allowed_users_service, reply_processor = _make_reply_mocks()
         result = _process_bot_logic(
             state=state,
             state_store=state_store,
             timeline_monitor=timeline_monitor,
+            reply_monitor=reply_monitor,
+            allowed_users_service=allowed_users_service,
+            reply_processor=reply_processor,
             xp_calculator=xp_calculator,
             level_manager=level_manager,
             ai_generator=MagicMock(spec=AIGenerator),
@@ -1222,10 +1348,14 @@ class TestMorningContentIntegration:
 
         x_api_client = MagicMock()
 
+        reply_monitor, allowed_users_service, reply_processor = _make_reply_mocks()
         result = _process_bot_logic(
             state=state,
             state_store=state_store,
             timeline_monitor=timeline_monitor,
+            reply_monitor=reply_monitor,
+            allowed_users_service=allowed_users_service,
+            reply_processor=reply_processor,
             xp_calculator=XPCalculator(),
             level_manager=level_manager,
             ai_generator=MagicMock(spec=AIGenerator),
@@ -1236,10 +1366,14 @@ class TestMorningContentIntegration:
             execution_mode="core_time",
         )
 
+        reply_monitor, allowed_users_service, reply_processor = _make_reply_mocks()
         result = _process_bot_logic(
             state=state,
             state_store=state_store,
             timeline_monitor=timeline_monitor,
+            reply_monitor=reply_monitor,
+            allowed_users_service=allowed_users_service,
+            reply_processor=reply_processor,
             xp_calculator=XPCalculator(),
             level_manager=level_manager,
             ai_generator=MagicMock(spec=AIGenerator),
@@ -1281,10 +1415,14 @@ class TestDailyReportPosted:
         x_api_client = MagicMock()
         x_api_client.get_my_tweets_with_metrics.return_value = {}
 
+        reply_monitor, allowed_users_service, reply_processor = _make_reply_mocks()
         result = _process_bot_logic(
             state=state,
             state_store=state_store,
             timeline_monitor=timeline_monitor,
+            reply_monitor=reply_monitor,
+            allowed_users_service=allowed_users_service,
+            reply_processor=reply_processor,
             xp_calculator=XPCalculator(),
             level_manager=level_manager,
             ai_generator=MagicMock(spec=AIGenerator),
@@ -1340,10 +1478,14 @@ class TestProperty2ExecutionModeRoundTrip:
         x_api_client = MagicMock()
         x_api_client.get_my_tweets_with_metrics.return_value = {}
 
+        reply_monitor, allowed_users_service, reply_processor = _make_reply_mocks()
         result = _process_bot_logic(
             state=state,
             state_store=state_store,
             timeline_monitor=timeline_monitor,
+            reply_monitor=reply_monitor,
+            allowed_users_service=allowed_users_service,
+            reply_processor=reply_processor,
             xp_calculator=XPCalculator(),
             level_manager=level_manager,
             ai_generator=MagicMock(spec=AIGenerator),
@@ -1381,10 +1523,14 @@ class TestCoreTimeMode:
 
         x_api_client = MagicMock()
 
+        reply_monitor, allowed_users_service, reply_processor = _make_reply_mocks()
         result = _process_bot_logic(
             state=state,
             state_store=state_store,
             timeline_monitor=timeline_monitor,
+            reply_monitor=reply_monitor,
+            allowed_users_service=allowed_users_service,
+            reply_processor=reply_processor,
             xp_calculator=XPCalculator(),
             level_manager=level_manager,
             ai_generator=MagicMock(spec=AIGenerator),
@@ -1430,10 +1576,14 @@ class TestCoreTimeMode:
         x_api_client = MagicMock()
         x_api_client.post_tweet.return_value = {"data": {"id": "999"}}
 
+        reply_monitor, allowed_users_service, reply_processor = _make_reply_mocks()
         result = _process_bot_logic(
             state=state,
             state_store=state_store,
             timeline_monitor=timeline_monitor,
+            reply_monitor=reply_monitor,
+            allowed_users_service=allowed_users_service,
+            reply_processor=reply_processor,
             xp_calculator=XPCalculator(),
             level_manager=level_manager,
             ai_generator=ai_generator,
@@ -1473,10 +1623,14 @@ class TestDailyReportMode:
         x_api_client = MagicMock()
         x_api_client.get_my_tweets_with_metrics.return_value = {}
 
+        reply_monitor, allowed_users_service, reply_processor = _make_reply_mocks()
         result = _process_bot_logic(
             state=state,
             state_store=state_store,
             timeline_monitor=timeline_monitor,
+            reply_monitor=reply_monitor,
+            allowed_users_service=allowed_users_service,
+            reply_processor=reply_processor,
             xp_calculator=XPCalculator(),
             level_manager=level_manager,
             ai_generator=MagicMock(spec=AIGenerator),
@@ -1518,10 +1672,14 @@ class TestDailyReportMode:
         x_api_client.get_my_tweets_with_metrics.return_value = {}
 
         # execution_modeを指定しない（デフォルト値を使用）
+        reply_monitor, allowed_users_service, reply_processor = _make_reply_mocks()
         result = _process_bot_logic(
             state=state,
             state_store=state_store,
             timeline_monitor=timeline_monitor,
+            reply_monitor=reply_monitor,
+            allowed_users_service=allowed_users_service,
+            reply_processor=reply_processor,
             xp_calculator=XPCalculator(),
             level_manager=level_manager,
             ai_generator=MagicMock(spec=AIGenerator),
@@ -1668,3 +1826,293 @@ class TestProperty4ErrorSafeReturn:
         )
 
         assert total_xp == 0.0
+
+
+class TestReplyProcessingIntegration:
+    """リプライ処理のLambda Handler統合テスト"""
+
+    def _make_base_mocks(self):
+        """基本的なモックセットを生成"""
+        state = BotState()
+        state_store = MagicMock(spec=StateStore)
+        state_store.reset_daily_counts.return_value = state
+
+        timeline_monitor = MagicMock(spec=TimelineMonitor)
+        timeline_monitor.check_oshi_timeline.return_value = []
+        timeline_monitor.check_group_timeline.return_value = []
+        timeline_monitor.filter_original_posts.return_value = []
+        timeline_monitor.filter_retweets.return_value = []
+
+        xp_calculator = XPCalculator()
+        level_manager = MagicMock(spec=LevelManager)
+        level_manager.check_level_up.return_value = (False, 1)
+
+        ai_generator = MagicMock(spec=AIGenerator)
+        image_compositor = MagicMock(spec=ImageCompositor)
+        profile_updater = MagicMock(spec=ProfileUpdater)
+
+        daily_reporter = MagicMock(spec=DailyReporter)
+        daily_reporter.should_post_daily_report.return_value = False
+
+        x_api_client = MagicMock()
+
+        reply_monitor = MagicMock(spec=ReplyMonitor)
+        allowed_users_service = MagicMock(spec=AllowedUsersService)
+        reply_processor = MagicMock(spec=ReplyProcessor)
+
+        return {
+            "state": state,
+            "state_store": state_store,
+            "timeline_monitor": timeline_monitor,
+            "reply_monitor": reply_monitor,
+            "allowed_users_service": allowed_users_service,
+            "reply_processor": reply_processor,
+            "xp_calculator": xp_calculator,
+            "level_manager": level_manager,
+            "ai_generator": ai_generator,
+            "image_compositor": image_compositor,
+            "profile_updater": profile_updater,
+            "daily_reporter": daily_reporter,
+            "x_api_client": x_api_client,
+        }
+
+    def _make_reply(self, reply_id="1001", author_id="user_123",
+                    author_username="test_user"):
+        """テスト用Replyオブジェクトを生成"""
+        from src.hokuhoku_imomaru_bot.models import Reply
+        return Reply(
+            id=reply_id,
+            text="テストリプライ",
+            author_id=author_id,
+            author_username=author_username,
+            created_at="2026-02-28T10:00:00Z",
+            in_reply_to_tweet_id="bot_tweet_001",
+            in_reply_to_user_id="bot_user_id",
+        )
+
+    def test_reply_processing_in_daily_report_mode(self):
+        """Daily Report Modeでリプライ処理が実行されることを確認"""
+        mocks = self._make_base_mocks()
+        reply = self._make_reply()
+        mocks["reply_monitor"].detect_replies.return_value = [reply]
+        mocks["allowed_users_service"].is_user_allowed.return_value = True
+        mocks["reply_processor"].process_reply.return_value = True
+
+        result = _process_bot_logic(
+            state=mocks["state"],
+            state_store=mocks["state_store"],
+            timeline_monitor=mocks["timeline_monitor"],
+            reply_monitor=mocks["reply_monitor"],
+            allowed_users_service=mocks["allowed_users_service"],
+            reply_processor=mocks["reply_processor"],
+            xp_calculator=mocks["xp_calculator"],
+            level_manager=mocks["level_manager"],
+            ai_generator=mocks["ai_generator"],
+            image_compositor=mocks["image_compositor"],
+            profile_updater=mocks["profile_updater"],
+            daily_reporter=mocks["daily_reporter"],
+            x_api_client=mocks["x_api_client"],
+            execution_mode="daily_report",
+        )
+
+        assert result["replies_processed"] == 1
+        mocks["reply_monitor"].detect_replies.assert_called_once()
+        mocks["allowed_users_service"].is_user_allowed.assert_called_once_with("user_123")
+        mocks["reply_processor"].process_reply.assert_called_once()
+
+    def test_reply_processing_in_core_time_mode(self):
+        """Core Time Modeでリプライ処理が実行されることを確認"""
+        mocks = self._make_base_mocks()
+        mocks["daily_reporter"].should_post_morning_content.return_value = False
+        reply = self._make_reply()
+        mocks["reply_monitor"].detect_replies.return_value = [reply]
+        mocks["allowed_users_service"].is_user_allowed.return_value = True
+        mocks["reply_processor"].process_reply.return_value = True
+
+        result = _process_bot_logic(
+            state=mocks["state"],
+            state_store=mocks["state_store"],
+            timeline_monitor=mocks["timeline_monitor"],
+            reply_monitor=mocks["reply_monitor"],
+            allowed_users_service=mocks["allowed_users_service"],
+            reply_processor=mocks["reply_processor"],
+            xp_calculator=mocks["xp_calculator"],
+            level_manager=mocks["level_manager"],
+            ai_generator=mocks["ai_generator"],
+            image_compositor=mocks["image_compositor"],
+            profile_updater=mocks["profile_updater"],
+            daily_reporter=mocks["daily_reporter"],
+            x_api_client=mocks["x_api_client"],
+            execution_mode="core_time",
+        )
+
+        assert result["replies_processed"] == 1
+        mocks["reply_monitor"].detect_replies.assert_called_once()
+
+    def test_allowed_user_reply_processed(self):
+        """許可ユーザーからのリプライが処理されることを確認"""
+        mocks = self._make_base_mocks()
+        reply = self._make_reply(author_id="allowed_user_001")
+        mocks["reply_monitor"].detect_replies.return_value = [reply]
+        mocks["allowed_users_service"].is_user_allowed.return_value = True
+        mocks["reply_processor"].process_reply.return_value = True
+
+        result = _process_bot_logic(
+            state=mocks["state"],
+            state_store=mocks["state_store"],
+            timeline_monitor=mocks["timeline_monitor"],
+            reply_monitor=mocks["reply_monitor"],
+            allowed_users_service=mocks["allowed_users_service"],
+            reply_processor=mocks["reply_processor"],
+            xp_calculator=mocks["xp_calculator"],
+            level_manager=mocks["level_manager"],
+            ai_generator=mocks["ai_generator"],
+            image_compositor=mocks["image_compositor"],
+            profile_updater=mocks["profile_updater"],
+            daily_reporter=mocks["daily_reporter"],
+            x_api_client=mocks["x_api_client"],
+        )
+
+        assert result["replies_processed"] == 1
+        mocks["reply_processor"].process_reply.assert_called_once_with(
+            reply=reply,
+            ai_generator=mocks["ai_generator"],
+            x_api_client=mocks["x_api_client"],
+        )
+
+    def test_non_allowed_user_reply_skipped(self):
+        """非許可ユーザーからのリプライがスキップされることを確認"""
+        mocks = self._make_base_mocks()
+        reply = self._make_reply(author_id="non_allowed_user")
+        mocks["reply_monitor"].detect_replies.return_value = [reply]
+        mocks["allowed_users_service"].is_user_allowed.return_value = False
+
+        result = _process_bot_logic(
+            state=mocks["state"],
+            state_store=mocks["state_store"],
+            timeline_monitor=mocks["timeline_monitor"],
+            reply_monitor=mocks["reply_monitor"],
+            allowed_users_service=mocks["allowed_users_service"],
+            reply_processor=mocks["reply_processor"],
+            xp_calculator=mocks["xp_calculator"],
+            level_manager=mocks["level_manager"],
+            ai_generator=mocks["ai_generator"],
+            image_compositor=mocks["image_compositor"],
+            profile_updater=mocks["profile_updater"],
+            daily_reporter=mocks["daily_reporter"],
+            x_api_client=mocks["x_api_client"],
+        )
+
+        assert result["replies_processed"] == 0
+        mocks["reply_processor"].process_reply.assert_not_called()
+
+    def test_latest_reply_check_id_updated(self):
+        """latest_reply_check_idが最大のリプライIDで更新されることを確認"""
+        mocks = self._make_base_mocks()
+        reply1 = self._make_reply(reply_id="100", author_id="user_1")
+        reply2 = self._make_reply(reply_id="200", author_id="user_2")
+        mocks["reply_monitor"].detect_replies.return_value = [reply1, reply2]
+        mocks["allowed_users_service"].is_user_allowed.return_value = True
+        mocks["reply_processor"].process_reply.return_value = True
+
+        _process_bot_logic(
+            state=mocks["state"],
+            state_store=mocks["state_store"],
+            timeline_monitor=mocks["timeline_monitor"],
+            reply_monitor=mocks["reply_monitor"],
+            allowed_users_service=mocks["allowed_users_service"],
+            reply_processor=mocks["reply_processor"],
+            xp_calculator=mocks["xp_calculator"],
+            level_manager=mocks["level_manager"],
+            ai_generator=mocks["ai_generator"],
+            image_compositor=mocks["image_compositor"],
+            profile_updater=mocks["profile_updater"],
+            daily_reporter=mocks["daily_reporter"],
+            x_api_client=mocks["x_api_client"],
+        )
+
+        assert mocks["state"].latest_reply_check_id == "200"
+
+    def test_since_tweet_id_passed_to_detect_replies(self):
+        """state.latest_reply_check_idがdetect_repliesに渡されることを確認"""
+        mocks = self._make_base_mocks()
+        mocks["state"].latest_reply_check_id = "prev_check_id_999"
+        mocks["reply_monitor"].detect_replies.return_value = []
+
+        _process_bot_logic(
+            state=mocks["state"],
+            state_store=mocks["state_store"],
+            timeline_monitor=mocks["timeline_monitor"],
+            reply_monitor=mocks["reply_monitor"],
+            allowed_users_service=mocks["allowed_users_service"],
+            reply_processor=mocks["reply_processor"],
+            xp_calculator=mocks["xp_calculator"],
+            level_manager=mocks["level_manager"],
+            ai_generator=mocks["ai_generator"],
+            image_compositor=mocks["image_compositor"],
+            profile_updater=mocks["profile_updater"],
+            daily_reporter=mocks["daily_reporter"],
+            x_api_client=mocks["x_api_client"],
+        )
+
+        mocks["reply_monitor"].detect_replies.assert_called_once_with(
+            since_tweet_id="prev_check_id_999",
+        )
+
+    def test_mixed_allowed_and_non_allowed_users(self):
+        """許可・非許可ユーザーが混在する場合のテスト"""
+        mocks = self._make_base_mocks()
+        reply_allowed = self._make_reply(reply_id="101", author_id="allowed_user")
+        reply_not_allowed = self._make_reply(reply_id="102", author_id="blocked_user")
+        reply_allowed2 = self._make_reply(reply_id="103", author_id="allowed_user2")
+        mocks["reply_monitor"].detect_replies.return_value = [
+            reply_allowed, reply_not_allowed, reply_allowed2,
+        ]
+        mocks["allowed_users_service"].is_user_allowed.side_effect = [True, False, True]
+        mocks["reply_processor"].process_reply.return_value = True
+
+        result = _process_bot_logic(
+            state=mocks["state"],
+            state_store=mocks["state_store"],
+            timeline_monitor=mocks["timeline_monitor"],
+            reply_monitor=mocks["reply_monitor"],
+            allowed_users_service=mocks["allowed_users_service"],
+            reply_processor=mocks["reply_processor"],
+            xp_calculator=mocks["xp_calculator"],
+            level_manager=mocks["level_manager"],
+            ai_generator=mocks["ai_generator"],
+            image_compositor=mocks["image_compositor"],
+            profile_updater=mocks["profile_updater"],
+            daily_reporter=mocks["daily_reporter"],
+            x_api_client=mocks["x_api_client"],
+        )
+
+        assert result["replies_processed"] == 2
+        assert mocks["reply_processor"].process_reply.call_count == 2
+
+    def test_no_xp_gained_from_reply_processing(self):
+        """リプライ処理でXPが加算されないことを確認"""
+        mocks = self._make_base_mocks()
+        reply = self._make_reply()
+        mocks["reply_monitor"].detect_replies.return_value = [reply]
+        mocks["allowed_users_service"].is_user_allowed.return_value = True
+        mocks["reply_processor"].process_reply.return_value = True
+
+        result = _process_bot_logic(
+            state=mocks["state"],
+            state_store=mocks["state_store"],
+            timeline_monitor=mocks["timeline_monitor"],
+            reply_monitor=mocks["reply_monitor"],
+            allowed_users_service=mocks["allowed_users_service"],
+            reply_processor=mocks["reply_processor"],
+            xp_calculator=mocks["xp_calculator"],
+            level_manager=mocks["level_manager"],
+            ai_generator=mocks["ai_generator"],
+            image_compositor=mocks["image_compositor"],
+            profile_updater=mocks["profile_updater"],
+            daily_reporter=mocks["daily_reporter"],
+            x_api_client=mocks["x_api_client"],
+        )
+
+        assert result["xp_gained"] == 0.0
+        assert mocks["state"].cumulative_xp == 0.0

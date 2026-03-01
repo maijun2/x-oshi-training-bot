@@ -286,3 +286,146 @@ class TestXAPIClientCredentialProtection:
         # ログに出力しないことが重要（実装で対応済み）
         # ここではオブジェクトが正しく作成されていることを確認
         assert credentials.api_key == "test_api_key"
+
+
+class TestXAPIClientMentionsAndTweet:
+    """get_user_mentionsとget_tweetメソッドのテスト"""
+
+    @mock_aws
+    @patch("requests.request")
+    def test_get_user_mentions(self, mock_request):
+        """get_user_mentionsが正しいパラメータでAPIを呼び出すこと"""
+        secrets_client = boto3.client("secretsmanager", region_name="ap-northeast-1")
+        create_secret(secrets_client, "imomaru-bot/x-api-credentials", TEST_CREDENTIALS)
+
+        mock_response = MagicMock()
+        mock_response.ok = True
+        mock_response.text = json.dumps({
+            "data": [
+                {
+                    "id": "111",
+                    "text": "@bot リプライ",
+                    "author_id": "222",
+                    "in_reply_to_user_id": "333",
+                }
+            ],
+            "includes": {"users": [{"id": "222", "username": "test_user"}]},
+        })
+        mock_response.json.return_value = json.loads(mock_response.text)
+        mock_request.return_value = mock_response
+
+        client = XAPIClient(secrets_client)
+        result = client.get_user_mentions("333", since_id="100")
+
+        assert "data" in result
+        assert len(result["data"]) == 1
+
+        # リクエストパラメータを確認
+        call_args = mock_request.call_args
+        params = call_args.kwargs.get("params", {})
+        assert params["since_id"] == "100"
+        assert "author_id" in params["tweet.fields"]
+        assert "in_reply_to_user_id" in params["tweet.fields"]
+        assert params["expansions"] == "author_id"
+
+    @mock_aws
+    @patch("requests.request")
+    def test_get_user_mentions_without_since_id(self, mock_request):
+        """since_idなしでget_user_mentionsが動作すること"""
+        secrets_client = boto3.client("secretsmanager", region_name="ap-northeast-1")
+        create_secret(secrets_client, "imomaru-bot/x-api-credentials", TEST_CREDENTIALS)
+
+        mock_response = MagicMock()
+        mock_response.ok = True
+        mock_response.text = json.dumps({"data": []})
+        mock_response.json.return_value = {"data": []}
+        mock_request.return_value = mock_response
+
+        client = XAPIClient(secrets_client)
+        result = client.get_user_mentions("333")
+
+        call_args = mock_request.call_args
+        params = call_args.kwargs.get("params", {})
+        assert "since_id" not in params
+
+    @mock_aws
+    @patch("requests.request")
+    def test_get_user_mentions_max_results_capped(self, mock_request):
+        """max_resultsが100を超えないこと"""
+        secrets_client = boto3.client("secretsmanager", region_name="ap-northeast-1")
+        create_secret(secrets_client, "imomaru-bot/x-api-credentials", TEST_CREDENTIALS)
+
+        mock_response = MagicMock()
+        mock_response.ok = True
+        mock_response.text = json.dumps({"data": []})
+        mock_response.json.return_value = {"data": []}
+        mock_request.return_value = mock_response
+
+        client = XAPIClient(secrets_client)
+        client.get_user_mentions("333", max_results=200)
+
+        call_args = mock_request.call_args
+        params = call_args.kwargs.get("params", {})
+        assert params["max_results"] == 100
+
+    @mock_aws
+    @patch("requests.request")
+    def test_get_tweet(self, mock_request):
+        """get_tweetが正しくツイートデータを返すこと"""
+        secrets_client = boto3.client("secretsmanager", region_name="ap-northeast-1")
+        create_secret(secrets_client, "imomaru-bot/x-api-credentials", TEST_CREDENTIALS)
+
+        mock_response = MagicMock()
+        mock_response.ok = True
+        mock_response.text = json.dumps({
+            "data": {
+                "id": "444",
+                "text": "ボット投稿",
+                "created_at": "2025-01-15T10:00:00Z",
+            }
+        })
+        mock_response.json.return_value = json.loads(mock_response.text)
+        mock_request.return_value = mock_response
+
+        client = XAPIClient(secrets_client)
+        result = client.get_tweet("444")
+
+        assert result["id"] == "444"
+        assert result["text"] == "ボット投稿"
+        assert result["created_at"] == "2025-01-15T10:00:00Z"
+
+    @mock_aws
+    @patch("requests.request")
+    def test_get_tweet_returns_empty_when_no_data(self, mock_request):
+        """dataがない場合に空辞書を返すこと"""
+        secrets_client = boto3.client("secretsmanager", region_name="ap-northeast-1")
+        create_secret(secrets_client, "imomaru-bot/x-api-credentials", TEST_CREDENTIALS)
+
+        mock_response = MagicMock()
+        mock_response.ok = True
+        mock_response.text = json.dumps({})
+        mock_response.json.return_value = {}
+        mock_request.return_value = mock_response
+
+        client = XAPIClient(secrets_client)
+        result = client.get_tweet("444")
+
+        assert result == {}
+
+    @mock_aws
+    @patch("requests.request")
+    def test_get_user_mentions_rate_limit_error(self, mock_request):
+        """レート制限エラーが正しく伝播すること"""
+        secrets_client = boto3.client("secretsmanager", region_name="ap-northeast-1")
+        create_secret(secrets_client, "imomaru-bot/x-api-credentials", TEST_CREDENTIALS)
+
+        mock_response = MagicMock()
+        mock_response.ok = False
+        mock_response.status_code = 429
+        mock_response.text = "Rate limit exceeded"
+        mock_response.raise_for_status.side_effect = Exception("429 Too Many Requests")
+        mock_request.return_value = mock_response
+
+        client = XAPIClient(secrets_client)
+        with pytest.raises(Exception, match="429"):
+            client.get_user_mentions("333")

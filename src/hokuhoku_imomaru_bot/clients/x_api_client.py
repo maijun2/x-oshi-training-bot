@@ -468,3 +468,61 @@ class XAPIClient:
         except Exception as e:
             logger.error(f"Failed to upload media: {e}")
             return None
+
+    def get_user_mentions(
+        self,
+        user_id: str,
+        since_id: Optional[str] = None,
+        max_results: int = 100,
+    ) -> Dict[str, Any]:
+        """
+        ユーザーへのメンションを取得（v2）
+
+        Args:
+            user_id: ユーザーID
+            since_id: このID以降のメンションを取得
+            max_results: 最大取得件数（最大100）
+
+        Returns:
+            メンションデータ
+        """
+        params = {
+            "max_results": min(max_results, 100),
+            "tweet.fields": "created_at,author_id,in_reply_to_user_id,referenced_tweets",
+            "expansions": "author_id",
+            "user.fields": "username",
+        }
+        if since_id:
+            params["since_id"] = since_id
+
+        return self.request_v2(
+            "GET",
+            f"/users/{user_id}/mentions",
+            params=params,
+        )
+
+    def get_tweet(
+        self,
+        tweet_id: str,
+    ) -> Dict[str, Any]:
+        """
+        特定のツイートを取得（v2）
+
+        Args:
+            tweet_id: ツイートID
+
+        Returns:
+            ツイートデータ（data部分）
+        """
+        params = {
+            "tweet.fields": "created_at,text",
+        }
+
+        response = self.request_v2(
+            "GET",
+            f"/tweets/{tweet_id}",
+            params=params,
+        )
+
+        return response.get("data", {})
+

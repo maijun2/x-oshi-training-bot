@@ -23,6 +23,9 @@ from .services import (
     ImageCompositor,
     ProfileUpdater,
     DailyReporter,
+    ReplyMonitor,
+    AllowedUsersService,
+    ReplyProcessor,
 )
 from .services.daily_reporter import JST
 from .utils import (
@@ -45,6 +48,8 @@ SECRET_NAME = os.environ.get("SECRET_NAME", "imomaru-bot/x-api-credentials")
 OSHI_USER_ID = os.environ.get("OSHI_USER_ID", "")
 GROUP_USER_ID = os.environ.get("GROUP_USER_ID", "")
 BOT_USER_ID = os.environ.get("BOT_USER_ID", "")
+ALLOWED_USERS_TABLE_NAME = os.environ.get("ALLOWED_USERS_TABLE_NAME", "imomaru-bot-allowed-users")
+PROCESSED_REPLIES_TABLE_NAME = os.environ.get("PROCESSED_REPLIES_TABLE_NAME", "imomaru-bot-processed-replies")
 
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
@@ -112,6 +117,21 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         
         daily_reporter = DailyReporter(api_client=x_api_client)
         
+        reply_monitor = ReplyMonitor(
+            api_client=x_api_client,
+            bot_user_id=BOT_USER_ID,
+        )
+        
+        allowed_users_service = AllowedUsersService(
+            dynamodb_client=dynamodb_client,
+            table_name=ALLOWED_USERS_TABLE_NAME,
+        )
+        
+        reply_processor = ReplyProcessor(
+            dynamodb_client=dynamodb_client,
+            processed_replies_table_name=PROCESSED_REPLIES_TABLE_NAME,
+        )
+        
         # 状態の読み込み
         state = state_store.load_state()
         
@@ -124,6 +144,9 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             state=state,
             state_store=state_store,
             timeline_monitor=timeline_monitor,
+            reply_monitor=reply_monitor,
+            allowed_users_service=allowed_users_service,
+            reply_processor=reply_processor,
             xp_calculator=xp_calculator,
             level_manager=level_manager,
             ai_generator=ai_generator,
@@ -160,6 +183,9 @@ def _process_bot_logic(
     state: BotState,
     state_store: StateStore,
     timeline_monitor: TimelineMonitor,
+    reply_monitor: ReplyMonitor,
+    allowed_users_service: AllowedUsersService,
+    reply_processor: ReplyProcessor,
     xp_calculator: XPCalculator,
     level_manager: LevelManager,
     ai_generator: AIGenerator,
@@ -178,6 +204,9 @@ def _process_bot_logic(
         state: 現在のボット状態
         state_store: StateStoreインスタンス
         timeline_monitor: TimelineMonitorインスタンス
+        reply_monitor: ReplyMonitorインスタンス
+        allowed_users_service: AllowedUsersServiceインスタンス
+        reply_processor: ReplyProcessorインスタンス
         xp_calculator: XPCalculatorインスタンス
         level_manager: LevelManagerインスタンス
         ai_generator: AIGeneratorインスタンス
@@ -202,6 +231,7 @@ def _process_bot_logic(
         "quotes_posted": 0,
         "new_likes": 0,
         "new_retweets": 0,
+        "replies_processed": 0,
     }
     
     is_core_time = (execution_mode == "core_time")
@@ -321,20 +351,9 @@ def _process_bot_logic(
             message=f"Group post detected: {tweet.id}",
         )
         
-        # AI応答を生成して引用ポスト（冪等性制御付き）
-        posted = _post_quote_safe(
-            tweet=tweet,
-            post_type="group",
-            ai_generator=ai_generator,
-            x_api_client=x_api_client,
-            state_store=state_store,
-        )
-        
-        # 投稿成功時のみXPを加算（既に処理済みの場合はスキップ）
-        if posted:
-            result["quotes_posted"] += 1
-            
-            # XPを加算
+        # 引用ポストをスキップ（AI生成もスキップ）- XP加算のみ実行
+        try:
+            state_store.acquire_tweet_lock(tweet.id, "group_original_xp_only")
             xp = xp_calculator.calculate_xp(ActivityType.GROUP_POST)
             state.cumulative_xp += xp
             state.daily_xp += xp
@@ -342,6 +361,21 @@ def _process_bot_logic(
             state.daily_group_count += 1
             result["group_posts_detected"] += 1
             result["xp_gained"] += xp
+            
+            log_event(
+                level=LogLevel.INFO,
+                event_type=EventType.POST_DETECTED,
+                data={
+                    "tweet_id": tweet.id,
+                    "action": "xp_only",
+                    "xp_gained": xp,
+                    "quote_post_skipped": True,
+                    "ai_generation_skipped": True,
+                },
+                message=f"Group original post processed (XP only, quote post skipped): {tweet.id}",
+            )
+        except TweetAlreadyProcessedError:
+            pass  # 既に処理済み - スキップ
         
         all_tweets.append(tweet)
     
@@ -380,6 +414,39 @@ def _process_bot_logic(
     group_all = group_original + group_retweets
     if group_all:
         state.latest_group_tweet_id = max(group_all, key=lambda t: int(t.id)).id
+    
+    # リプライ検出・処理（Daily Report Mode、Core Time Modeの両方で実行）
+    replies = reply_monitor.detect_replies(
+        since_tweet_id=state.latest_reply_check_id,
+    )
+    
+    replies_processed_count = 0
+    for reply in replies:
+        # 許可ユーザーチェック
+        if not allowed_users_service.is_user_allowed(reply.author_id):
+            log_event(
+                level=LogLevel.INFO,
+                event_type=EventType.POST_DETECTED,
+                data={"reply_id": reply.id, "author_id": reply.author_id},
+                message=f"Reply from non-allowed user, skipping: {reply.id}",
+            )
+            continue
+        
+        # リプライ処理
+        processed = reply_processor.process_reply(
+            reply=reply,
+            ai_generator=ai_generator,
+            x_api_client=x_api_client,
+        )
+        if processed:
+            replies_processed_count += 1
+    
+    result["replies_processed"] = replies_processed_count
+    
+    # latest_reply_check_idを更新
+    if replies:
+        latest_reply_id = max(replies, key=lambda r: int(r.id)).id
+        state.latest_reply_check_id = latest_reply_id
     
     # XP獲得をログ
     if result["xp_gained"] > 0:

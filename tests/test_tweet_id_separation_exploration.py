@@ -32,6 +32,9 @@ from src.hokuhoku_imomaru_bot.services import (
     ImageCompositor,
     ProfileUpdater,
     DailyReporter,
+    ReplyMonitor,
+    AllowedUsersService,
+    ReplyProcessor,
 )
 
 
@@ -99,10 +102,17 @@ def _make_mocks(oshi_tweets, group_tweets):
     x_api_client = MagicMock()
     x_api_client.post_tweet.return_value = {"data": {"id": "999"}}
 
+    reply_monitor = MagicMock(spec=ReplyMonitor)
+    reply_monitor.detect_replies.return_value = []
+
+    allowed_users_service = MagicMock(spec=AllowedUsersService)
+    reply_processor = MagicMock(spec=ReplyProcessor)
+
     return (
         state, state_store, timeline_monitor, xp_calculator,
         level_manager, ai_generator, image_compositor,
         profile_updater, daily_reporter, x_api_client,
+        reply_monitor, allowed_users_service, reply_processor,
     )
 
 
@@ -132,12 +142,16 @@ def test_fault_condition_independent_id_update(oshi_tweets, group_tweets):
         state, state_store, timeline_monitor, xp_calculator,
         level_manager, ai_generator, image_compositor,
         profile_updater, daily_reporter, x_api_client,
+        reply_monitor, allowed_users_service, reply_processor,
     ) = _make_mocks(oshi_tweets, group_tweets)
 
     _process_bot_logic(
         state=state,
         state_store=state_store,
         timeline_monitor=timeline_monitor,
+        reply_monitor=reply_monitor,
+        allowed_users_service=allowed_users_service,
+        reply_processor=reply_processor,
         xp_calculator=xp_calculator,
         level_manager=level_manager,
         ai_generator=ai_generator,
@@ -186,6 +200,7 @@ def test_fault_condition_independent_since_id_usage(oshi_tweets, group_tweets):
         state, state_store, timeline_monitor, xp_calculator,
         level_manager, ai_generator, image_compositor,
         profile_updater, daily_reporter, x_api_client,
+        reply_monitor, allowed_users_service, reply_processor,
     ) = _make_mocks(oshi_tweets, group_tweets)
 
     # 初期状態を設定（修正後のフィールドが存在する前提）
@@ -197,6 +212,9 @@ def test_fault_condition_independent_since_id_usage(oshi_tweets, group_tweets):
         state=state,
         state_store=state_store,
         timeline_monitor=timeline_monitor,
+        reply_monitor=reply_monitor,
+        allowed_users_service=allowed_users_service,
+        reply_processor=reply_processor,
         xp_calculator=xp_calculator,
         level_manager=level_manager,
         ai_generator=ai_generator,

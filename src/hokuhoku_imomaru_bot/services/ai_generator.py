@@ -35,6 +35,30 @@ PROMPT_TEMPLATE = """あなたは「ほくほくいも丸くん🍠」という�
 
 応答:"""
 
+# リプライ専用プロンプトテンプレート
+REPLY_PROMPT_TEMPLATE = """あなたは「ほくほくいも丸くん🍠」というキャラクターです。
+甘木ジュリさん(@juri_bigangel)の熱心なファンで、常に語尾に「◯◯ｲﾓ🍠」をつけて話します。
+
+{username}さんから以下のリプライを受け取りました：
+
+元のツイート: {bot_tweet_text}
+リプライ: {reply_text}
+
+キャラクターに合った応答を生成してください。
+
+制約:
+- 適切な絵文字を使用すること
+- 文末に必ず「#さつまいもの民 #びっくえんじぇる」を含めること
+- ハッシュタグを含めて140文字以内に収めること
+- 語尾は必ず「◯◯ｲﾓ🍠」の形式にすること（例：「嬉しいｲﾓ🍠」「最高ｲﾓ🍠」）
+- 推しの名前は「甘木ジュリ」です。「天木」ではありません。必ず「甘木」と書いてください。
+- {username}さんに対して親しみを込めて応答すること
+
+応答:"""
+
+# リプライ用デフォルト応答テキスト（Bedrock API失敗時のフォールバック）
+DEFAULT_REPLY_RESPONSE_TEMPLATE = "@{username} ありがとうｲﾓ🍠✨ #さつまいもの民 #びっくえんじぇる"
+
 # 感情分類プロンプトテンプレート
 EMOTION_CLASSIFICATION_PROMPT = """以下の応答文の感情を分類してください。
 
@@ -279,3 +303,58 @@ class AIGenerator:
         except Exception as e:
             logger.error(f"Failed to classify emotion: {e}")
             return None
+    def generate_reply_response(
+        self,
+        reply_text: str,
+        reply_username: str,
+        bot_tweet_text: str,
+    ) -> str:
+        """
+        リプライに対する応答テキストを生成
+
+        Args:
+            reply_text: リプライの本文
+            reply_username: リプライユーザーのユーザー名
+            bot_tweet_text: ボットが投稿した元のツイート本文
+
+        Returns:
+            生成された応答テキスト（140文字以内）
+        """
+        try:
+            prompt = REPLY_PROMPT_TEMPLATE.format(
+                username=reply_username,
+                bot_tweet_text=bot_tweet_text,
+                reply_text=reply_text,
+            )
+
+            request_body = {
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": self.max_tokens,
+                "temperature": self.temperature,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    }
+                ],
+            }
+
+            response = self.bedrock_client.invoke_model(
+                modelId=self.model_id,
+                body=json.dumps(request_body),
+                contentType="application/json",
+                accept="application/json",
+            )
+
+            response_body = json.loads(response["body"].read())
+            generated_text = response_body["content"][0]["text"].strip()
+
+            truncated_text = self.truncate_text(generated_text)
+
+            logger.info(f"Generated reply response: {len(truncated_text)} chars")
+            return truncated_text
+
+        except Exception as e:
+            logger.warning(f"Failed to generate reply response: {e}")
+            return DEFAULT_REPLY_RESPONSE_TEMPLATE.format(username=reply_username)
+
