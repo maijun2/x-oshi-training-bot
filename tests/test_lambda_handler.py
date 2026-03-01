@@ -48,6 +48,7 @@ class TestProcessBotLogic:
         timeline_monitor.check_oshi_timeline.return_value = []
         timeline_monitor.check_group_timeline.return_value = []
         timeline_monitor.filter_original_posts.return_value = []
+        timeline_monitor.filter_retweets.return_value = []
         
         xp_calculator = XPCalculator()
         level_manager = MagicMock(spec=LevelManager)
@@ -99,6 +100,7 @@ class TestProcessBotLogic:
         timeline_monitor.check_oshi_timeline.return_value = [oshi_tweet]
         timeline_monitor.check_group_timeline.return_value = []
         timeline_monitor.filter_original_posts.side_effect = lambda tweets: tweets
+        timeline_monitor.filter_retweets.return_value = []
         
         xp_calculator = XPCalculator()
         level_manager = MagicMock(spec=LevelManager)
@@ -152,6 +154,7 @@ class TestProcessBotLogic:
         timeline_monitor.check_oshi_timeline.return_value = []
         timeline_monitor.check_group_timeline.return_value = [group_tweet]
         timeline_monitor.filter_original_posts.side_effect = lambda tweets: tweets
+        timeline_monitor.filter_retweets.return_value = []
         
         xp_calculator = XPCalculator()
         level_manager = MagicMock(spec=LevelManager)
@@ -198,6 +201,7 @@ class TestProcessBotLogic:
         timeline_monitor.check_oshi_timeline.return_value = []
         timeline_monitor.check_group_timeline.return_value = []
         timeline_monitor.filter_original_posts.return_value = []
+        timeline_monitor.filter_retweets.return_value = []
         
         xp_calculator = XPCalculator()
         level_manager = MagicMock(spec=LevelManager)
@@ -253,6 +257,7 @@ class TestProcessBotLogic:
         timeline_monitor.check_oshi_timeline.return_value = []
         timeline_monitor.check_group_timeline.return_value = []
         timeline_monitor.filter_original_posts.return_value = []
+        timeline_monitor.filter_retweets.return_value = []
         
         xp_calculator = XPCalculator()
         level_manager = MagicMock(spec=LevelManager)
@@ -288,21 +293,26 @@ class TestProcessBotLogic:
         state_store.reset_daily_counts.assert_called_once()
     
     def test_latest_tweet_id_updated(self):
-        """最新Tweet IDが更新されることを確認"""
+        """推しとグループの最新Tweet IDが独立して更新されることを確認"""
         state = BotState()
         state_store = MagicMock(spec=StateStore)
         state_store.reset_daily_counts.return_value = state
         
-        tweets = [
+        oshi_tweets = [
             Tweet(id="100", text="投稿1", author_id="oshi"),
             Tweet(id="200", text="投稿2", author_id="oshi"),
             Tweet(id="150", text="投稿3", author_id="oshi"),
         ]
+        group_tweets = [
+            Tweet(id="300", text="グループ投稿1", author_id="group"),
+            Tweet(id="250", text="グループ投稿2", author_id="group"),
+        ]
         
         timeline_monitor = MagicMock(spec=TimelineMonitor)
-        timeline_monitor.check_oshi_timeline.return_value = tweets
-        timeline_monitor.check_group_timeline.return_value = []
+        timeline_monitor.check_oshi_timeline.return_value = oshi_tweets
+        timeline_monitor.check_group_timeline.return_value = group_tweets
         timeline_monitor.filter_original_posts.side_effect = lambda t: t
+        timeline_monitor.filter_retweets.side_effect = lambda t: []
         
         xp_calculator = XPCalculator()
         level_manager = MagicMock(spec=LevelManager)
@@ -333,8 +343,10 @@ class TestProcessBotLogic:
             x_api_client=x_api_client,
         )
         
-        # 最大のIDが設定される
-        assert state.latest_tweet_id == "200"
+        # 推しの最大IDが latest_oshi_tweet_id に設定される
+        assert state.latest_oshi_tweet_id == "200"
+        # グループの最大IDが latest_group_tweet_id に設定される
+        assert state.latest_group_tweet_id == "300"
 
 
 class TestCheckTimelineSafe:
@@ -734,6 +746,7 @@ class TestMultiplePostsDetection:
         timeline_monitor.check_oshi_timeline.return_value = oshi_tweets
         timeline_monitor.check_group_timeline.return_value = group_tweets
         timeline_monitor.filter_original_posts.side_effect = lambda t: t
+        timeline_monitor.filter_retweets.return_value = []
         
         xp_calculator = XPCalculator()
         level_manager = MagicMock(spec=LevelManager)

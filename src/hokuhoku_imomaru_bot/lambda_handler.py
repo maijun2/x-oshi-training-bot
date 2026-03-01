@@ -224,18 +224,18 @@ def _process_bot_logic(
         message="Checking timelines",
     )
     
-    # 推しのタイムラインをチェック
+    # 推しのタイムラインをチェック（推し専用IDを使用）
     oshi_tweets = _check_timeline_safe(
         timeline_monitor.check_oshi_timeline,
-        state.latest_tweet_id,
+        state.latest_oshi_tweet_id,
         "oshi_timeline",
     )
     
-    # グループのタイムラインをチェック（daily_reportのみ）
+    # グループのタイムラインをチェック（daily_reportのみ、グループ専用IDを使用）
     if not is_core_time:
         group_tweets = _check_timeline_safe(
             timeline_monitor.check_group_timeline,
-            state.latest_tweet_id,
+            state.latest_group_tweet_id,
             "group_timeline",
         )
     else:
@@ -371,10 +371,15 @@ def _process_bot_logic(
         
         all_tweets.append(tweet)
     
-    # 最新のTweet IDを更新
-    if all_tweets:
-        latest_id = max(all_tweets, key=lambda t: int(t.id)).id
-        state.latest_tweet_id = latest_id
+    # 推しとグループのIDを個別に集計し、それぞれの最大IDで対応するフィールドのみを更新
+    # （all_tweetsはログ等で引き続き使用するが、ID更新には使わない）
+    oshi_all = oshi_original + oshi_retweets
+    if oshi_all:
+        state.latest_oshi_tweet_id = max(oshi_all, key=lambda t: int(t.id)).id
+
+    group_all = group_original + group_retweets
+    if group_all:
+        state.latest_group_tweet_id = max(group_all, key=lambda t: int(t.id)).id
     
     # XP獲得をログ
     if result["xp_gained"] > 0:
@@ -455,11 +460,11 @@ def _process_bot_logic(
                 message="YouTube search posted",
             )
 
-        # 日曜のみ: 人気ポストの翻訳
+        # 日曜のみ: 人気ポストの翻訳（推し専用IDをフォールバックとして使用）
         if daily_reporter.should_post_translation(current_time):
             translation_posted = daily_reporter.post_translation(
                 oshi_user_id=OSHI_USER_ID,
-                latest_tweet_id=state.latest_tweet_id or "0",
+                latest_tweet_id=state.latest_oshi_tweet_id or "0",
             )
             if translation_posted:
                 result["translation_posted"] = True

@@ -14,6 +14,8 @@ def test_bot_state_default_values():
     assert state.cumulative_xp == 0.0
     assert state.current_level == 1
     assert state.latest_tweet_id is None
+    assert state.latest_oshi_tweet_id is None
+    assert state.latest_group_tweet_id is None
     # 累積カウント
     assert state.oshi_post_count == 0
     assert state.group_post_count == 0
@@ -34,6 +36,8 @@ def test_bot_state_custom_values():
         cumulative_xp=100.5,
         current_level=5,
         latest_tweet_id="12345",
+        latest_oshi_tweet_id="12300",
+        latest_group_tweet_id="12345",
         oshi_post_count=10,
         group_post_count=5,
         repost_count=20,
@@ -49,6 +53,8 @@ def test_bot_state_custom_values():
     assert state.cumulative_xp == 100.5
     assert state.current_level == 5
     assert state.latest_tweet_id == "12345"
+    assert state.latest_oshi_tweet_id == "12300"
+    assert state.latest_group_tweet_id == "12345"
     assert state.oshi_post_count == 10
     assert state.group_post_count == 5
     assert state.repost_count == 20
@@ -67,6 +73,8 @@ def test_bot_state_to_dict():
         cumulative_xp=50.0,
         current_level=3,
         latest_tweet_id="67890",
+        latest_oshi_tweet_id="67800",
+        latest_group_tweet_id="67890",
         oshi_post_count=5,
         group_post_count=3,
         repost_count=10,
@@ -85,6 +93,8 @@ def test_bot_state_to_dict():
     assert result["cumulative_xp"] == 50.0
     assert result["current_level"] == 3
     assert result["latest_tweet_id"] == "67890"
+    assert result["latest_oshi_tweet_id"] == "67800"
+    assert result["latest_group_tweet_id"] == "67890"
     assert result["oshi_post_count"] == 5
     assert result["group_post_count"] == 3
     assert result["repost_count"] == 10
@@ -103,6 +113,8 @@ def test_bot_state_from_dict():
         "cumulative_xp": 75.5,
         "current_level": 7,
         "latest_tweet_id": "11111",
+        "latest_oshi_tweet_id": "11100",
+        "latest_group_tweet_id": "11111",
         "last_updated": "2024-01-01T00:00:00",
         "oshi_post_count": 8,
         "group_post_count": 4,
@@ -121,6 +133,8 @@ def test_bot_state_from_dict():
     assert state.cumulative_xp == 75.5
     assert state.current_level == 7
     assert state.latest_tweet_id == "11111"
+    assert state.latest_oshi_tweet_id == "11100"
+    assert state.latest_group_tweet_id == "11111"
     assert state.last_updated == "2024-01-01T00:00:00"
     assert state.oshi_post_count == 8
     assert state.group_post_count == 4
@@ -132,6 +146,22 @@ def test_bot_state_from_dict():
     assert state.daily_like_count == 10
     assert state.daily_xp == 12.5
     assert state.last_daily_report_date == "2024-01-01"
+
+
+def test_bot_state_from_dict_fallback():
+    """from_dict()で新フィールドが存在しない場合、latest_tweet_idをフォールバックとして使用することを確認"""
+    data = {
+        "cumulative_xp": 50.0,
+        "current_level": 3,
+        "latest_tweet_id": "99999",
+    }
+    
+    state = BotState.from_dict(data)
+    
+    # フォールバック: latest_tweet_id の値が使用される
+    assert state.latest_oshi_tweet_id == "99999"
+    assert state.latest_group_tweet_id == "99999"
+    assert state.latest_tweet_id == "99999"
 
 
 def test_bot_state_get_xp_breakdown():

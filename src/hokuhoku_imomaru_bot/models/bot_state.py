@@ -36,6 +36,10 @@ class BotState:
     cumulative_xp: float = 0.0
     current_level: int = 1
     latest_tweet_id: Optional[str] = None
+    # 推し専用の最新Tweet ID（since_id として使用）
+    latest_oshi_tweet_id: Optional[str] = None
+    # グループ専用の最新Tweet ID（since_id として使用）
+    latest_group_tweet_id: Optional[str] = None
     last_updated: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     # 累積カウント
     oshi_post_count: int = 0
@@ -73,6 +77,8 @@ class BotState:
             "cumulative_xp": self.cumulative_xp,
             "current_level": self.current_level,
             "latest_tweet_id": self.latest_tweet_id,
+            "latest_oshi_tweet_id": self.latest_oshi_tweet_id,
+            "latest_group_tweet_id": self.latest_group_tweet_id,
             "last_updated": self.last_updated,
             "oshi_post_count": self.oshi_post_count,
             "group_post_count": self.group_post_count,
@@ -104,10 +110,17 @@ class BotState:
         Returns:
             BotStateインスタンス
         """
+        # 後方互換性: 新フィールドが存在しない場合は latest_tweet_id をフォールバック
+        latest_tweet_id = data.get("latest_tweet_id")
+        latest_oshi_tweet_id = data.get("latest_oshi_tweet_id") or latest_tweet_id
+        latest_group_tweet_id = data.get("latest_group_tweet_id") or latest_tweet_id
+
         return cls(
             cumulative_xp=float(data.get("cumulative_xp", 0.0)),
             current_level=int(data.get("current_level", 1)),
-            latest_tweet_id=data.get("latest_tweet_id"),
+            latest_tweet_id=latest_tweet_id,
+            latest_oshi_tweet_id=latest_oshi_tweet_id,
+            latest_group_tweet_id=latest_group_tweet_id,
             last_updated=data.get("last_updated", datetime.now(timezone.utc).isoformat()),
             oshi_post_count=int(data.get("oshi_post_count", 0)),
             group_post_count=int(data.get("group_post_count", 0)),
