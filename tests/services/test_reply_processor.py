@@ -43,8 +43,8 @@ def _mock_x_api_client(tweet_created_at=None, post_result_id="777"):
     """テスト用XAPIClientモックを生成"""
     mock = MagicMock()
     if tweet_created_at is None:
-        # デフォルトは5日前（30日以内）
-        tweet_created_at = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
+        # デフォルトは1日前（3日以内）
+        tweet_created_at = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
     mock.get_tweet.return_value = {
         "id": "500",
         "text": "ボット投稿テスト",
@@ -83,14 +83,14 @@ class TestReplyProcessorProcessReply:
 
     @mock_aws
     def test_reply_to_old_tweet_skipped(self):
-        """30日以上前のツイートへのリプライがスキップされること"""
+        """3日以上前のツイートへのリプライがスキップされること"""
         client = boto3.client("dynamodb", region_name="ap-northeast-1")
         _create_table(client)
 
         processor = ReplyProcessor(dynamodb_client=client, processed_replies_table_name=TABLE_NAME)
         reply = _make_reply()
-        # 60日前のツイート
-        old_date = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+        # 5日前のツイート
+        old_date = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
         mock_api = _mock_x_api_client(tweet_created_at=old_date)
         mock_ai = _mock_ai_generator()
 
@@ -120,6 +120,7 @@ class TestReplyProcessorProcessReply:
 
         assert result is False
         mock_ai.generate_reply_response.assert_not_called()
+        mock_api.get_tweet.assert_not_called()  # 処理済みチェックが先なのでget_tweetは呼ばれない
 
     @mock_aws
     def test_processed_reply_recorded_in_dynamodb(self):
@@ -242,13 +243,13 @@ class TestReplyProcessorProcessReply:
 
     @mock_aws
     def test_reply_to_tweet_within_30_days_processed(self):
-        """30日以内のツイートへのリプライが処理されること"""
+        """3日以内のツイートへのリプライが処理されること"""
         client = boto3.client("dynamodb", region_name="ap-northeast-1")
         _create_table(client)
 
         processor = ReplyProcessor(dynamodb_client=client, processed_replies_table_name=TABLE_NAME)
         reply = _make_reply()
-        recent_date = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
+        recent_date = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
         mock_api = _mock_x_api_client(tweet_created_at=recent_date)
         mock_ai = _mock_ai_generator()
 

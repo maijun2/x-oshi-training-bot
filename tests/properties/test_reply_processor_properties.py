@@ -34,8 +34,8 @@ user_id_st = st.text(
     max_size=20,
 ).filter(lambda x: x.isdigit())
 
-# 0〜90日の範囲でツイート経過日数を生成
-tweet_age_days_st = st.integers(min_value=0, max_value=90)
+# 0〜10日の範囲でツイート経過日数を生成
+tweet_age_days_st = st.integers(min_value=0, max_value=10)
 
 
 def _create_table(dynamodb_client):
@@ -61,7 +61,7 @@ def _make_reply(reply_id="111", author_id="222", in_reply_to_tweet_id="500"):
     )
 
 
-def _mock_x_api_client(tweet_age_days=5, post_result_id="777"):
+def _mock_x_api_client(tweet_age_days=1, post_result_id="777"):
     """テスト用XAPIClientモックを生成"""
     mock = MagicMock()
     created_at = (datetime.now(timezone.utc) - timedelta(days=tweet_age_days)).isoformat()
@@ -84,7 +84,7 @@ def _mock_ai_generator():
 # Feature: group-quote-removal-and-reply-feature
 # Property 8: ボット投稿日時チェックとスキップ
 # For any リプライに対して、システムはリプライ対象ボット投稿の日時をチェックし、
-# 30日以上前の場合はそのリプライをスキップする
+# 3日以上前の場合はそのリプライをスキップする
 @settings(max_examples=100, deadline=None)
 @given(tweet_age_days=tweet_age_days_st)
 @mock_aws
@@ -93,8 +93,8 @@ def test_property_8_bot_tweet_age_check(tweet_age_days):
     Property 8: ボット投稿日時チェックとスキップ
 
     任意のツイート経過日数に対して:
-    - 30日未満: リプライが処理される (True)
-    - 30日以上: リプライがスキップされる (False)
+    - 3日未満: リプライが処理される (True)
+    - 3日以上: リプライがスキップされる (False)
     """
     client = boto3.client("dynamodb", region_name="ap-northeast-1")
     _create_table(client)
@@ -106,13 +106,13 @@ def test_property_8_bot_tweet_age_check(tweet_age_days):
 
     result = processor.process_reply(reply, ai_generator=mock_ai, x_api_client=mock_api)
 
-    if tweet_age_days < 30:
-        # 30日未満: 処理される
+    if tweet_age_days < 3:
+        # 3日未満: 処理される
         assert result is True, f"Tweet age {tweet_age_days} days should be processed"
         mock_ai.generate_reply_response.assert_called_once()
         mock_api.post_tweet.assert_called_once()
     else:
-        # 30日以上: スキップされる
+        # 3日以上: スキップされる
         assert result is False, f"Tweet age {tweet_age_days} days should be skipped"
         mock_ai.generate_reply_response.assert_not_called()
         mock_api.post_tweet.assert_not_called()
@@ -152,7 +152,7 @@ def test_property_9_processed_reply_skip(reply_ids, pre_processed_count):
 
     for rid in reply_ids:
         reply = _make_reply(reply_id=rid)
-        mock_api = _mock_x_api_client(tweet_age_days=5)
+        mock_api = _mock_x_api_client(tweet_age_days=1)
         mock_ai = _mock_ai_generator()
 
         result = processor.process_reply(reply, ai_generator=mock_ai, x_api_client=mock_api)
@@ -189,7 +189,7 @@ def test_property_10_processed_reply_record(reply_id, author_id, bot_reply_id):
 
     processor = ReplyProcessor(dynamodb_client=client, processed_replies_table_name=TABLE_NAME)
     reply = _make_reply(reply_id=reply_id, author_id=author_id)
-    mock_api = _mock_x_api_client(tweet_age_days=5, post_result_id=bot_reply_id)
+    mock_api = _mock_x_api_client(tweet_age_days=1, post_result_id=bot_reply_id)
     mock_ai = _mock_ai_generator()
 
     before = int(time.time())
@@ -255,7 +255,7 @@ def test_property_13_rate_limit_retry(reply_ids, rate_limit_index):
     processed_ids = set()
     for i, rid in enumerate(reply_ids):
         reply = _make_reply(reply_id=rid)
-        mock_api = _mock_x_api_client(tweet_age_days=5, post_result_id=f"bot_{rid}")
+        mock_api = _mock_x_api_client(tweet_age_days=1, post_result_id=f"bot_{rid}")
 
         if i >= limit_idx:
             # レート制限をシミュレート
@@ -273,7 +273,7 @@ def test_property_13_rate_limit_retry(reply_ids, rate_limit_index):
     # 2回目の実行: 全リプライを再処理
     for rid in reply_ids:
         reply = _make_reply(reply_id=rid)
-        mock_api = _mock_x_api_client(tweet_age_days=5, post_result_id=f"bot2_{rid}")
+        mock_api = _mock_x_api_client(tweet_age_days=1, post_result_id=f"bot2_{rid}")
         mock_ai = _mock_ai_generator()
 
         result = processor.process_reply(reply, ai_generator=mock_ai, x_api_client=mock_api)

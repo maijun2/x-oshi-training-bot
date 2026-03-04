@@ -36,7 +36,7 @@ class ReplyProcessor:
         """
         self.dynamodb_client = dynamodb_client
         self.processed_replies_table_name = processed_replies_table_name
-        self.max_tweet_age_days = 30
+        self.max_tweet_age_days = 3
         self.ttl_days = 60
 
     def process_reply(
@@ -48,8 +48,8 @@ class ReplyProcessor:
         """
         リプライを処理
 
-        1. ボット投稿の日時チェック（30日以内）
-        2. 処理済みチェック（冪等性制御）
+        1. 処理済みチェック（冪等性制御）
+        2. ボット投稿の日時チェック（3日以内）
         3. リプライ対象ボット投稿を取得
         4. AI応答生成
         5. リプライ投稿
@@ -63,14 +63,14 @@ class ReplyProcessor:
         Returns:
             処理成功の可否
         """
-        # 1. ボット投稿の日時チェック（30日以内）
-        if not self._is_tweet_recent(reply.in_reply_to_tweet_id, x_api_client):
-            logger.info(f"Reply to old tweet (>30 days), skipping: {reply.id}")
-            return False
-
-        # 2. 処理済みチェック
+        # 1. 処理済みチェック（DynamoDB、API呼び出し不要）
         if self._is_reply_processed(reply.id):
             logger.info(f"Reply already processed, skipping: {reply.id}")
+            return False
+
+        # 2. ボット投稿の日時チェック（3日以内）
+        if not self._is_tweet_recent(reply.in_reply_to_tweet_id, x_api_client):
+            logger.info(f"Reply to old tweet (>{self.max_tweet_age_days} days), skipping: {reply.id}")
             return False
 
         try:
