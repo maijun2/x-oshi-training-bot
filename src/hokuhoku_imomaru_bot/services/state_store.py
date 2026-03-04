@@ -138,9 +138,25 @@ class StateStore:
             if state.latest_tweet_id is not None:
                 item["latest_tweet_id"] = {"S": state.latest_tweet_id}
             
+            # 推し専用の最新Tweet ID
+            if state.latest_oshi_tweet_id is not None:
+                item["latest_oshi_tweet_id"] = {"S": state.latest_oshi_tweet_id}
+            
+            # グループ専用の最新Tweet ID
+            if state.latest_group_tweet_id is not None:
+                item["latest_group_tweet_id"] = {"S": state.latest_group_tweet_id}
+            
+            # リプライチェック用の最新Tweet ID
+            if state.latest_reply_check_id is not None:
+                item["latest_reply_check_id"] = {"S": state.latest_reply_check_id}
+            
             # last_daily_report_dateがNoneでない場合のみ追加
             if state.last_daily_report_date is not None:
                 item["last_daily_report_date"] = {"S": state.last_daily_report_date}
+            
+            # last_engagement_check_dateがNoneでない場合のみ追加
+            if state.last_engagement_check_date is not None:
+                item["last_engagement_check_date"] = {"S": state.last_engagement_check_date}
             
             # last_profile_update_monthがNoneでない場合のみ追加
             if state.last_profile_update_month is not None:
