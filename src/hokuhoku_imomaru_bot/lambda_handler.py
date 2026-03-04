@@ -290,7 +290,23 @@ def _process_bot_logic(
             message=f"Oshi post detected: {tweet.id}",
         )
         
-        # AI応答を生成して引用ポスト（冪等性制御付き）
+        # 冪等性チェック（既に処理済みならスキップ）
+        try:
+            state_store.acquire_tweet_lock(tweet.id, f"quote_oshi")
+        except TweetAlreadyProcessedError:
+            all_tweets.append(tweet)
+            continue  # 既に処理済み - スキップ
+        
+        # XPを加算（引用ポストの成否に関わらず）
+        xp = xp_calculator.calculate_xp(ActivityType.OSHI_POST)
+        state.cumulative_xp += xp
+        state.daily_xp += xp
+        state.oshi_post_count += 1
+        state.daily_oshi_count += 1
+        result["oshi_posts_detected"] += 1
+        result["xp_gained"] += xp
+        
+        # AI応答を生成して引用ポスト
         posted = _post_quote_safe(
             tweet=tweet,
             post_type="oshi",
@@ -302,18 +318,8 @@ def _process_bot_logic(
             bucket_name=bucket_name,
         )
         
-        # 投稿成功時のみXPを加算（既に処理済みの場合はスキップ）
         if posted:
             result["quotes_posted"] += 1
-            
-            # XPを加算
-            xp = xp_calculator.calculate_xp(ActivityType.OSHI_POST)
-            state.cumulative_xp += xp
-            state.daily_xp += xp
-            state.oshi_post_count += 1
-            state.daily_oshi_count += 1
-            result["oshi_posts_detected"] += 1
-            result["xp_gained"] += xp
         
         all_tweets.append(tweet)
     
@@ -597,10 +603,7 @@ def _post_quote_safe(
         投稿成功の可否（既に処理済みの場合もFalse）
     """
     try:
-        # ロックを取得（既に処理済みの場合は例外が発生）
-        state_store.acquire_tweet_lock(tweet.id, f"quote_{post_type}")
-        
-        # AI応答を生成
+        # AI応答を生成（ロック取得は呼び出し元で実施済み）
         response_text = ai_generator.generate_response(
             post_content=tweet.text,
             post_type=post_type,
@@ -641,10 +644,6 @@ def _post_quote_safe(
         )
         
         return True
-        
-    except TweetAlreadyProcessedError:
-        # 既に処理済み - スキップ（XP加算もスキップするためFalseを返す）
-        return False
         
     except Exception as e:
         handle_api_error(e, f"post_quote_{post_type}")
