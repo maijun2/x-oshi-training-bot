@@ -71,10 +71,17 @@ class StateStore:
             
             if "Item" in response:
                 item = response["Item"]
+                # 後方互換性: latest_oshi_tweet_id/latest_group_tweet_idが存在しない場合はlatest_tweet_idをフォールバック
+                latest_tweet_id = item.get("latest_tweet_id", {}).get("S")
+                latest_oshi_tweet_id = item.get("latest_oshi_tweet_id", {}).get("S") or latest_tweet_id
+                latest_group_tweet_id = item.get("latest_group_tweet_id", {}).get("S") or latest_tweet_id
+                
                 return BotState(
                     cumulative_xp=float(item.get("cumulative_xp", {}).get("N", 0)),
                     current_level=int(item.get("current_level", {}).get("N", 1)),
-                    latest_tweet_id=item.get("latest_tweet_id", {}).get("S"),
+                    latest_tweet_id=latest_tweet_id,
+                    latest_oshi_tweet_id=latest_oshi_tweet_id,
+                    latest_group_tweet_id=latest_group_tweet_id,
                     last_updated=item.get("last_updated", {}).get("S", datetime.now(timezone.utc).isoformat()),
                     oshi_post_count=int(item.get("oshi_post_count", {}).get("N", 0)),
                     group_post_count=int(item.get("group_post_count", {}).get("N", 0)),
@@ -86,11 +93,13 @@ class StateStore:
                     daily_like_count=int(item.get("daily_like_count", {}).get("N", 0)),
                     daily_xp=float(item.get("daily_xp", {}).get("N", 0)),
                     last_daily_report_date=item.get("last_daily_report_date", {}).get("S"),
+                    last_engagement_check_date=item.get("last_engagement_check_date", {}).get("S"),
                     last_profile_update_month=item.get("last_profile_update_month", {}).get("S"),
                     total_received_likes=int(item.get("total_received_likes", {}).get("N", 0)),
                     total_received_retweets=int(item.get("total_received_retweets", {}).get("N", 0)),
                     daily_image_posted=item.get("daily_image_posted", {}).get("BOOL", False),
                     prev_daily_oshi_count=int(item.get("prev_daily_oshi_count", {}).get("N", 0)),
+                    latest_reply_check_id=item.get("latest_reply_check_id", {}).get("S"),
                 )
             
             logger.info("No existing state found, returning default state")
