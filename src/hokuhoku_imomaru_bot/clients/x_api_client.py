@@ -373,6 +373,22 @@ class XAPIClient:
             data={"image": image_base64},
         )
     
+    def update_profile_banner(self, image_base64: str) -> Dict[str, Any]:
+        """
+        プロフィールバナー画像を更新（v1.1）
+        
+        Args:
+            image_base64: Base64エンコードされた画像データ
+        
+        Returns:
+            更新結果
+        """
+        return self.request_v1(
+            "POST",
+            "/account/update_profile_banner.json",
+            data={"banner": image_base64},
+        )
+    
     def update_profile(
         self,
         name: Optional[str] = None,

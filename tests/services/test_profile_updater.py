@@ -57,18 +57,18 @@ class TestProfileUpdater:
     
     # プロフィール画像更新のテスト
     def test_update_profile_image_success(self, updater, mock_api_client):
-        """プロフィール画像更新が成功することを確認"""
-        mock_api_client.update_profile_image.return_value = True
+        """プロフィールバナー画像更新が成功することを確認"""
+        mock_api_client.update_profile_banner.return_value = True
         image_data = BytesIO(b"fake image data")
         
         result = updater.update_profile_image(image_data)
         
         assert result is True
-        mock_api_client.update_profile_image.assert_called_once()
+        mock_api_client.update_profile_banner.assert_called_once()
     
     def test_update_profile_image_failure(self, updater, mock_api_client):
-        """プロフィール画像更新が失敗した場合にFalseを返すことを確認"""
-        mock_api_client.update_profile_image.return_value = False
+        """プロフィールバナー画像更新が失敗した場合にFalseを返すことを確認"""
+        mock_api_client.update_profile_banner.return_value = False
         image_data = BytesIO(b"fake image data")
         
         result = updater.update_profile_image(image_data)
@@ -76,8 +76,8 @@ class TestProfileUpdater:
         assert result is False
     
     def test_update_profile_image_exception(self, updater, mock_api_client):
-        """プロフィール画像更新で例外が発生した場合にFalseを返すことを確認"""
-        mock_api_client.update_profile_image.side_effect = Exception("API Error")
+        """プロフィールバナー画像更新で例外が発生した場合にFalseを返すことを確認"""
+        mock_api_client.update_profile_banner.side_effect = Exception("API Error")
         image_data = BytesIO(b"fake image data")
         
         result = updater.update_profile_image(image_data)

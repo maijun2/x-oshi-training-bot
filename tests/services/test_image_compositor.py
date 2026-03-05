@@ -84,7 +84,7 @@ class TestImageCompositor:
         
         mock_s3_client.get_object.assert_called_once_with(
             Bucket="test-bucket",
-            Key="base_profile.png",
+            Key="imomaru-banner-base.png",
         )
     
     def test_composite_level_image_custom_key(self, mock_s3_client):

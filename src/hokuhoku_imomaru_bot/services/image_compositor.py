@@ -1,7 +1,7 @@
 """
 ImageCompositorクラス
 
-Pillowを使用してプロフィール画像にレベルテキストを合成します。
+Pillowを使用してプロフィールバナー画像にレベルテキストを合成します。
 """
 import logging
 from io import BytesIO
@@ -21,7 +21,7 @@ DEFAULT_PADDING = 10
 
 class ImageCompositor:
     """
-    Pillowを使用してプロフィール画像にレベルテキストを合成するクラス
+    Pillowを使用してプロフィールバナー画像にレベルテキストを合成するクラス
     
     Attributes:
         s3_client: boto3 S3クライアント
@@ -33,7 +33,7 @@ class ImageCompositor:
         self,
         s3_client,
         bucket_name: str,
-        base_image_key: str = "base_profile.png",
+        base_image_key: str = "imomaru-banner-base.png",
         font_size: int = DEFAULT_FONT_SIZE,
         text_color: Tuple[int, int, int] = DEFAULT_TEXT_COLOR,
         outline_color: Tuple[int, int, int] = DEFAULT_OUTLINE_COLOR,

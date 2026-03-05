@@ -2,7 +2,7 @@
 ProfileUpdaterクラス
 
 X API v1.1を使用してプロフィールを更新し、レベルアップ投稿を送信します。
-プロフィール画像・名前の更新は月に一度のみ実行されます（Xのレート制限対策）。
+プロフィールバナー画像・名前の更新は月に一度のみ実行されます（Xのレート制限対策）。
 """
 import base64
 import logging
@@ -95,7 +95,7 @@ class ProfileUpdater:
     
     def update_profile_image(self, image_data: BytesIO) -> bool:
         """
-        プロフィール画像を更新
+        プロフィールバナー画像を更新
         
         Args:
             image_data: 画像データのBytesIO
@@ -109,18 +109,18 @@ class ProfileUpdater:
             image_bytes = image_data.read()
             image_base64 = base64.b64encode(image_bytes).decode("utf-8")
             
-            # X API v1.1でプロフィール画像を更新
-            result = self.api_client.update_profile_image(image_base64)
+            # X API v1.1でプロフィールバナー画像を更新
+            result = self.api_client.update_profile_banner(image_base64)
             
             if result:
-                logger.info("Profile image updated successfully")
+                logger.info("Profile banner updated successfully")
                 return True
             else:
-                logger.warning("Profile image update returned False")
+                logger.warning("Profile banner update returned False")
                 return False
                 
         except Exception as e:
-            logger.error(f"Failed to update profile image: {e}")
+            logger.error(f"Failed to update profile banner: {e}")
             return False
     
     def update_profile_name(self, level: int) -> bool:
@@ -253,11 +253,11 @@ class ProfileUpdater:
     ) -> Dict[str, any]:
         """
         レベルアップ時にプロフィールを一括更新
-        プロフィール画像・名前の更新は月に一度のみ実行
+        プロフィールバナー画像・名前の更新は月に一度のみ実行
         
         Args:
             level: 新しいレベル
-            image_data: 合成された画像データ（Noneの場合は画像更新をスキップ）
+            image_data: 合成された画像データ（Noneの場合はバナー画像更新をスキップ）
             xp_breakdown: XPの内訳
             next_level_xp: 次のレベルまでに必要なXP
             last_profile_update_month: 最後にプロフィールを更新した月（YYYY-MM形式）
@@ -277,11 +277,11 @@ class ProfileUpdater:
         should_update = self.should_update_profile(last_profile_update_month)
         
         if should_update:
-            # プロフィール画像を更新
+            # プロフィールバナー画像を更新
             if image_data is not None:
                 results["image"] = self.update_profile_image(image_data)
             else:
-                logger.info("Skipping profile image update (no image data)")
+                logger.info("Skipping profile banner update (no image data)")
                 results["image"] = True  # スキップは成功扱い
             
             # プロフィール名を更新
