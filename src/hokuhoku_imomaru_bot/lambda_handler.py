@@ -46,6 +46,7 @@ EMOTION_IMAGES_TABLE_NAME = os.environ.get("EMOTION_IMAGES_TABLE_NAME", "imomaru
 ASSETS_BUCKET_NAME = os.environ.get("ASSETS_BUCKET_NAME", "imomaru-bot-assets")
 SECRET_NAME = os.environ.get("SECRET_NAME", "imomaru-bot/x-api-credentials")
 OSHI_USER_ID = os.environ.get("OSHI_USER_ID", "")
+OSHI_USERNAME = os.environ.get("OSHI_USERNAME", "")
 GROUP_USER_ID = os.environ.get("GROUP_USER_ID", "")
 BOT_USER_ID = os.environ.get("BOT_USER_ID", "")
 ALLOWED_USERS_TABLE_NAME = os.environ.get("ALLOWED_USERS_TABLE_NAME", "imomaru-bot-allowed-users")
@@ -316,6 +317,7 @@ def _process_bot_logic(
             state=state,
             s3_client=s3_client,
             bucket_name=bucket_name,
+            oshi_username=OSHI_USERNAME,
         )
         
         if posted:
@@ -585,12 +587,15 @@ def _post_quote_safe(
     state: BotState = None,
     s3_client = None,
     bucket_name: str = None,
+    oshi_username: str = "",
 ) -> bool:
     """
-    引用ポストを安全に投稿（冪等性制御付き、感情画像添付対応）
+    推しの投稿に反応してツイートを投稿（冪等性制御付き、感情画像添付対応）
+    
+    引用ポストの代わりに、URLを本文に含めた通常ツイートを投稿します。
     
     Args:
-        tweet: 引用するツイート
+        tweet: 反応する元ツイート
         post_type: "oshi" または "group"
         ai_generator: AIGeneratorインスタンス
         x_api_client: XAPIClientインスタンス
@@ -598,6 +603,7 @@ def _post_quote_safe(
         state: BotStateインスタンス（画像添付判定用）
         s3_client: boto3 S3クライアント（画像取得用）
         bucket_name: S3バケット名
+        oshi_username: 推しのXユーザー名（URL生成用）
     
     Returns:
         投稿成功の可否（既に処理済みの場合もFalse）
@@ -608,6 +614,11 @@ def _post_quote_safe(
             post_content=tweet.text,
             post_type=post_type,
         )
+        
+        # 推しの投稿URLを本文に追加（引用ポストの代わり）
+        if oshi_username:
+            tweet_url = f"https://x.com/{oshi_username}/status/{tweet.id}"
+            response_text = f"{response_text}\n\n{tweet_url}"
         
         # 感情画像添付の判定（推し投稿のみ、1日1回限定）
         media_ids = None
@@ -636,10 +647,9 @@ def _post_quote_safe(
                     message="Emotion image attached to quote post",
                 )
         
-        # 引用ポスト（画像付きの場合あり）
+        # 通常ツイートとして投稿（URLを本文に含める）
         x_api_client.post_tweet(
             text=response_text,
-            quote_tweet_id=tweet.id,
             media_ids=media_ids,
         )
         

@@ -484,16 +484,18 @@ class TestPostQuoteSafe:
         x_api_client.post_tweet.return_value = {"data": {"id": "999"}}
         state_store = MagicMock(spec=StateStore)
         
-        result = _post_quote_safe(tweet, "oshi", ai_generator, x_api_client, state_store)
+        result = _post_quote_safe(
+            tweet, "oshi", ai_generator, x_api_client, state_store, oshi_username="juri_bigangel"
+        )
         
         assert result is True
         ai_generator.generate_response.assert_called_once_with(
             post_content="元の投稿",
             post_type="oshi",
         )
+        # URLを含めた通常ツイートとして投稿される
         x_api_client.post_tweet.assert_called_once_with(
-            text="応答テキスト",
-            quote_tweet_id="123",
+            text="応答テキスト\n\nhttps://x.com/juri_bigangel/status/123",
             media_ids=None,
         )
     
@@ -1019,13 +1021,13 @@ class TestPostQuoteSafeWithEmotionImage:
             state=state,
             s3_client=s3_client,
             bucket_name="test-bucket",
+            oshi_username="juri_bigangel",
         )
 
         assert result is True
         assert state.daily_image_posted is True
         x_api_client.post_tweet.assert_called_once_with(
-            text="嬉しいｲﾓ🍠",
-            quote_tweet_id="123",
+            text="嬉しいｲﾓ🍠\n\nhttps://x.com/juri_bigangel/status/123",
             media_ids=["media_456"],
         )
 
@@ -1052,12 +1054,12 @@ class TestPostQuoteSafeWithEmotionImage:
             state=state,
             s3_client=MagicMock(),
             bucket_name="test-bucket",
+            oshi_username="juri_bigangel",
         )
 
         assert result is True
         x_api_client.post_tweet.assert_called_once_with(
-            text="応答",
-            quote_tweet_id="123",
+            text="応答\n\nhttps://x.com/juri_bigangel/status/123",
             media_ids=None,
         )
 

@@ -48,6 +48,7 @@ class ImomaruBotStack(Stack):
         
         # XアカウントユーザーIDを環境変数から取得
         oshi_user_id = os.getenv("OSHI_USER_ID", "")
+        oshi_username = os.getenv("OSHI_USERNAME", "")
         group_user_id = os.getenv("GROUP_USER_ID", "")
         bot_user_id = os.getenv("BOT_USER_ID", "")
 
@@ -251,6 +252,7 @@ class ImomaruBotStack(Stack):
                 "ASSETS_BUCKET_NAME": self.assets_bucket.bucket_name,
                 "SECRET_NAME": self.x_api_secret.secret_name,
                 "OSHI_USER_ID": oshi_user_id,
+                "OSHI_USERNAME": oshi_username,
                 "GROUP_USER_ID": group_user_id,
                 "BOT_USER_ID": bot_user_id,
                 "AGENTCORE_RUNTIME_ARN": agentcore_runtime_arn,
