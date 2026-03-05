@@ -3,7 +3,7 @@
 プロフィール更新機能のテストスクリプト
 
 OAuth 1.0a署名の修正が正しく動作するかテストします。
-実際のX APIを呼び出してプロフィール名と画像を更新します。
+実際のX APIを呼び出してプロフィール名とバナー画像を更新します。
 """
 import os
 import sys
@@ -11,12 +11,14 @@ import json
 import boto3
 import base64
 from pathlib import Path
+from io import BytesIO
 
 # プロジェクトルートをパスに追加
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
 from hokuhoku_imomaru_bot.clients.x_api_client import XAPIClient
+from hokuhoku_imomaru_bot.services.image_compositor import ImageCompositor
 
 
 def main():
@@ -28,8 +30,9 @@ def main():
     # AWS認証情報を設定
     region = os.environ.get("AWS_DEFAULT_REGION", "ap-northeast-1")
     
-    # Secrets Managerクライアントを作成
+    # AWS クライアントを作成
     secrets_client = boto3.client("secretsmanager", region_name=region)
+    s3_client = boto3.client("s3", region_name=region)
     
     # X API クライアントを初期化
     print("\n[1] X API クライアントを初期化中...")
@@ -49,34 +52,62 @@ def main():
         print(f"   エラー: {e}")
         return 1
     
-    # テスト2: プロフィール画像の更新
-    print("\n[3] プロフィール画像の更新をテスト...")
+    # テスト2: プロフィールバナー画像の更新
+    print("\n[3] プロフィールバナー画像の更新をテスト...")
+    print("   S3からベース画像を取得してレベル表示を合成中...")
+    print("   設定: フォントサイズ96px、右から80px、下から80px")
     
-    # 既存のプロフィール画像を使用（base_profile.png）
-    image_path = project_root / "base_profile.png"
-    
-    if not image_path.exists():
-        print(f"⚠️  テスト画像が見つかりません: {image_path}")
-        print("   プロフィール画像のテストをスキップします")
-    else:
-        try:
-            # 画像を読み込んでBase64エンコード
-            with open(image_path, "rb") as f:
-                image_data = f.read()
-            image_base64 = base64.b64encode(image_data).decode("utf-8")
-            
-            result = api_client.update_profile_image(image_base64)
-            print(f"✅ プロフィール画像の更新に成功しました！")
-            print(f"   画像URL: {result.get('profile_image_url_https', 'N/A')}")
-            
-        except Exception as e:
-            print(f"❌ プロフィール画像の更新に失敗しました")
-            print(f"   エラー: {e}")
-            return 1
+    try:
+        # ImageCompositorを使用してレベル表示を合成
+        # バケット名にアカウントIDが付いている
+        account_id = "353695163339"
+        bucket_name = f"imomaru-bot-assets-{account_id}"
+        
+        # 確定した設定でImageCompositorを作成
+        compositor = ImageCompositor(
+            s3_client=s3_client,
+            bucket_name=bucket_name,
+            base_image_key="imomaru-banner-base.png",
+            font_size=96,  # 確定したフォントサイズ
+            padding=80,    # 確定したパディング（右から80px、下から80px）
+        )
+        
+        # レベル13の画像を合成
+        image_data = compositor.composite_level_image(13)
+        
+        # デバッグ用：生成された画像をローカルに保存
+        debug_path = project_root / "test_banner_output.png"
+        image_data.seek(0)
+        with open(debug_path, "wb") as f:
+            f.write(image_data.read())
+        print(f"   デバッグ: 生成された画像を保存しました → {debug_path}")
+        
+        # Base64エンコード
+        image_data.seek(0)
+        image_bytes = image_data.read()
+        image_base64 = base64.b64encode(image_bytes).decode("utf-8")
+        
+        print(f"   画像サイズ: {len(image_bytes)} bytes")
+        
+        # バナー画像を更新
+        result = api_client.update_profile_banner(image_base64)
+        print(f"✅ プロフィールバナー画像の更新に成功しました！")
+        print(f"   バナーURL: {result.get('profile_banner_url', 'N/A')}")
+        
+    except Exception as e:
+        print(f"❌ プロフィールバナー画像の更新に失敗しました")
+        print(f"   エラー: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
     
     print("\n" + "=" * 60)
     print("✅ 全てのテストが成功しました！")
     print("=" * 60)
+    print("\n確認:")
+    print("  1. プロフィール名が「ほくほくいも丸くん🍠Lv.13」になっているか")
+    print("  2. トップバナー画像の右下に「Lv.13」が表示されているか")
+    print("  3. プロフィールアイコン（丸い画像）は変更されていないか")
     return 0
 
 

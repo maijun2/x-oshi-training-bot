@@ -12,11 +12,11 @@ from PIL import Image, ImageDraw, ImageFont
 logger = logging.getLogger(__name__)
 
 # デフォルト設定
-DEFAULT_FONT_SIZE = 24
+DEFAULT_FONT_SIZE = 96  # バナー用の大きなフォント
 DEFAULT_TEXT_COLOR = (255, 255, 255)  # 白
 DEFAULT_OUTLINE_COLOR = (0, 0, 0)  # 黒
 DEFAULT_OUTLINE_WIDTH = 2
-DEFAULT_PADDING = 10
+DEFAULT_PADDING = 80  # 右下からの距離
 
 
 class ImageCompositor:
