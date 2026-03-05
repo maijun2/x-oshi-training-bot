@@ -209,9 +209,17 @@ class XAPIClient:
         credentials = self._load_credentials()
         url = f"{self.API_V1_BASE}{endpoint}"
         
+        # OAuth署名用のパラメータを準備
+        # filesがある場合（multipart/form-data）はdataを署名に含めない
+        # filesがない場合（application/x-www-form-urlencoded）はdataを署名に含める
+        signature_params = params
+        if data and not files:
+            # POSTボディのパラメータを署名計算に含める
+            signature_params = {**(params or {}), **data}
+        
         # OAuth認証ヘッダーを構築
         auth_header = self._build_oauth_header(
-            method, url, credentials, params
+            method, url, credentials, signature_params
         )
         
         headers = {
