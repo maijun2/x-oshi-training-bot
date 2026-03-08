@@ -148,26 +148,40 @@ class BotState:
         """
         XPの内訳を計算（累積）
         
+        Note:
+            XPレートはxp_calculator.XPRatesで定義されています。
+            このメソッドは後方互換性のために残されていますが、
+            新しいコードではXPCalculatorの使用を推奨します。
+        
         Returns:
             各活動タイプのXP内訳
         """
+        from ..services.xp_calculator import XPRates
+        rates = XPRates()
         return {
-            "oshi_post": self.oshi_post_count * 5.0,
-            "group_post": self.group_post_count * 2.0,
-            "repost": self.repost_count * 0.5,
-            "like": self.like_count * 0.1,
+            "oshi_post": self.oshi_post_count * rates.OSHI_POST,
+            "group_post": self.group_post_count * rates.GROUP_POST,
+            "repost": self.repost_count * rates.REPOST,
+            "like": self.like_count * rates.LIKE,
         }
 
     def get_daily_xp_breakdown(self) -> dict:
         """
         今日のXPの内訳を計算
         
+        Note:
+            XPレートはxp_calculator.XPRatesで定義されています。
+            このメソッドは後方互換性のために残されていますが、
+            新しいコードではXPCalculatorの使用を推奨します。
+        
         Returns:
             今日の各活動タイプのXP内訳
         """
+        from ..services.xp_calculator import XPRates
+        rates = XPRates()
         return {
-            "oshi_post": self.daily_oshi_count * 5.0,
-            "group_post": self.daily_group_count * 2.0,
-            "repost": self.daily_repost_count * 0.5,
-            "like": self.daily_like_count * 0.1,
+            "oshi_post": self.daily_oshi_count * rates.OSHI_POST,
+            "group_post": self.daily_group_count * rates.GROUP_POST,
+            "repost": self.daily_repost_count * rates.REPOST,
+            "like": self.daily_like_count * rates.LIKE,
         }

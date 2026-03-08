@@ -49,11 +49,10 @@ class ReplyProcessor:
         リプライを処理
 
         1. 処理済みチェック（冪等性制御）
-        2. ボット投稿の日時チェック（3日以内）
-        3. リプライ対象ボット投稿を取得
-        4. AI応答生成
-        5. リプライ投稿
-        6. 処理済みリプライを記録
+        2. ボット投稿の日時チェック（3日以内）＆取得
+        3. AI応答生成
+        4. リプライ投稿
+        5. 処理済みリプライを記録
 
         Args:
             reply: 処理するリプライ
@@ -68,23 +67,22 @@ class ReplyProcessor:
             logger.info(f"Reply already processed, skipping: {reply.id}")
             return False
 
-        # 2. ボット投稿の日時チェック（3日以内）
-        if not self._is_tweet_recent(reply.in_reply_to_tweet_id, x_api_client):
+        # 2. ボット投稿の日時チェック（3日以内）＆取得
+        bot_tweet = self._get_tweet_if_recent(reply.in_reply_to_tweet_id, x_api_client)
+        if bot_tweet is None:
             logger.info(f"Reply to old tweet (>{self.max_tweet_age_days} days), skipping: {reply.id}")
             return False
 
         try:
-            # 3. リプライ対象ボット投稿を取得
-            bot_tweet = x_api_client.get_tweet(reply.in_reply_to_tweet_id)
+            # 3. AI応答生成（bot_tweetは既に取得済み）
 
-            # 4. AI応答生成
             response_text = ai_generator.generate_reply_response(
                 reply_text=reply.text,
                 reply_username=reply.author_username,
                 bot_tweet_text=bot_tweet.get("text", ""),
             )
 
-            # 5. リプライ投稿
+            # 4. リプライ投稿
             result = x_api_client.post_tweet(
                 text=response_text,
                 reply_to_tweet_id=reply.id,
@@ -92,7 +90,7 @@ class ReplyProcessor:
 
             bot_reply_id = result.get("data", {}).get("id", "")
 
-            # 6. 処理済みリプライを記録
+            # 5. 処理済みリプライを記録
             self._record_processed_reply(
                 reply_id=reply.id,
                 user_id=reply.author_id,
@@ -108,35 +106,37 @@ class ReplyProcessor:
             logger.error(f"Failed to process reply {reply.id}: {e}")
             return False
 
-    def _is_tweet_recent(
+    def _get_tweet_if_recent(
         self,
         tweet_id: str,
         x_api_client,
-    ) -> bool:
+    ) -> Optional[dict]:
         """
-        ツイートが30日以内かチェック
+        ツイートが3日以内の場合、ツイートデータを返す
 
         Args:
             tweet_id: チェックするツイートID
             x_api_client: XAPIClientインスタンス
 
         Returns:
-            30日以内の場合True
+            3日以内の場合はツイートデータ、それ以外はNone
         """
         try:
             tweet = x_api_client.get_tweet(tweet_id)
             created_at_str = tweet.get("created_at", "")
             if not created_at_str:
                 logger.error(f"Tweet {tweet_id} has no created_at field")
-                return False
+                return None
             created_at = datetime.fromisoformat(
                 created_at_str.replace("Z", "+00:00")
             )
             age = datetime.now(timezone.utc) - created_at
-            return age.days < self.max_tweet_age_days
+            if age.days < self.max_tweet_age_days:
+                return tweet
+            return None
         except Exception as e:
             logger.error(f"Failed to check tweet age for {tweet_id}: {e}")
-            return False
+            return None
 
     def _is_reply_processed(self, reply_id: str) -> bool:
         """

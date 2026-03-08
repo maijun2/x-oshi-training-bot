@@ -160,6 +160,10 @@ class AIGenerator:
             truncated = text_without_hashtags[:content_max_len - 3] + "..."
             return f"{truncated} {hashtags}"
         
+        # ハッシュタグがない場合でも、本文が短ければハッシュタグを追加
+        if hashtags not in text:
+            return f"{text_without_hashtags} {hashtags}"
+        
         return text
     
     def generate_response(

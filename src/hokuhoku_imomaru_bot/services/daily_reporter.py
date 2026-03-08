@@ -78,7 +78,7 @@ class DailyReporter:
         jst_time = current_time.astimezone(JST)
         today = jst_time.strftime("%Y-%m-%d")
         
-        # 21:00 JST以降で、今日まだ日報を投稿していない場合
+        # 23:00 JST以降で、今日まだ日報を投稿していない場合
         return (
             jst_time.hour >= DAILY_REPORT_HOUR and
             state.last_daily_report_date != today
@@ -258,7 +258,7 @@ class DailyReporter:
         """
         朝のコンテンツ（YouTube/翻訳）を投稿すべきか判定
 
-        前日の推し投稿が少ない日（閾値以下）の朝9時台に投稿する。
+        前日の推し投稿が少ない日（閾値以下）の朝10時台に投稿する。
 
         Args:
             prev_daily_oshi_count: 前日の推し投稿数

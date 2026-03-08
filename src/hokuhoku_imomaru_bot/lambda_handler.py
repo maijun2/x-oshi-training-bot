@@ -240,7 +240,7 @@ def _process_bot_logic(
     
     # ボット投稿へのエンゲージメントをチェック（daily_reportのみ）
     if not is_core_time:
-        engagement_xp = _check_engagement_safe(
+        _check_engagement_safe(
             x_api_client=x_api_client,
             xp_calculator=xp_calculator,
             state=state,
@@ -424,8 +424,11 @@ def _process_bot_logic(
         state.latest_group_tweet_id = max(group_all, key=lambda t: int(t.id)).id
     
     # リプライ検出・処理（Daily Report Mode、Core Time Modeの両方で実行）
+    # コアタイム時は短時間しか経過していないため、max_resultsを絞る
+    max_results = 20 if is_core_time else 100
     replies = reply_monitor.detect_replies(
         since_tweet_id=state.latest_reply_check_id,
+        max_results=max_results,
     )
     
     replies_processed_count = 0

@@ -2052,6 +2052,7 @@ class TestReplyProcessingIntegration:
 
         mocks["reply_monitor"].detect_replies.assert_called_once_with(
             since_tweet_id="prev_check_id_999",
+            max_results=100,
         )
 
     def test_mixed_allowed_and_non_allowed_users(self):
