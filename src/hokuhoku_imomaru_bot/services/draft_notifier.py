@@ -120,40 +120,86 @@ class DraftNotifier:
         intent_url: str,
         emotion_key: Optional[str],
     ) -> str:
-        emotion_line = (
-            f'<p style="color:#888;font-size:13px;">感情: {emotion_key}</p>'
+        def _escape(text: str) -> str:
+            return (
+                text.replace("&", "&amp;")
+                    .replace("<", "&lt;")
+                    .replace(">", "&gt;")
+            )
+
+        post_text = f"{draft_text}\n\n{original_url}"
+        escaped_post_text = _escape(post_text)
+        escaped_original = _escape(original_tweet_text)
+
+        emotion_section = (
+            f"""
+        <div style="margin-bottom: 25px;">
+          <p style="font-weight: bold; color: #888; font-size: 14px; margin: 0 0 8px;">▼ 感情タグ</p>
+          <p style="background: #f5f5f5; padding: 10px 15px; border-radius: 8px; font-size: 13px;
+                     color: #555; margin: 0; display: inline-block;">{_escape(emotion_key)}</p>
+        </div>"""
             if emotion_key
             else ""
         )
-        escaped_original = original_tweet_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        escaped_draft = draft_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
 
         return f"""<!DOCTYPE html>
 <html lang="ja">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:16px;background:#f9f9f9;">
-  <h2 style="color:#d4570a;">🍠 推し投稿への応答素案</h2>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+</head>
+<body style="margin: 0; padding: 30px 0; background-color: #f9f9f9; font-family: sans-serif;">
 
-  <div style="background:#fff;border:1px solid #ddd;border-radius:8px;padding:16px;margin-bottom:16px;">
-    <h3 style="margin:0 0 8px;font-size:14px;color:#555;">元の投稿</h3>
-    <p style="margin:0 0 8px;white-space:pre-wrap;">{escaped_original}</p>
-    <a href="{original_url}" style="font-size:13px;color:#1da1f2;">Xで見る →</a>
+  <div style="
+    background-color: #ffffff;
+    max-width: 600px;
+    margin: 0 auto;
+    padding: 30px;
+    color: #333;
+    border-radius: 10px;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+    border: 1px solid #e0e0e0;
+  ">
+
+    <h2 style="font-size: 18px; margin-top: 0; margin-bottom: 20px;
+               border-bottom: 2px solid #333; padding-bottom: 10px;">
+      🍠 推し投稿の準備完了
+    </h2>
+
+    <div style="margin-bottom: 25px;">
+      <p style="font-weight: bold; margin-bottom: 8px; font-size: 14px;">▼ 元の投稿</p>
+      <p style="background: #f5f5f5; padding: 15px; border-radius: 8px; font-size: 14px;
+                line-height: 1.6; white-space: pre-wrap; margin: 0 0 8px;">{escaped_original}</p>
+      <a href="{original_url}" style="font-size: 13px; color: #1da1f2;">Xで見る →</a>
+    </div>
+
+    <div style="margin-bottom: 25px;">
+      <p style="font-weight: bold; margin-bottom: 8px; font-size: 14px;">▼ ツイート本文（素案）</p>
+      <p style="background: #f5f5f5; padding: 15px; border-radius: 8px; font-size: 14px;
+                line-height: 1.6; white-space: pre-wrap; margin: 0;">{escaped_post_text}</p>
+    </div>
+
+    {emotion_section}
+
+    <div style="text-align: center; margin-top: 20px;">
+      <a href="{intent_url}" style="
+        background-color: #000000;
+        color: #ffffff;
+        padding: 15px 50px;
+        text-decoration: none;
+        border-radius: 30px;
+        font-weight: bold;
+        font-size: 16px;
+        display: inline-block;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+      ">Xを開いてペーストする</a>
+    </div>
+
+    <p style="margin-top: 30px; font-size: 12px; color: #aaa; text-align: center;">
+      ほくほくいも丸くん 自動通知
+    </p>
+
   </div>
-
-  <div style="background:#fff;border:2px solid #d4570a;border-radius:8px;padding:16px;margin-bottom:16px;">
-    <h3 style="margin:0 0 8px;font-size:14px;color:#d4570a;">投稿素案</h3>
-    <p style="margin:0 0 8px;white-space:pre-wrap;">{escaped_draft}</p>
-    {emotion_line}
-  </div>
-
-  <a href="{intent_url}"
-     style="display:inline-block;background:#1da1f2;color:#fff;text-decoration:none;
-            padding:12px 24px;border-radius:24px;font-weight:bold;font-size:15px;">
-    Xに投稿する（Web UI）
-  </a>
-  <p style="margin-top:8px;font-size:12px;color:#999;">
-    ※ ボタンをクリックすると X の投稿画面が開きます。内容を確認してから投稿してください。
-  </p>
 </body>
 </html>"""
 
