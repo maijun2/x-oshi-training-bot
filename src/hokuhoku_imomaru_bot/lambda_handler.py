@@ -26,6 +26,7 @@ from .services import (
     ReplyMonitor,
     AllowedUsersService,
     ReplyProcessor,
+    DraftNotifier,
 )
 from .services.daily_reporter import JST
 from .utils import (
@@ -51,6 +52,8 @@ GROUP_USER_ID = os.environ.get("GROUP_USER_ID", "")
 BOT_USER_ID = os.environ.get("BOT_USER_ID", "")
 ALLOWED_USERS_TABLE_NAME = os.environ.get("ALLOWED_USERS_TABLE_NAME", "imomaru-bot-allowed-users")
 PROCESSED_REPLIES_TABLE_NAME = os.environ.get("PROCESSED_REPLIES_TABLE_NAME", "imomaru-bot-processed-replies")
+NOTIFICATION_EMAIL = os.environ.get("NOTIFICATION_EMAIL", "")
+FROM_EMAIL = os.environ.get("FROM_EMAIL", "")
 
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
@@ -80,6 +83,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         s3_client = boto3.client("s3")
         secrets_client = boto3.client("secretsmanager")
         bedrock_client = boto3.client("bedrock-runtime")
+        ses_client = boto3.client("ses")
         
         # サービスの初期化
         state_store = StateStore(
@@ -132,6 +136,12 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             dynamodb_client=dynamodb_client,
             processed_replies_table_name=PROCESSED_REPLIES_TABLE_NAME,
         )
+
+        draft_notifier = DraftNotifier(
+            ses_client=ses_client,
+            from_email=FROM_EMAIL,
+            to_email=NOTIFICATION_EMAIL,
+        )
         
         # 状態の読み込み
         state = state_store.load_state()
@@ -155,6 +165,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             profile_updater=profile_updater,
             daily_reporter=daily_reporter,
             x_api_client=x_api_client,
+            draft_notifier=draft_notifier,
             s3_client=s3_client,
             bucket_name=ASSETS_BUCKET_NAME,
             execution_mode=execution_mode,
@@ -194,6 +205,7 @@ def _process_bot_logic(
     profile_updater: ProfileUpdater,
     daily_reporter: DailyReporter,
     x_api_client: XAPIClient,
+    draft_notifier: DraftNotifier = None,
     s3_client = None,
     bucket_name: str = None,
     execution_mode: str = "daily_report",
@@ -307,7 +319,7 @@ def _process_bot_logic(
         result["oshi_posts_detected"] += 1
         result["xp_gained"] += xp
         
-        # AI応答を生成して引用ポスト
+        # AI応答を生成してメールで通知（Web UI 経由でポスト）
         posted = _post_quote_safe(
             tweet=tweet,
             post_type="oshi",
@@ -318,6 +330,7 @@ def _process_bot_logic(
             s3_client=s3_client,
             bucket_name=bucket_name,
             oshi_username=OSHI_USERNAME,
+            draft_notifier=draft_notifier,
         )
         
         if posted:
@@ -591,25 +604,28 @@ def _post_quote_safe(
     s3_client = None,
     bucket_name: str = None,
     oshi_username: str = "",
+    draft_notifier: "DraftNotifier" = None,
 ) -> bool:
     """
-    推しの投稿に反応してツイートを投稿（冪等性制御付き、感情画像添付対応）
-    
-    引用ポストの代わりに、URLを本文に含めた通常ツイートを投稿します。
-    
+    推しの投稿への AI 応答素案をメールで通知する（冪等性制御付き）
+
+    X API の ContentCreateWithUrl 課金を避けるため、直接ポストせず
+    SES メールで素案を送信し、X Intent リンクから Web UI 経由でポストする。
+
     Args:
         tweet: 反応する元ツイート
         post_type: "oshi" または "group"
         ai_generator: AIGeneratorインスタンス
         x_api_client: XAPIClientインスタンス
         state_store: StateStoreインスタンス
-        state: BotStateインスタンス（画像添付判定用）
-        s3_client: boto3 S3クライアント（画像取得用）
+        state: BotStateインスタンス（感情分類判定用）
+        s3_client: boto3 S3クライアント
         bucket_name: S3バケット名
-        oshi_username: 推しのXユーザー名（URL生成用）
-    
+        oshi_username: 推しのXユーザー名
+        draft_notifier: DraftNotifierインスタンス
+
     Returns:
-        投稿成功の可否（既に処理済みの場合もFalse）
+        メール送信成功の可否
     """
     try:
         # AI応答を生成（ロック取得は呼び出し元で実施済み）
@@ -617,14 +633,9 @@ def _post_quote_safe(
             post_content=tweet.text,
             post_type=post_type,
         )
-        
-        # 推しの投稿URLを本文に追加（引用ポストの代わり）
-        if oshi_username:
-            tweet_url = f"https://x.com/{oshi_username}/status/{tweet.id}"
-            response_text = f"{response_text}\n\n{tweet_url}"
-        
-        # 感情画像添付の判定（推し投稿のみ、1日1回限定）
-        media_ids = None
+
+        # 感情キーを取得（メール表示用、1日1回限定）
+        emotion_key = None
         if (
             post_type == "oshi"
             and state is not None
@@ -632,98 +643,32 @@ def _post_quote_safe(
             and s3_client is not None
             and bucket_name is not None
         ):
-            media_id = _get_emotion_image_media_id(
-                response_text=response_text,
-                ai_generator=ai_generator,
-                state_store=state_store,
-                x_api_client=x_api_client,
-                s3_client=s3_client,
-                bucket_name=bucket_name,
-            )
-            if media_id:
-                media_ids = [media_id]
+            emotion_key = ai_generator.classify_emotion(response_text)
+            if emotion_key:
                 state.daily_image_posted = True
                 log_event(
                     level=LogLevel.INFO,
                     event_type=EventType.POST_DETECTED,
-                    data={"media_id": media_id},
-                    message="Emotion image attached to quote post",
+                    data={"emotion_key": emotion_key},
+                    message=f"Emotion classified for draft: {emotion_key}",
                 )
-        
-        # 通常ツイートとして投稿（URLを本文に含める）
-        x_api_client.post_tweet(
-            text=response_text,
-            media_ids=media_ids,
-        )
-        
-        return True
-        
+
+        # メールで素案を通知（Web UI 経由でポスト → API 課金なし）
+        if draft_notifier is not None:
+            sent = draft_notifier.send_draft_email(
+                original_tweet_text=tweet.text,
+                original_tweet_id=tweet.id,
+                oshi_username=oshi_username,
+                draft_text=response_text,
+                emotion_key=emotion_key,
+            )
+            return sent
+
+        return False
+
     except Exception as e:
         handle_api_error(e, f"post_quote_{post_type}")
         return False
-
-
-def _get_emotion_image_media_id(
-    response_text: str,
-    ai_generator: AIGenerator,
-    state_store: StateStore,
-    x_api_client: XAPIClient,
-    s3_client,
-    bucket_name: str,
-) -> Optional[str]:
-    """
-    応答テキストの感情を分類し、対応する画像をアップロードしてmedia_idを取得
-    
-    Args:
-        response_text: 分類する応答テキスト
-        ai_generator: AIGeneratorインスタンス
-        state_store: StateStoreインスタンス
-        x_api_client: XAPIClientインスタンス
-        s3_client: boto3 S3クライアント
-        bucket_name: S3バケット名
-    
-    Returns:
-        media_id文字列（失敗時はNone）
-    """
-    try:
-        # 感情を分類
-        emotion_key = ai_generator.classify_emotion(response_text)
-        if not emotion_key:
-            return None
-        
-        # DynamoDBから画像ファイル名を取得
-        filename = state_store.get_emotion_image_filename(emotion_key)
-        if not filename:
-            return None
-        
-        # S3から画像を取得
-        s3_key = f"emotions/{filename}"
-        response = s3_client.get_object(
-            Bucket=bucket_name,
-            Key=s3_key,
-        )
-        image_data = response["Body"].read()
-        
-        # Xにアップロード
-        media_id = x_api_client.upload_media(image_data)
-        
-        log_event(
-            level=LogLevel.INFO,
-            event_type=EventType.POST_DETECTED,
-            data={"emotion_key": emotion_key, "filename": filename},
-            message=f"Emotion image uploaded: {emotion_key}",
-        )
-        
-        return media_id
-        
-    except Exception as e:
-        log_event(
-            level=LogLevel.WARNING,
-            event_type=EventType.POST_DETECTED,
-            data={"error": str(e)},
-            message="Failed to get emotion image, posting without image",
-        )
-        return None
 
 
 def _update_profile_on_level_up(

@@ -29,6 +29,7 @@ from src.hokuhoku_imomaru_bot.services import (
     ReplyMonitor,
     AllowedUsersService,
     ReplyProcessor,
+    DraftNotifier,
 )
 
 
@@ -90,7 +91,9 @@ def _make_mocks(oshi_tweets=None, group_tweets=None):
     daily_reporter.should_post_daily_report.return_value = False
 
     x_api_client = MagicMock()
-    x_api_client.post_tweet.return_value = {"data": {"id": "999"}}
+
+    draft_notifier = MagicMock(spec=DraftNotifier)
+    draft_notifier.send_draft_email.return_value = True
 
     reply_monitor = MagicMock(spec=ReplyMonitor)
     reply_monitor.detect_replies.return_value = []
@@ -103,6 +106,7 @@ def _make_mocks(oshi_tweets=None, group_tweets=None):
         level_manager, ai_generator, image_compositor,
         profile_updater, daily_reporter, x_api_client,
         reply_monitor, allowed_users_service, reply_processor,
+        draft_notifier,
     )
 
 
@@ -126,6 +130,7 @@ def test_preservation_oshi_only_xp_and_counts(oshi_tweets):
         level_manager, ai_generator, image_compositor,
         profile_updater, daily_reporter, x_api_client,
         reply_monitor, allowed_users_service, reply_processor,
+        draft_notifier,
     ) = _make_mocks(oshi_tweets=oshi_tweets, group_tweets=[])
 
     result = _process_bot_logic(
@@ -142,6 +147,7 @@ def test_preservation_oshi_only_xp_and_counts(oshi_tweets):
         profile_updater=profile_updater,
         daily_reporter=daily_reporter,
         x_api_client=x_api_client,
+        draft_notifier=draft_notifier,
     )
 
     n = len(oshi_tweets)
@@ -189,6 +195,7 @@ def test_preservation_group_only_xp_and_counts(group_tweets):
         level_manager, ai_generator, image_compositor,
         profile_updater, daily_reporter, x_api_client,
         reply_monitor, allowed_users_service, reply_processor,
+        draft_notifier,
     ) = _make_mocks(oshi_tweets=[], group_tweets=group_tweets)
 
     result = _process_bot_logic(
@@ -205,6 +212,7 @@ def test_preservation_group_only_xp_and_counts(group_tweets):
         profile_updater=profile_updater,
         daily_reporter=daily_reporter,
         x_api_client=x_api_client,
+        draft_notifier=draft_notifier,
     )
 
     n = len(group_tweets)
@@ -256,6 +264,7 @@ def test_preservation_no_posts_state_unchanged(initial_xp, initial_level, initia
         level_manager, ai_generator, image_compositor,
         profile_updater, daily_reporter, x_api_client,
         reply_monitor, allowed_users_service, reply_processor,
+        draft_notifier,
     ) = _make_mocks(oshi_tweets=[], group_tweets=[])
 
     # 初期状態を設定
@@ -288,6 +297,7 @@ def test_preservation_no_posts_state_unchanged(initial_xp, initial_level, initia
         profile_updater=profile_updater,
         daily_reporter=daily_reporter,
         x_api_client=x_api_client,
+        draft_notifier=draft_notifier,
     )
 
     # 状態が変更されていないこと
@@ -329,6 +339,7 @@ def test_preservation_core_time_skips_group_timeline(oshi_tweets):
         level_manager, ai_generator, image_compositor,
         profile_updater, daily_reporter, x_api_client,
         reply_monitor, allowed_users_service, reply_processor,
+        draft_notifier,
     ) = _make_mocks(oshi_tweets=oshi_tweets, group_tweets=[])
 
     # core_time モード用の設定
@@ -348,6 +359,7 @@ def test_preservation_core_time_skips_group_timeline(oshi_tweets):
         profile_updater=profile_updater,
         daily_reporter=daily_reporter,
         x_api_client=x_api_client,
+        draft_notifier=draft_notifier,
         execution_mode="core_time",
     )
 
@@ -427,6 +439,7 @@ def test_preservation_translation_receives_correct_id(latest_oshi_tweet_id):
         level_manager, ai_generator, image_compositor,
         profile_updater, daily_reporter, x_api_client,
         reply_monitor, allowed_users_service, reply_processor,
+        draft_notifier,
     ) = _make_mocks(oshi_tweets=[], group_tweets=[])
 
     state.latest_oshi_tweet_id = latest_oshi_tweet_id
@@ -451,6 +464,7 @@ def test_preservation_translation_receives_correct_id(latest_oshi_tweet_id):
         profile_updater=profile_updater,
         daily_reporter=daily_reporter,
         x_api_client=x_api_client,
+        draft_notifier=draft_notifier,
         execution_mode="core_time",
     )
 

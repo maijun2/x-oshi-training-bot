@@ -27,6 +27,7 @@ from src.hokuhoku_imomaru_bot.services import (
     ReplyMonitor,
     AllowedUsersService,
     ReplyProcessor,
+    DraftNotifier,
 )
 
 
@@ -115,7 +116,9 @@ def _make_mocks(state, group_original=None, group_retweets=None,
     daily_reporter.should_post_daily_report.return_value = False
 
     x_api_client = MagicMock()
-    x_api_client.post_tweet.return_value = {"data": {"id": "999"}}
+
+    draft_notifier = MagicMock(spec=DraftNotifier)
+    draft_notifier.send_draft_email.return_value = True
 
     reply_monitor = MagicMock(spec=ReplyMonitor)
     reply_monitor.detect_replies.return_value = []
@@ -136,6 +139,7 @@ def _make_mocks(state, group_original=None, group_retweets=None,
         "profile_updater": profile_updater,
         "daily_reporter": daily_reporter,
         "x_api_client": x_api_client,
+        "draft_notifier": draft_notifier,
     }
 
 
@@ -320,8 +324,10 @@ class TestProperty5OshiOriginalBehavior:
         n = len(tweets)
         # AI応答が生成されること
         assert mocks["ai_generator"].generate_response.call_count == n
-        # 引用ポストが実行されること
-        assert mocks["x_api_client"].post_tweet.call_count == n
+        # X API は呼ばれない（メール通知方式）
+        mocks["x_api_client"].post_tweet.assert_not_called()
+        # メール通知が実行されること
+        assert mocks["draft_notifier"].send_draft_email.call_count == n
         assert result["quotes_posted"] == n
         # XPが5.0加算されること
         assert result["xp_gained"] == n * 5.0

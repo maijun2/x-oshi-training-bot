@@ -51,6 +51,7 @@ class ImomaruBotStack(Stack):
         oshi_username = os.getenv("OSHI_USERNAME", "")
         group_user_id = os.getenv("GROUP_USER_ID", "")
         bot_user_id = os.getenv("BOT_USER_ID", "")
+        notification_email = os.getenv("NOTIFICATION_EMAIL", "")
 
         # DynamoDB テーブル: BotState
         # ボットの状態（累積XP、現在レベル、最新Tweet ID、活動カウント）を保存
@@ -231,6 +232,17 @@ class ImomaruBotStack(Stack):
             )
         )
 
+        # SES 送信権限を付与（検証済みメールアドレスへの送信のみ許可）
+        self.lambda_role.add_to_policy(
+            iam.PolicyStatement(
+                effect=iam.Effect.ALLOW,
+                actions=["ses:SendEmail", "ses:SendRawEmail"],
+                resources=[
+                    f"arn:aws:ses:{self.region}:{self.account}:identity/{notification_email}",
+                ],
+            )
+        )
+
         # Lambda関数: メインロジック
         self.bot_lambda = lambda_.Function(
             self,
@@ -256,6 +268,8 @@ class ImomaruBotStack(Stack):
                 "GROUP_USER_ID": group_user_id,
                 "BOT_USER_ID": bot_user_id,
                 "AGENTCORE_RUNTIME_ARN": agentcore_runtime_arn,
+                "NOTIFICATION_EMAIL": notification_email,
+                "FROM_EMAIL": notification_email,
             },
             description="Imomaru Bot - Main Handler",
         )

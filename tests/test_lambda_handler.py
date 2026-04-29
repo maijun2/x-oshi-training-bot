@@ -16,7 +16,6 @@ from src.hokuhoku_imomaru_bot.lambda_handler import (
     _check_timeline_safe,
     _post_quote_safe,
     _update_profile_on_level_up,
-    _get_emotion_image_media_id,
     _check_engagement_safe,
 )
 from src.hokuhoku_imomaru_bot.models import BotState
@@ -44,6 +43,14 @@ def _make_reply_mocks():
     allowed_users_service = MagicMock(spec=AllowedUsersService)
     reply_processor = MagicMock(spec=ReplyProcessor)
     return reply_monitor, allowed_users_service, reply_processor
+
+
+def _make_draft_notifier_mock():
+    """DraftNotifier モックを生成するヘルパー"""
+    from src.hokuhoku_imomaru_bot.services import DraftNotifier
+    draft_notifier = MagicMock(spec=DraftNotifier)
+    draft_notifier.send_draft_email.return_value = True
+    return draft_notifier
 
 
 class TestProcessBotLogic:
@@ -132,8 +139,8 @@ class TestProcessBotLogic:
         daily_reporter.should_post_daily_report.return_value = False
         
         x_api_client = MagicMock()
-        x_api_client.post_tweet.return_value = {"data": {"id": "999"}}
-        
+        draft_notifier = _make_draft_notifier_mock()
+
         reply_monitor, allowed_users_service, reply_processor = _make_reply_mocks()
         result = _process_bot_logic(
             state=state,
@@ -149,15 +156,16 @@ class TestProcessBotLogic:
             profile_updater=profile_updater,
             daily_reporter=daily_reporter,
             x_api_client=x_api_client,
+            draft_notifier=draft_notifier,
         )
-        
+
         assert result["oshi_posts_detected"] == 1
         assert result["xp_gained"] == 5.0
         assert result["quotes_posted"] == 1
         assert state.oshi_post_count == 1
         assert state.daily_oshi_count == 1
         assert state.cumulative_xp == 5.0
-    
+
     def test_group_post_detected(self):
         """グループの投稿が検出された場合のテスト"""
         state = BotState()
@@ -474,54 +482,85 @@ class TestCheckTimelineSafe:
 
 class TestPostQuoteSafe:
     """_post_quote_safe関数のテスト"""
-    
-    def test_posts_quote_successfully(self):
-        """引用ポストが成功する場合"""
+
+    def test_sends_draft_email_successfully(self):
+        """draft_notifier 経由でメール送信が成功する場合"""
+        from src.hokuhoku_imomaru_bot.services import DraftNotifier
+
         tweet = Tweet(id="123", text="元の投稿", author_id="user")
         ai_generator = MagicMock(spec=AIGenerator)
         ai_generator.generate_response.return_value = "応答テキスト"
         x_api_client = MagicMock()
-        x_api_client.post_tweet.return_value = {"data": {"id": "999"}}
         state_store = MagicMock(spec=StateStore)
-        
+        draft_notifier = MagicMock(spec=DraftNotifier)
+        draft_notifier.send_draft_email.return_value = True
+
         result = _post_quote_safe(
-            tweet, "oshi", ai_generator, x_api_client, state_store, oshi_username="juri_bigangel"
+            tweet, "oshi", ai_generator, x_api_client, state_store,
+            oshi_username="juri_bigangel", draft_notifier=draft_notifier
         )
-        
+
         assert result is True
         ai_generator.generate_response.assert_called_once_with(
             post_content="元の投稿",
             post_type="oshi",
         )
-        # URLを含めた通常ツイートとして投稿される
-        x_api_client.post_tweet.assert_called_once_with(
-            text="応答テキスト\n\nhttps://x.com/juri_bigangel/status/123",
-            media_ids=None,
+        # X API は呼ばれない（課金なし）
+        x_api_client.post_tweet.assert_not_called()
+        # メール送信が呼ばれる
+        draft_notifier.send_draft_email.assert_called_once_with(
+            original_tweet_text="元の投稿",
+            original_tweet_id="123",
+            oshi_username="juri_bigangel",
+            draft_text="応答テキスト",
+            emotion_key=None,
         )
-    
-    def test_returns_false_on_error(self):
-        """エラー時にFalseを返す"""
-        tweet = Tweet(id="123", text="元の投稿", author_id="user")
-        ai_generator = MagicMock(spec=AIGenerator)
-        ai_generator.generate_response.side_effect = Exception("API Error")
-        x_api_client = MagicMock()
-        state_store = MagicMock(spec=StateStore)
-        
-        result = _post_quote_safe(tweet, "oshi", ai_generator, x_api_client, state_store)
-        
-        assert result is False
-    
-    def test_quote_post_failure_does_not_affect_caller(self):
-        """引用ポスト失敗時にFalseを返す（XP加算は呼び出し元で実施済み）"""
+
+    def test_returns_false_when_no_draft_notifier(self):
+        """draft_notifier が None の場合は False を返す"""
         tweet = Tweet(id="123", text="元の投稿", author_id="user")
         ai_generator = MagicMock(spec=AIGenerator)
         ai_generator.generate_response.return_value = "応答テキスト"
         x_api_client = MagicMock()
-        x_api_client.post_tweet.side_effect = Exception("403 Forbidden")
         state_store = MagicMock(spec=StateStore)
-        
+
+        result = _post_quote_safe(
+            tweet, "oshi", ai_generator, x_api_client, state_store,
+            draft_notifier=None
+        )
+
+        assert result is False
+        x_api_client.post_tweet.assert_not_called()
+
+    def test_returns_false_on_ai_error(self):
+        """AI 生成エラー時に False を返す"""
+        tweet = Tweet(id="123", text="元の投稿", author_id="user")
+        ai_generator = MagicMock(spec=AIGenerator)
+        ai_generator.generate_response.side_effect = Exception("Bedrock error")
+        x_api_client = MagicMock()
+        state_store = MagicMock(spec=StateStore)
+
         result = _post_quote_safe(tweet, "oshi", ai_generator, x_api_client, state_store)
-        
+
+        assert result is False
+
+    def test_returns_false_when_email_fails(self):
+        """メール送信失敗時に False を返す"""
+        from src.hokuhoku_imomaru_bot.services import DraftNotifier
+
+        tweet = Tweet(id="123", text="元の投稿", author_id="user")
+        ai_generator = MagicMock(spec=AIGenerator)
+        ai_generator.generate_response.return_value = "応答テキスト"
+        x_api_client = MagicMock()
+        state_store = MagicMock(spec=StateStore)
+        draft_notifier = MagicMock(spec=DraftNotifier)
+        draft_notifier.send_draft_email.return_value = False
+
+        result = _post_quote_safe(
+            tweet, "oshi", ai_generator, x_api_client, state_store,
+            oshi_username="juri_bigangel", draft_notifier=draft_notifier
+        )
+
         assert result is False
 
 
@@ -871,8 +910,8 @@ class TestMultiplePostsDetection:
         daily_reporter.should_post_daily_report.return_value = False
         
         x_api_client = MagicMock()
-        x_api_client.post_tweet.return_value = {"data": {"id": "999"}}
-        
+        draft_notifier = _make_draft_notifier_mock()
+
         reply_monitor, allowed_users_service, reply_processor = _make_reply_mocks()
         result = _process_bot_logic(
             state=state,
@@ -888,12 +927,13 @@ class TestMultiplePostsDetection:
             profile_updater=profile_updater,
             daily_reporter=daily_reporter,
             x_api_client=x_api_client,
+            draft_notifier=draft_notifier,
         )
-        
+
         # 推し2件 + グループ1件
         assert result["oshi_posts_detected"] == 2
         assert result["group_posts_detected"] == 1
-        assert result["quotes_posted"] == 2  # 推しのみ引用ポスト（グループはスキップ）
+        assert result["quotes_posted"] == 2  # 推しのみメール通知（グループはスキップ）
         # XP: 推し5.0*2 + グループ2.0*1 = 12.0
         assert result["xp_gained"] == 12.0
         assert state.oshi_post_count == 2
@@ -901,97 +941,113 @@ class TestMultiplePostsDetection:
         assert state.cumulative_xp == 12.0
 
 
-class TestGetEmotionImageMediaId:
-    """_get_emotion_image_media_id関数のテスト"""
+class TestDraftNotifier:
+    """DraftNotifier クラスのテスト"""
 
-    def test_returns_media_id_on_success(self):
-        """正常系: 感情分類→画像取得→アップロードが成功"""
-        ai_generator = MagicMock(spec=AIGenerator)
-        ai_generator.classify_emotion.return_value = "joy"
+    def test_send_draft_email_success(self):
+        """正常系: SES 送信が成功する場合"""
+        from src.hokuhoku_imomaru_bot.services import DraftNotifier
 
-        state_store = MagicMock(spec=StateStore)
-        state_store.get_emotion_image_filename.return_value = "imomaru_joy.png"
+        ses_client = MagicMock()
+        ses_client.send_email.return_value = {"MessageId": "msg-001"}
 
-        s3_client = MagicMock()
-        s3_client.get_object.return_value = {
-            "Body": MagicMock(read=lambda: b"fake_image_data"),
-        }
-
-        x_api_client = MagicMock()
-        x_api_client.upload_media.return_value = "media_123"
-
-        result = _get_emotion_image_media_id(
-            response_text="嬉しいｲﾓ🍠",
-            ai_generator=ai_generator,
-            state_store=state_store,
-            x_api_client=x_api_client,
-            s3_client=s3_client,
-            bucket_name="test-bucket",
+        notifier = DraftNotifier(
+            ses_client=ses_client,
+            from_email="from@example.com",
+            to_email="to@example.com",
         )
 
-        assert result == "media_123"
-        s3_client.get_object.assert_called_once_with(
-            Bucket="test-bucket",
-            Key="emotions/imomaru_joy.png",
+        result = notifier.send_draft_email(
+            original_tweet_text="テスト投稿",
+            original_tweet_id="123456",
+            oshi_username="juri_bigangel",
+            draft_text="嬉しいｲﾓ🍠",
         )
 
-    def test_returns_none_when_no_emotion(self):
-        """感情分類がNoneの場合"""
-        ai_generator = MagicMock(spec=AIGenerator)
-        ai_generator.classify_emotion.return_value = None
+        assert result is True
+        ses_client.send_email.assert_called_once()
+        call_kwargs = ses_client.send_email.call_args[1]
+        assert call_kwargs["Source"] == "from@example.com"
+        assert call_kwargs["Destination"] == {"ToAddresses": ["to@example.com"]}
 
-        result = _get_emotion_image_media_id(
-            response_text="テスト",
-            ai_generator=ai_generator,
-            state_store=MagicMock(),
-            x_api_client=MagicMock(),
-            s3_client=MagicMock(),
-            bucket_name="test-bucket",
+    def test_send_draft_email_contains_intent_url(self):
+        """メール本文に X Intent URL が含まれる"""
+        import urllib.parse
+        from src.hokuhoku_imomaru_bot.services import DraftNotifier
+
+        ses_client = MagicMock()
+        notifier = DraftNotifier(
+            ses_client=ses_client,
+            from_email="from@example.com",
+            to_email="to@example.com",
         )
 
-        assert result is None
-
-    def test_returns_none_when_no_filename(self):
-        """画像ファイル名が見つからない場合"""
-        ai_generator = MagicMock(spec=AIGenerator)
-        ai_generator.classify_emotion.return_value = "joy"
-
-        state_store = MagicMock(spec=StateStore)
-        state_store.get_emotion_image_filename.return_value = None
-
-        result = _get_emotion_image_media_id(
-            response_text="テスト",
-            ai_generator=ai_generator,
-            state_store=state_store,
-            x_api_client=MagicMock(),
-            s3_client=MagicMock(),
-            bucket_name="test-bucket",
+        notifier.send_draft_email(
+            original_tweet_text="テスト投稿",
+            original_tweet_id="123456",
+            oshi_username="juri_bigangel",
+            draft_text="嬉しいｲﾓ🍠",
         )
 
-        assert result is None
+        call_kwargs = ses_client.send_email.call_args[1]
+        html_body = call_kwargs["Message"]["Body"]["Html"]["Data"]
+        assert "x.com/intent/tweet" in html_body
+        assert "juri_bigangel" in html_body
+        assert "123456" in html_body
 
-    def test_returns_none_on_exception(self):
-        """例外発生時にNoneを返す"""
-        ai_generator = MagicMock(spec=AIGenerator)
-        ai_generator.classify_emotion.side_effect = Exception("Bedrock error")
+    def test_send_draft_email_returns_false_on_ses_error(self):
+        """SES エラー時に False を返す"""
+        from src.hokuhoku_imomaru_bot.services import DraftNotifier
 
-        result = _get_emotion_image_media_id(
-            response_text="テスト",
-            ai_generator=ai_generator,
-            state_store=MagicMock(),
-            x_api_client=MagicMock(),
-            s3_client=MagicMock(),
-            bucket_name="test-bucket",
+        ses_client = MagicMock()
+        ses_client.send_email.side_effect = Exception("SES error")
+
+        notifier = DraftNotifier(
+            ses_client=ses_client,
+            from_email="from@example.com",
+            to_email="to@example.com",
         )
 
-        assert result is None
+        result = notifier.send_draft_email(
+            original_tweet_text="テスト投稿",
+            original_tweet_id="123456",
+            oshi_username="juri_bigangel",
+            draft_text="嬉しいｲﾓ🍠",
+        )
+
+        assert result is False
+
+    def test_send_draft_email_with_emotion_key(self):
+        """emotion_key が指定された場合にメール本文に含まれる"""
+        from src.hokuhoku_imomaru_bot.services import DraftNotifier
+
+        ses_client = MagicMock()
+        notifier = DraftNotifier(
+            ses_client=ses_client,
+            from_email="from@example.com",
+            to_email="to@example.com",
+        )
+
+        notifier.send_draft_email(
+            original_tweet_text="テスト投稿",
+            original_tweet_id="123456",
+            oshi_username="juri_bigangel",
+            draft_text="嬉しいｲﾓ🍠",
+            emotion_key="joy",
+        )
+
+        call_kwargs = ses_client.send_email.call_args[1]
+        html_body = call_kwargs["Message"]["Body"]["Html"]["Data"]
+        assert "joy" in html_body
 
 
 class TestPostQuoteSafeWithEmotionImage:
-    """_post_quote_safe の感情画像添付パスのテスト"""
+    """_post_quote_safe の感情キー判定パスのテスト"""
 
-    def test_attaches_emotion_image_for_oshi(self):
-        """推し投稿で感情画像が添付されることを確認"""
+    def test_passes_emotion_key_to_draft_notifier(self):
+        """推し投稿で感情キーが draft_notifier に渡されることを確認"""
+        from src.hokuhoku_imomaru_bot.services import DraftNotifier
+
         tweet = Tweet(id="123", text="元の投稿", author_id="user")
         state = BotState(daily_image_posted=False)
 
@@ -1000,17 +1056,11 @@ class TestPostQuoteSafeWithEmotionImage:
         ai_generator.classify_emotion.return_value = "joy"
 
         x_api_client = MagicMock()
-        x_api_client.post_tweet.return_value = {"data": {"id": "999"}}
-        x_api_client.upload_media.return_value = "media_456"
-
         state_store = MagicMock(spec=StateStore)
-        state_store.acquire_tweet_lock.return_value = True
-        state_store.get_emotion_image_filename.return_value = "imomaru_joy.png"
+        draft_notifier = MagicMock(spec=DraftNotifier)
+        draft_notifier.send_draft_email.return_value = True
 
         s3_client = MagicMock()
-        s3_client.get_object.return_value = {
-            "Body": MagicMock(read=lambda: b"image_data"),
-        }
 
         result = _post_quote_safe(
             tweet=tweet,
@@ -1022,17 +1072,26 @@ class TestPostQuoteSafeWithEmotionImage:
             s3_client=s3_client,
             bucket_name="test-bucket",
             oshi_username="juri_bigangel",
+            draft_notifier=draft_notifier,
         )
 
         assert result is True
         assert state.daily_image_posted is True
-        x_api_client.post_tweet.assert_called_once_with(
-            text="嬉しいｲﾓ🍠\n\nhttps://x.com/juri_bigangel/status/123",
-            media_ids=["media_456"],
+        # emotion_key が draft_notifier に渡される
+        draft_notifier.send_draft_email.assert_called_once_with(
+            original_tweet_text="元の投稿",
+            original_tweet_id="123",
+            oshi_username="juri_bigangel",
+            draft_text="嬉しいｲﾓ🍠",
+            emotion_key="joy",
         )
+        # X API は呼ばれない
+        x_api_client.post_tweet.assert_not_called()
 
-    def test_no_image_when_already_posted_today(self):
-        """本日既に画像添付済みの場合は画像なしで投稿"""
+    def test_no_emotion_key_when_already_posted_today(self):
+        """本日既に画像添付済みの場合は emotion_key なしで送信"""
+        from src.hokuhoku_imomaru_bot.services import DraftNotifier
+
         tweet = Tweet(id="123", text="元の投稿", author_id="user")
         state = BotState(daily_image_posted=True)
 
@@ -1040,10 +1099,9 @@ class TestPostQuoteSafeWithEmotionImage:
         ai_generator.generate_response.return_value = "応答"
 
         x_api_client = MagicMock()
-        x_api_client.post_tweet.return_value = {"data": {"id": "999"}}
-
         state_store = MagicMock(spec=StateStore)
-        state_store.acquire_tweet_lock.return_value = True
+        draft_notifier = MagicMock(spec=DraftNotifier)
+        draft_notifier.send_draft_email.return_value = True
 
         result = _post_quote_safe(
             tweet=tweet,
@@ -1055,12 +1113,18 @@ class TestPostQuoteSafeWithEmotionImage:
             s3_client=MagicMock(),
             bucket_name="test-bucket",
             oshi_username="juri_bigangel",
+            draft_notifier=draft_notifier,
         )
 
         assert result is True
-        x_api_client.post_tweet.assert_called_once_with(
-            text="応答\n\nhttps://x.com/juri_bigangel/status/123",
-            media_ids=None,
+        # daily_image_posted=True なので classify_emotion は呼ばれない
+        ai_generator.classify_emotion.assert_not_called()
+        draft_notifier.send_draft_email.assert_called_once_with(
+            original_tweet_text="元の投稿",
+            original_tweet_id="123",
+            oshi_username="juri_bigangel",
+            draft_text="応答",
+            emotion_key=None,
         )
 
 
@@ -1569,7 +1633,7 @@ class TestCoreTimeMode:
         daily_reporter.should_post_morning_content.return_value = False
 
         x_api_client = MagicMock()
-        x_api_client.post_tweet.return_value = {"data": {"id": "999"}}
+        draft_notifier = _make_draft_notifier_mock()
 
         reply_monitor, allowed_users_service, reply_processor = _make_reply_mocks()
         result = _process_bot_logic(
@@ -1586,6 +1650,7 @@ class TestCoreTimeMode:
             profile_updater=MagicMock(spec=ProfileUpdater),
             daily_reporter=daily_reporter,
             x_api_client=x_api_client,
+            draft_notifier=draft_notifier,
             execution_mode="core_time",
         )
 

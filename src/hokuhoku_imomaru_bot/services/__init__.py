@@ -12,6 +12,7 @@ from .daily_reporter import DailyReporter, DAILY_REPORT_TEMPLATE, JST, DAILY_REP
 from .reply_monitor import ReplyMonitor
 from .allowed_users_service import AllowedUsersService
 from .reply_processor import ReplyProcessor
+from .draft_notifier import DraftNotifier
 
 __all__ = [
     "StateStore",
@@ -38,4 +39,5 @@ __all__ = [
     "ReplyMonitor",
     "AllowedUsersService",
     "ReplyProcessor",
+    "DraftNotifier",
 ]
