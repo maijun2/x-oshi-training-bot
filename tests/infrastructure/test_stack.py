@@ -719,8 +719,8 @@ def test_lambda_error_alarm_created():
     stack = ImomaruBotStack(app, "test-stack")
     template = assertions.Template.from_stack(stack)
     
-    # CloudWatchアラームが2つ作成されることを確認（エラーと実行時間）
-    template.resource_count_is("AWS::CloudWatch::Alarm", 2)
+    # CloudWatchアラームが3つ作成されることを確認（エラー・実行時間・アプリ内エラー）
+    template.resource_count_is("AWS::CloudWatch::Alarm", 3)
     
     # Lambdaエラーアラームの検証
     template.has_resource_properties("AWS::CloudWatch::Alarm", {
@@ -757,6 +757,59 @@ def test_lambda_duration_alarm_created():
         "Threshold": 150000,  # 150秒（2分30秒）
         "ComparisonOperator": "GreaterThanOrEqualToThreshold",
         "TreatMissingData": "notBreaching",
+    })
+
+
+def test_app_error_metric_filter_created():
+    """
+    運用要件: try/except で捕捉されたエラーを拾うログメトリクスフィルタが作成されることを確認
+
+    Lambda ランタイムが付与する [ERROR] / [CRITICAL] プレフィックスを term フィルタで検出する。
+    （LogFormat=Text のため JSON フィルタ {$.level = "ERROR"} は使えない）
+    """
+    app = cdk.App()
+    stack = ImomaruBotStack(app, "test-stack")
+    template = assertions.Template.from_stack(stack)
+
+    template.resource_count_is("AWS::Logs::MetricFilter", 1)
+    template.has_resource_properties("AWS::Logs::MetricFilter", {
+        "LogGroupName": "/aws/lambda/imomaru-bot-handler",
+        "FilterPattern": '?"[ERROR]" ?"[CRITICAL]"',
+        "MetricTransformations": [
+            assertions.Match.object_like({
+                "MetricNamespace": "ImomaruBot",
+                "MetricName": "AppErrors",
+                "MetricValue": "1",
+                "DefaultValue": 0,
+            })
+        ],
+    })
+
+
+def test_app_error_alarm_created():
+    """
+    運用要件: アプリ内エラーアラームがメトリクスフィルタのカスタムメトリクスを監視し、
+    SNS トピックへ通知することを確認
+    """
+    app = cdk.App()
+    stack = ImomaruBotStack(app, "test-stack")
+    template = assertions.Template.from_stack(stack)
+
+    template.has_resource_properties("AWS::CloudWatch::Alarm", {
+        "AlarmName": "imomaru-bot-app-errors",
+        "Namespace": "ImomaruBot",
+        "MetricName": "AppErrors",
+        "Statistic": "Sum",
+        "Period": 300,
+        "EvaluationPeriods": 1,
+        "Threshold": 1,
+        "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+        "TreatMissingData": "notBreaching",
+        "AlarmActions": assertions.Match.array_with([
+            assertions.Match.object_like({
+                "Ref": assertions.Match.string_like_regexp("AlarmTopic.*")
+            })
+        ]),
     })
 
 

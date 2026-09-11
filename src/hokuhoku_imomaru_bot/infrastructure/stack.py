@@ -20,6 +20,7 @@ from aws_cdk import (
     aws_lambda as lambda_,
     aws_scheduler as scheduler,
     aws_cloudwatch as cloudwatch,
+    aws_logs as logs,
     aws_sns as sns,
     aws_cloudwatch_actions as cw_actions,
 )
@@ -354,6 +355,42 @@ class ImomaruBotStack(Stack):
         )
         self.lambda_duration_alarm.add_alarm_action(cw_actions.SnsAction(self.alarm_topic))
 
+        # アプリ内エラーアラーム（ログベース）
+        # try/except で捕捉したエラーは Lambda の Errors メトリクスに乗らないため、
+        # ランタイムが付与する [ERROR] / [CRITICAL] プレフィックスをメトリクスフィルタで拾う。
+        # ロググループは Lambda が自動作成するものを参照する（bot_lambda.log_group は
+        # LogRetention カスタムリソースを生やすため使わない）
+        bot_lambda_log_group = logs.LogGroup.from_log_group_name(
+            self,
+            "BotLambdaLogGroup",
+            "/aws/lambda/imomaru-bot-handler",
+        )
+        self.app_error_metric_filter = logs.MetricFilter(
+            self,
+            "AppErrorMetricFilter",
+            log_group=bot_lambda_log_group,
+            metric_namespace="ImomaruBot",
+            metric_name="AppErrors",
+            filter_pattern=logs.FilterPattern.any_term("[ERROR]", "[CRITICAL]"),
+            metric_value="1",
+            default_value=0,
+        )
+        self.app_error_alarm = cloudwatch.Alarm(
+            self,
+            "AppErrorAlarm",
+            alarm_name="imomaru-bot-app-errors",
+            alarm_description="アプリケーション内で捕捉されたエラーがログに記録されました",
+            metric=self.app_error_metric_filter.metric(
+                period=Duration.minutes(5),
+                statistic="Sum",
+            ),
+            threshold=1,
+            evaluation_periods=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+        )
+        self.app_error_alarm.add_alarm_action(cw_actions.SnsAction(self.alarm_topic))
+
         # CloudWatch ダッシュボード
         self.dashboard = cloudwatch.Dashboard(
             self,
@@ -395,6 +432,7 @@ class ImomaruBotStack(Stack):
             alarms=[
                 self.lambda_error_alarm,
                 self.lambda_duration_alarm,
+                self.app_error_alarm,
             ],
             width=16,
             height=3,
