@@ -240,6 +240,8 @@ def test_buffer_api_secret_created():
         "Environment": {
             "Variables": assertions.Match.object_like({
                 "BUFFER_SECRET_NAME": assertions.Match.any_value(),
+                "BUFFER_DAILY_CAP": "3",
+                "BUFFER_IMAGE_URL_TTL_SECONDS": "3600",
             })
         }
     })

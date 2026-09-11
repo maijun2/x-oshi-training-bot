@@ -98,6 +98,7 @@ class StateStore:
                     total_received_likes=int(item.get("total_received_likes", {}).get("N", 0)),
                     total_received_retweets=int(item.get("total_received_retweets", {}).get("N", 0)),
                     daily_image_posted=item.get("daily_image_posted", {}).get("BOOL", False),
+                    daily_buffer_count=int(item.get("daily_buffer_count", {}).get("N", 0)),
                     prev_daily_oshi_count=int(item.get("prev_daily_oshi_count", {}).get("N", 0)),
                     latest_reply_check_id=item.get("latest_reply_check_id", {}).get("S"),
                 )
@@ -140,6 +141,7 @@ class StateStore:
                 "total_received_likes": {"N": str(state.total_received_likes)},
                 "total_received_retweets": {"N": str(state.total_received_retweets)},
                 "daily_image_posted": {"BOOL": state.daily_image_posted},
+                "daily_buffer_count": {"N": str(state.daily_buffer_count)},
                 "prev_daily_oshi_count": {"N": str(state.prev_daily_oshi_count)},
             }
             
@@ -237,6 +239,7 @@ class StateStore:
         state.daily_like_count = 0
         state.daily_xp = 0.0
         state.daily_image_posted = False  # 画像添付フラグもリセット
+        state.daily_buffer_count = 0  # Buffer 投入件数もリセット
         return state
 
     def get_emotion_image_filename(self, emotion_key: str) -> Optional[str]:

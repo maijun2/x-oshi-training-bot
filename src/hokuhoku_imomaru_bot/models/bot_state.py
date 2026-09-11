@@ -62,6 +62,8 @@ class BotState:
     total_received_retweets: int = 0   # ボット投稿への累積リポスト数
     # 感情画像添付制限（1日1回）
     daily_image_posted: bool = False   # 本日の画像添付済みフラグ
+    # Buffer 予約投入の1日の件数（日報投稿後にリセット）
+    daily_buffer_count: int = 0
     # 前日の推し投稿数
     prev_daily_oshi_count: int = 0
     # リプライチェック用の最新Tweet ID
@@ -97,6 +99,7 @@ class BotState:
             "total_received_likes": self.total_received_likes,
             "total_received_retweets": self.total_received_retweets,
             "daily_image_posted": self.daily_image_posted,
+            "daily_buffer_count": self.daily_buffer_count,
             "prev_daily_oshi_count": self.prev_daily_oshi_count,
             "latest_reply_check_id": self.latest_reply_check_id,
         }
@@ -140,6 +143,7 @@ class BotState:
             total_received_likes=int(data.get("total_received_likes", 0)),
             total_received_retweets=int(data.get("total_received_retweets", 0)),
             daily_image_posted=bool(data.get("daily_image_posted", False)),
+            daily_buffer_count=int(data.get("daily_buffer_count", 0)),
             prev_daily_oshi_count=int(data.get("prev_daily_oshi_count", 0)),
             latest_reply_check_id=data.get("latest_reply_check_id"),
         )

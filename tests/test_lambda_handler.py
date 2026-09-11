@@ -507,13 +507,16 @@ class TestPostQuoteSafe:
         )
         # X API は呼ばれない（課金なし）
         x_api_client.post_tweet.assert_not_called()
-        # メール送信が呼ばれる
+        # メール送信が呼ばれる（Buffer 連携なし = disabled）
         draft_notifier.send_draft_email.assert_called_once_with(
             original_tweet_text="元の投稿",
             original_tweet_id="123",
             oshi_username="juri_bigangel",
             draft_text="応答テキスト",
             emotion_key=None,
+            buffer_status="disabled",
+            buffer_due_at=None,
+            buffer_daily_cap=None,
         )
 
     def test_returns_false_when_no_draft_notifier(self):
@@ -1041,15 +1044,78 @@ class TestDraftNotifier:
         assert "joy" in html_body
 
 
-class TestPostQuoteSafeWithEmotionImage:
-    """_post_quote_safe の感情キー判定パスのテスト"""
-
-    def test_passes_emotion_key_to_draft_notifier(self):
-        """推し投稿で感情キーが draft_notifier に渡されることを確認"""
+    def _send(self, **kwargs):
         from src.hokuhoku_imomaru_bot.services import DraftNotifier
+
+        ses_client = MagicMock()
+        notifier = DraftNotifier(
+            ses_client=ses_client,
+            from_email="from@example.com",
+            to_email="to@example.com",
+        )
+        notifier.send_draft_email(
+            original_tweet_text="テスト投稿",
+            original_tweet_id="123456",
+            oshi_username="juri_bigangel",
+            draft_text="嬉しいｲﾓ🍠",
+            **kwargs,
+        )
+        body = ses_client.send_email.call_args[1]["Message"]["Body"]
+        return body["Html"]["Data"], body["Text"]["Data"]
+
+    def test_buffer_scheduled_section(self):
+        """scheduled: 予約時刻（JST）と削除案内、Buffer リンクが載る"""
+        html, text = self._send(
+            buffer_status="scheduled",
+            buffer_due_at=datetime(2026, 9, 12, 23, 21, tzinfo=timezone.utc),
+            buffer_daily_cap=3,
+        )
+        for body in (html, text):
+            assert "Buffer 予約" in body
+            assert "9/13(日) 08:21 JST" in body
+            assert "Buffer のキューから削除" in body
+            assert "https://publish.buffer.com/" in body
+        # 非常口の Intent リンクは残る
+        assert "https://x.com/intent/tweet?text=" in html
+
+    def test_buffer_cap_section(self):
+        html, text = self._send(buffer_status="cap", buffer_daily_cap=3)
+        for body in (html, text):
+            assert "Buffer 予約枠（3件）は上限" in body
+            assert "手動" in body
+
+    def test_buffer_failed_section(self):
+        html, text = self._send(buffer_status="failed")
+        for body in (html, text):
+            assert "Buffer への予約投入に失敗" in body
+
+    def test_buffer_disabled_has_no_section(self):
+        html, text = self._send()
+        assert "Buffer 予約" not in html
+        assert "Buffer 予約" not in text
+
+
+class TestPostQuoteSafeWithEmotionImage:
+    """_post_quote_safe の感情分類 ＋ Buffer 投入パスのテスト（半人力）"""
+
+    def _make_scheduler(self, state, scheduled=None, cap=3):
+        from src.hokuhoku_imomaru_bot.services import BufferScheduler
+
+        scheduler = MagicMock(spec=BufferScheduler)
+        scheduler.daily_cap = cap
+        scheduler.can_attach_image.return_value = (
+            state.daily_buffer_count < cap and not state.daily_image_posted
+        )
+        scheduler.schedule_quote.return_value = scheduled
+        return scheduler
+
+    def test_schedules_to_buffer_with_emotion_image(self):
+        """推し投稿で感情分類 → Buffer に画像付きで投入 → メールに予約状況が載る"""
+        from src.hokuhoku_imomaru_bot.services import DraftNotifier, ScheduledPost
 
         tweet = Tweet(id="123", text="元の投稿", author_id="user")
         state = BotState(daily_image_posted=False)
+        due_at = datetime(2026, 9, 13, 23, 21, tzinfo=timezone.utc)
 
         ai_generator = MagicMock(spec=AIGenerator)
         ai_generator.generate_response.return_value = "嬉しいｲﾓ🍠"
@@ -1059,49 +1125,9 @@ class TestPostQuoteSafeWithEmotionImage:
         state_store = MagicMock(spec=StateStore)
         draft_notifier = MagicMock(spec=DraftNotifier)
         draft_notifier.send_draft_email.return_value = True
-
-        s3_client = MagicMock()
-
-        result = _post_quote_safe(
-            tweet=tweet,
-            post_type="oshi",
-            ai_generator=ai_generator,
-            x_api_client=x_api_client,
-            state_store=state_store,
-            state=state,
-            s3_client=s3_client,
-            bucket_name="test-bucket",
-            oshi_username="juri_bigangel",
-            draft_notifier=draft_notifier,
+        scheduler = self._make_scheduler(
+            state, ScheduledPost(post_id="p1", due_at=due_at, image_attached=True)
         )
-
-        assert result is True
-        assert state.daily_image_posted is True
-        # emotion_key が draft_notifier に渡される
-        draft_notifier.send_draft_email.assert_called_once_with(
-            original_tweet_text="元の投稿",
-            original_tweet_id="123",
-            oshi_username="juri_bigangel",
-            draft_text="嬉しいｲﾓ🍠",
-            emotion_key="joy",
-        )
-        # X API は呼ばれない
-        x_api_client.post_tweet.assert_not_called()
-
-    def test_no_emotion_key_when_already_posted_today(self):
-        """本日既に画像添付済みの場合は emotion_key なしで送信"""
-        from src.hokuhoku_imomaru_bot.services import DraftNotifier
-
-        tweet = Tweet(id="123", text="元の投稿", author_id="user")
-        state = BotState(daily_image_posted=True)
-
-        ai_generator = MagicMock(spec=AIGenerator)
-        ai_generator.generate_response.return_value = "応答"
-
-        x_api_client = MagicMock()
-        state_store = MagicMock(spec=StateStore)
-        draft_notifier = MagicMock(spec=DraftNotifier)
-        draft_notifier.send_draft_email.return_value = True
 
         result = _post_quote_safe(
             tweet=tweet,
@@ -1114,18 +1140,159 @@ class TestPostQuoteSafeWithEmotionImage:
             bucket_name="test-bucket",
             oshi_username="juri_bigangel",
             draft_notifier=draft_notifier,
+            buffer_scheduler=scheduler,
         )
 
         assert result is True
-        # daily_image_posted=True なので classify_emotion は呼ばれない
-        ai_generator.classify_emotion.assert_not_called()
+        scheduler.schedule_quote.assert_called_once_with(
+            state=state, tweet_id="123", draft_text="嬉しいｲﾓ🍠", emotion_key="joy"
+        )
         draft_notifier.send_draft_email.assert_called_once_with(
             original_tweet_text="元の投稿",
             original_tweet_id="123",
             oshi_username="juri_bigangel",
-            draft_text="応答",
-            emotion_key=None,
+            draft_text="嬉しいｲﾓ🍠",
+            emotion_key="joy",
+            buffer_status="scheduled",
+            buffer_due_at=due_at,
+            buffer_daily_cap=3,
         )
+        # X API は呼ばれない（課金なし）
+        x_api_client.post_tweet.assert_not_called()
+
+    def test_email_only_does_not_set_image_flag(self):
+        """Buffer 連携なし（メールのみ）では感情分類せず、画像フラグも立てない"""
+        from src.hokuhoku_imomaru_bot.services import DraftNotifier
+
+        tweet = Tweet(id="123", text="元の投稿", author_id="user")
+        state = BotState(daily_image_posted=False)
+
+        ai_generator = MagicMock(spec=AIGenerator)
+        ai_generator.generate_response.return_value = "応答"
+        draft_notifier = MagicMock(spec=DraftNotifier)
+        draft_notifier.send_draft_email.return_value = True
+
+        result = _post_quote_safe(
+            tweet=tweet,
+            post_type="oshi",
+            ai_generator=ai_generator,
+            x_api_client=MagicMock(),
+            state_store=MagicMock(spec=StateStore),
+            state=state,
+            s3_client=MagicMock(),
+            bucket_name="test-bucket",
+            oshi_username="juri_bigangel",
+            draft_notifier=draft_notifier,
+            buffer_scheduler=None,
+        )
+
+        assert result is True
+        ai_generator.classify_emotion.assert_not_called()
+        assert state.daily_image_posted is False
+
+    def test_no_emotion_key_when_already_posted_today(self):
+        """本日既に画像添付済みなら分類せず、画像なしで Buffer 投入する"""
+        from src.hokuhoku_imomaru_bot.services import DraftNotifier, ScheduledPost
+
+        tweet = Tweet(id="123", text="元の投稿", author_id="user")
+        state = BotState(daily_image_posted=True)
+
+        ai_generator = MagicMock(spec=AIGenerator)
+        ai_generator.generate_response.return_value = "応答"
+        draft_notifier = MagicMock(spec=DraftNotifier)
+        draft_notifier.send_draft_email.return_value = True
+        scheduler = self._make_scheduler(
+            state, ScheduledPost(post_id="p2", due_at=None, image_attached=False)
+        )
+
+        result = _post_quote_safe(
+            tweet=tweet,
+            post_type="oshi",
+            ai_generator=ai_generator,
+            x_api_client=MagicMock(),
+            state_store=MagicMock(spec=StateStore),
+            state=state,
+            s3_client=MagicMock(),
+            bucket_name="test-bucket",
+            oshi_username="juri_bigangel",
+            draft_notifier=draft_notifier,
+            buffer_scheduler=scheduler,
+        )
+
+        assert result is True
+        ai_generator.classify_emotion.assert_not_called()
+        scheduler.schedule_quote.assert_called_once_with(
+            state=state, tweet_id="123", draft_text="応答", emotion_key=None
+        )
+        assert draft_notifier.send_draft_email.call_args.kwargs["emotion_key"] is None
+        assert draft_notifier.send_draft_email.call_args.kwargs["buffer_status"] == "scheduled"
+
+    def test_cap_reached_sends_email_only(self):
+        """キャップ到達時は分類せず、Buffer は None を返し、メールに cap 状態が載る"""
+        from src.hokuhoku_imomaru_bot.services import DraftNotifier
+
+        tweet = Tweet(id="123", text="元の投稿", author_id="user")
+        state = BotState(daily_buffer_count=3)
+
+        ai_generator = MagicMock(spec=AIGenerator)
+        ai_generator.generate_response.return_value = "応答"
+        draft_notifier = MagicMock(spec=DraftNotifier)
+        draft_notifier.send_draft_email.return_value = True
+        scheduler = self._make_scheduler(state, scheduled=None, cap=3)
+
+        result = _post_quote_safe(
+            tweet=tweet,
+            post_type="oshi",
+            ai_generator=ai_generator,
+            x_api_client=MagicMock(),
+            state_store=MagicMock(spec=StateStore),
+            state=state,
+            oshi_username="juri_bigangel",
+            draft_notifier=draft_notifier,
+            buffer_scheduler=scheduler,
+        )
+
+        assert result is True
+        ai_generator.classify_emotion.assert_not_called()
+        kwargs = draft_notifier.send_draft_email.call_args.kwargs
+        assert kwargs["buffer_status"] == "cap"
+        assert kwargs["buffer_daily_cap"] == 3
+        assert kwargs["emotion_key"] is None
+
+    def test_buffer_failure_still_sends_email(self):
+        """Buffer 投入が例外でも握りつぶし、メール（非常口）は送られる"""
+        from src.hokuhoku_imomaru_bot.services import DraftNotifier
+
+        tweet = Tweet(id="123", text="元の投稿", author_id="user")
+        state = BotState()
+
+        ai_generator = MagicMock(spec=AIGenerator)
+        ai_generator.generate_response.return_value = "応答"
+        ai_generator.classify_emotion.return_value = "joy"
+        draft_notifier = MagicMock(spec=DraftNotifier)
+        draft_notifier.send_draft_email.return_value = True
+        scheduler = self._make_scheduler(state)
+        scheduler.schedule_quote.side_effect = RuntimeError("Buffer down")
+
+        result = _post_quote_safe(
+            tweet=tweet,
+            post_type="oshi",
+            ai_generator=ai_generator,
+            x_api_client=MagicMock(),
+            state_store=MagicMock(spec=StateStore),
+            state=state,
+            oshi_username="juri_bigangel",
+            draft_notifier=draft_notifier,
+            buffer_scheduler=scheduler,
+        )
+
+        assert result is True
+        kwargs = draft_notifier.send_draft_email.call_args.kwargs
+        assert kwargs["buffer_status"] == "failed"
+        # 画像は添付されていないので emotion_key はメールに載せない
+        assert kwargs["emotion_key"] is None
+        assert state.daily_image_posted is False
+
 
 
 class TestCheckEngagementSafe:

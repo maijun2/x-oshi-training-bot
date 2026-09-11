@@ -8,7 +8,8 @@ X（旧Twitter）育成ボット - AWSサーバーレスアーキテクチャ
 
 - 🔍 **タイムライン監視**: コアタイム3回（10:00/13:00/18:00 JST ±ゆらぎ）で推し投稿を監視、日報時（23:58 JST）に全処理実行
 - 🤖 **AI応答生成**: Amazon Bedrock（Claude Haiku 4.5）でキャラクターに合った応答を生成
-- 🎨 **感情別画像添付**: 推し投稿への引用ポスト時、AI応答の感情を分類してLINEスタンプ画像を添付（1日1回限定）
+- 📮 **推し投稿への反応（半人力）**: AI応答をSESメールで素案通知しつつ、Buffer のキューに予約投入。Buffer のスロット時刻に自動投稿され、NG なら人間が Buffer から削除（X API 課金 $0）
+- 🎨 **感情別画像添付**: Buffer 予約投入時、AI応答の感情を分類してLINEスタンプ画像を添付（1日1回限定）
 - ⭐ **XP獲得**: 活動に応じてXPを獲得（推し投稿: 5.0 XP、グループ投稿: 2.0 XP、いいね: 0.1 XP、リポスト: 0.5 XP）
 - 📈 **レベルアップ**: DQ3勇者の経験値テーブルに基づいてレベルアップ
 - 🖼️ **プロフィール更新**: レベルアップ時にプロフィール画像と名前を自動更新、レベルアップ投稿に画像添付
@@ -19,7 +20,9 @@ X（旧Twitter）育成ボット - AWSサーバーレスアーキテクチャ
 ## アーキテクチャ
 
 ```
-EventBridge Scheduler → Lambda → X API (投稿・リプライ)
+EventBridge Scheduler → Lambda → X API (日報・レベルアップ・リプライ)
+                          ├→ SES (推し投稿への応答素案メール)
+                          ├→ Buffer API (推し投稿への応答を予約投入 → Buffer が X に投稿)
                           ↓
                     DynamoDB (状態管理・許可ユーザー・処理済みリプライ)
                           ↓
@@ -211,6 +214,30 @@ rm /tmp/buffer-secret.json
 `channels(input: {organizationId: ...}) { id name service }` を実行して取得します。
 参考: https://developers.buffer.com/guides/getting-started.html
 
+**運用パラメータ（Lambda 環境変数、`stack.py` で設定）**
+
+| 変数 | 初期値 | 意味 |
+|------|--------|------|
+| `BUFFER_DAILY_CAP` | `3` | 1日に Buffer へ予約投入する上限件数。超えた分はメール素案のみ（Buffer 無料枠10件を溢れさせないため） |
+| `BUFFER_IMAGE_URL_TTL_SECONDS` | `3600` | 感情画像の S3 presigned URL の有効期限 |
+
+**Buffer 側のスロット設定（予約時刻は Buffer に任せる）**
+
+- 投稿時刻はボット側で計算せず、Buffer チャンネルの posting schedule（スロット）に `addToQueue` で載せます。
+  スロットは Buffer の Settings → Posting Schedule で変更でき、deploy 不要です
+- レビュー猶予はスロットまでの時間です。**10:00〜10:45 JST にはスロットを置かない**でください
+  （10:00 台の検知分が直後のスロットに入り、メールを見て削除する猶予がなくなるため）
+- スロット数/日 > `BUFFER_DAILY_CAP` にしておくとキューが滞留しません
+
+**動作確認**
+
+```bash
+# 本番の Buffer キューに 1 件投入して post id / 予約時刻 / 画像コピー状況を表示
+uv run python scripts/test_buffer_post.py --text "テストｲﾓ🍠" --tweet-id <推しの投稿ID> --emotion cheer
+# 後片付け
+uv run python scripts/test_buffer_post.py --delete <post_id>
+```
+
 ### 2. S3へのベース画像アップロード
 
 ```bash
@@ -284,9 +311,9 @@ table.put_item(Item={
 
 | 時刻 | 実行モード | 投稿内容 | 条件 |
 |------|-----------|---------|------|
-| 朝10時（±15分） | core_time | 推しタイムライン監視・引用ポスト・リプライ検出 | 毎日 |
-| 昼13時（±23分） | core_time | 推しタイムライン監視・引用ポスト・リプライ検出 | 毎日 |
-| 夕方18時（±3分） | core_time | 推しタイムライン監視・引用ポスト・リプライ検出 | 毎日 |
+| 朝10時（±15分） | core_time | 推しタイムライン監視・応答素案メール＋Buffer予約投入・リプライ検出 | 毎日 |
+| 昼13時（±23分） | core_time | 推しタイムライン監視・応答素案メール＋Buffer予約投入・リプライ検出 | 毎日 |
+| 夕方18時（±3分） | core_time | 推しタイムライン監視・応答素案メール＋Buffer予約投入・リプライ検出 | 毎日 |
 | 23:58（±1分） | daily_report | 全処理（推し+グループ監視・リプライ検出・エンゲージメント・日報） | 毎日（エンゲージメントは1日1回） |
 
 ## XPレートと投稿ルール
@@ -303,4 +330,4 @@ table.put_item(Item={
 | ボット投稿へのいいね | 0.1 | なし |
 | 許可ユーザーからのリプライ | 0.0 | AI生成リプライ応答 |
 
-※感情画像添付は1日1回限定
+※感情画像添付は1日1回限定（Buffer 予約投入に成功したときのみカウント）。推し投稿への応答は Buffer 経由で投稿されるため X API の Create 課金は発生しない
