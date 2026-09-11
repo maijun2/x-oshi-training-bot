@@ -255,6 +255,24 @@ def test_reset_daily_counts_resets_image_posted_flag(dynamodb_client):
     assert reset_state.daily_image_posted is False
 
 
+def test_reset_daily_counts_resets_buffer_count(dynamodb_client):
+    """reset_daily_counts()がdaily_buffer_countをリセットすることを確認"""
+    store = StateStore(dynamodb_client)
+
+    reset_state = store.reset_daily_counts(BotState(daily_buffer_count=3))
+
+    assert reset_state.daily_buffer_count == 0
+
+
+def test_save_and_load_state_with_daily_buffer_count(dynamodb_client):
+    """daily_buffer_countを含む状態を保存・読み込みできることを確認"""
+    store = StateStore(dynamodb_client)
+
+    store.save_state(BotState(daily_buffer_count=2))
+
+    assert store.load_state().daily_buffer_count == 2
+
+
 def test_save_and_load_state_with_profile_update_month(dynamodb_client):
     """last_profile_update_monthを含む状態を保存・読み込みできることを確認"""
     store = StateStore(dynamodb_client)

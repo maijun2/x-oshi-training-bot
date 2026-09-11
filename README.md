@@ -8,26 +8,25 @@ X（旧Twitter）育成ボット - AWSサーバーレスアーキテクチャ
 
 - 🔍 **タイムライン監視**: コアタイム3回（10:00/13:00/18:00 JST ±ゆらぎ）で推し投稿を監視、日報時（23:58 JST）に全処理実行
 - 🤖 **AI応答生成**: Amazon Bedrock（Claude Haiku 4.5）でキャラクターに合った応答を生成
-- 🎨 **感情別画像添付**: 推し投稿への引用ポスト時、AI応答の感情を分類してLINEスタンプ画像を添付（1日1回限定）
+- 📮 **推し投稿への反応（半人力）**: AI応答をSESメールで素案通知しつつ、Buffer のキューに予約投入。Buffer のスロット時刻に自動投稿され、NG なら人間が Buffer から削除（X API 課金 $0）
+- 🎨 **感情別画像添付**: Buffer 予約投入時、AI応答の感情を分類してLINEスタンプ画像を添付（1日1回限定）
 - ⭐ **XP獲得**: 活動に応じてXPを獲得（推し投稿: 5.0 XP、グループ投稿: 2.0 XP、いいね: 0.1 XP、リポスト: 0.5 XP）
 - 📈 **レベルアップ**: DQ3勇者の経験値テーブルに基づいてレベルアップ
 - 🖼️ **プロフィール更新**: レベルアップ時にプロフィール画像と名前を自動更新、レベルアップ投稿に画像添付
 - 📊 **日報投稿**: 毎日23:58 JST以降に活動報告を投稿
 - 💬 **リプライ機能**: 許可ユーザーからボット投稿へのリプライに対してAIが自動応答（冪等性制御・3日チェック付き）
 - 💰 **APIコスト最適化**: グループオリジナル投稿の引用ポスト停止（XP加算のみ継続）、エンゲージメントチェックを1日1回に制限
-- 🎬 **YouTube新着検索**: 推しの投稿が少ない日の朝に、関連YouTube動画を検索して投稿（AgentCore Runtime）
-- 🌎 **翻訳投稿**: 日曜の朝に人気ポストを英語翻訳して投稿（AgentCore Runtime、週1回）
 
 ## アーキテクチャ
 
 ```
-EventBridge Scheduler → Lambda → X API (投稿・リプライ)
+EventBridge Scheduler → Lambda → X API (日報・レベルアップ・リプライ)
+                          ├→ SES (推し投稿への応答素案メール)
+                          ├→ Buffer API (推し投稿への応答を予約投入 → Buffer が X に投稿)
                           ↓
                     DynamoDB (状態管理・許可ユーザー・処理済みリプライ)
                           ↓
                     Bedrock (AI生成)
-                          ↓
-                    AgentCore Runtime (YouTube検索・翻訳)
                           ↓
                     S3 (画像アセット)
                           ↓
@@ -56,6 +55,7 @@ EventBridge Scheduler → Lambda → X API (投稿・リプライ)
 |-----------|------|------|
 | `imomaru-bot-lambda-errors` | エラー数 ≥ 1（5分間） | Lambda関数でエラーが発生 |
 | `imomaru-bot-lambda-duration` | 実行時間 ≥ 150秒（5分間） | 実行時間が長すぎる（タイムアウト警告） |
+| `imomaru-bot-app-errors` | `[ERROR]`/`[CRITICAL]` ログ ≥ 1（5分間） | try/except で捕捉されたアプリ内エラー（Lambda Errors メトリクスに乗らないもの） |
 
 ### アラーム通知の設定
 
@@ -142,15 +142,11 @@ GROUP_USER_ID=9876543210987654321
 
 # ボット自身のXアカウントユーザーID
 BOT_USER_ID=1111111111111111111
-
-# AgentCore Runtime（Supervisor Agent）のARN
-AGENTCORE_RUNTIME_ARN=arn:aws:bedrock-agentcore:ap-northeast-1:ACCOUNT_ID:runtime/AGENT_NAME
 ```
 
 **注意**: 
 - これらはXのユーザーIDです。ユーザー名（@xxx）ではありません。
 - `BOT_USER_ID` はボット自身の投稿へのエンゲージメント（いいね・リポスト）を追跡するために使用します。
-- `AGENTCORE_RUNTIME_ARN` はAgentCore Runtime のSupervisor AgentのARNです。YouTube検索・翻訳機能に使用します。
 - `.env`ファイルは`.gitignore`で除外されているため、リポジトリにはコミットされません。
 
 ### 2. CDKブートストラップ（初回のみ）
@@ -192,6 +188,57 @@ aws secretsmanager put-secret-value \
   --region ap-northeast-1
 ```
 
+### 1-b. Buffer API認証情報の設定
+
+Buffer の Settings → API → Personal Access で発行した Personal Access Token と、投稿先チャンネルの ID を
+`imomaru-bot/buffer-api` シークレットに格納します（値はチャット・ログ・リポジトリに出さないこと）。
+
+```bash
+# 値はファイル経由で渡す（シェル履歴に残さない）
+cat > /tmp/buffer-secret.json <<'JSON'
+{
+  "access_token": "YOUR_BUFFER_PERSONAL_ACCESS_TOKEN",
+  "channel_id": "YOUR_CHANNEL_ID",
+  "organization_id": "YOUR_ORGANIZATION_ID"
+}
+JSON
+aws secretsmanager put-secret-value \
+  --secret-id imomaru-bot/buffer-api \
+  --secret-string file:///tmp/buffer-secret.json \
+  --region ap-northeast-1
+rm /tmp/buffer-secret.json
+```
+
+`channel_id` / `organization_id` は Buffer GraphQL API（`POST https://api.buffer.com`、
+`Authorization: Bearer <token>`）で `account { organizations { id } }` →
+`channels(input: {organizationId: ...}) { id name service }` を実行して取得します。
+参考: https://developers.buffer.com/guides/getting-started.html
+
+**運用パラメータ（Lambda 環境変数、`stack.py` で設定）**
+
+| 変数 | 初期値 | 意味 |
+|------|--------|------|
+| `BUFFER_DAILY_CAP` | `3` | 1日に Buffer へ予約投入する上限件数。超えた分はメール素案のみ（Buffer 無料枠10件を溢れさせないため） |
+| `PUBLIC_ASSETS_BUCKET_NAME` | CDK が設定 | 感情画像の公開バケット（`imomaru-bot-public-assets-<account>`）。Buffer は**投稿公開時**に画像 URL を取りに来るため、署名付き URL ではなく公開 URL が必要 |
+
+**Buffer 側のスロット設定（予約時刻は Buffer に任せる）**
+
+- 投稿時刻はボット側で計算せず、Buffer チャンネルの posting schedule（スロット）に `addToQueue` で載せます。
+  スロットは Buffer の Settings → Posting Schedule で変更でき、deploy 不要です
+- レビュー猶予はスロットまでの時間です。**10:00〜10:45 JST にはスロットを置かない**でください
+  （朝の検知は 10:00 ±15 分。直後のスロットに入るとメールを見て削除する猶予が 30 分を切るため）
+- スロット数/日 > `BUFFER_DAILY_CAP` にしておくとキューが滞留しません
+- 動作確認済み（2026-09-12）: Buffer 経由の投稿で感情画像が添付され、末尾の x.com URL は X 側で引用ポストとして展開される
+
+**動作確認**
+
+```bash
+# 本番の Buffer キューに 1 件投入して post id / 予約時刻 / 画像コピー状況を表示
+uv run python scripts/test_buffer_post.py --text "テストｲﾓ🍠" --tweet-id <推しの投稿ID> --emotion cheer
+# 後片付け
+uv run python scripts/test_buffer_post.py --delete <post_id>
+```
+
 ### 2. S3へのベース画像アップロード
 
 ```bash
@@ -212,11 +259,13 @@ AWS_DEFAULT_REGION=ap-northeast-1 uv run python scripts/init_emotion_images.py
 
 ### 5. S3への感情画像アップロード
 
-感情別画像を`emotions/`プレフィックス内にアップロード:
+感情別画像を **公開バケット** の `emotions/` プレフィックス内にアップロード（Buffer が投稿公開時に取得する）:
 
 ```bash
-aws s3 cp emotions/ s3://imomaru-bot-assets-ACCOUNT_ID/emotions/ --recursive --region ap-northeast-1
+aws s3 sync ./emotions/ s3://imomaru-bot-public-assets-ACCOUNT_ID/emotions/
 ```
+
+※ 従来の `imomaru-bot-assets-ACCOUNT_ID/emotions/` は参照されなくなった（残っていても無害）。
 
 ### 6. 許可ユーザーリストの初期化
 
@@ -265,11 +314,9 @@ table.put_item(Item={
 
 | 時刻 | 実行モード | 投稿内容 | 条件 |
 |------|-----------|---------|------|
-| 朝10時（±15分） | core_time | 推しタイムライン監視・引用ポスト・リプライ検出 | 毎日 |
-| 朝10時（±15分） | core_time | YouTube新着検索（単独ポスト） | 前日の推し投稿3件以下 & 新着あり |
-| 朝10時（日曜） | core_time | 人気ポスト翻訳（単独ポスト） | 前日の推し投稿3件以下 |
-| 昼13時（±23分） | core_time | 推しタイムライン監視・引用ポスト・リプライ検出 | 毎日 |
-| 夕方18時（±3分） | core_time | 推しタイムライン監視・引用ポスト・リプライ検出 | 毎日 |
+| 朝10時（±15分） | core_time | 推しタイムライン監視・応答素案メール＋Buffer予約投入・リプライ検出 | 毎日 |
+| 昼13時（±23分） | core_time | 推しタイムライン監視・応答素案メール＋Buffer予約投入・リプライ検出 | 毎日 |
+| 夕方18時（±3分） | core_time | 推しタイムライン監視・応答素案メール＋Buffer予約投入・リプライ検出 | 毎日 |
 | 23:58（±1分） | daily_report | 全処理（推し+グループ監視・リプライ検出・エンゲージメント・日報） | 毎日（エンゲージメントは1日1回） |
 
 ## XPレートと投稿ルール
@@ -286,4 +333,4 @@ table.put_item(Item={
 | ボット投稿へのいいね | 0.1 | なし |
 | 許可ユーザーからのリプライ | 0.0 | AI生成リプライ応答 |
 
-※感情画像添付は1日1回限定
+※感情画像添付は1日1回限定（Buffer 予約投入に成功したときのみカウント）。推し投稿への応答は Buffer 経由で投稿されるため X API の Create 課金は発生しない

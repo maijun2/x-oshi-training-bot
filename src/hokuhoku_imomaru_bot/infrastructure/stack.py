@@ -20,6 +20,7 @@ from aws_cdk import (
     aws_lambda as lambda_,
     aws_scheduler as scheduler,
     aws_cloudwatch as cloudwatch,
+    aws_logs as logs,
     aws_sns as sns,
     aws_cloudwatch_actions as cw_actions,
 )
@@ -161,6 +162,29 @@ class ImomaruBotStack(Stack):
             enforce_ssl=True,  # SSL/TLS接続を強制
         )
 
+        # S3 バケット: 公開アセット（感情画像）
+        # Buffer は投稿公開時に画像 URL を取りに来るため、署名なしで読める公開 URL が必要。
+        # 公開するのはスタンプ画像だけなので専用バケットに分離し、assets_bucket は BLOCK_ALL のまま維持する
+        self.public_assets_bucket = s3.Bucket(
+            self,
+            "PublicAssetsBucket",
+            bucket_name=f"imomaru-bot-public-assets-{self.account}",
+            encryption=s3.BucketEncryption.S3_MANAGED,
+            block_public_access=s3.BlockPublicAccess.BLOCK_ACLS_ONLY,  # バケットポリシーによる公開読み取りのみ許可
+            removal_policy=RemovalPolicy.RETAIN,
+            versioned=False,
+            enforce_ssl=True,
+        )
+        self.public_assets_bucket.add_to_resource_policy(
+            iam.PolicyStatement(
+                sid="PublicReadEmotionImages",
+                effect=iam.Effect.ALLOW,
+                principals=[iam.AnyPrincipal()],
+                actions=["s3:GetObject"],
+                resources=[self.public_assets_bucket.arn_for_objects("emotions/*")],
+            )
+        )
+
         # Secrets Manager: X API認証情報
         # OAuth 1.0a（v1.1用）とBearer Token（v2用）を保存
         self.x_api_secret = secretsmanager.Secret(
@@ -168,6 +192,16 @@ class ImomaruBotStack(Stack):
             "XAPISecret",
             secret_name="imomaru-bot/x-api-credentials",
             description="X API認証情報（OAuth 1.0a + Bearer Token）",
+            removal_policy=RemovalPolicy.RETAIN,  # 本番環境では削除しない
+        )
+
+        # Secrets Manager: Buffer API認証情報
+        # Personal Access Token と投稿先チャンネルID を保存（値は put-secret-value で手動投入）
+        self.buffer_api_secret = secretsmanager.Secret(
+            self,
+            "BufferAPISecret",
+            secret_name="imomaru-bot/buffer-api",
+            description="Buffer API認証情報（Personal Access Token + channel ID）",
             removal_policy=RemovalPolicy.RETAIN,  # 本番環境では削除しない
         )
 
@@ -199,6 +233,7 @@ class ImomaruBotStack(Stack):
 
         # Secrets Manager読み取り権限を付与
         self.x_api_secret.grant_read(self.lambda_role)
+        self.buffer_api_secret.grant_read(self.lambda_role)
 
         # Bedrock呼び出し権限を付与
         # Claude Haiku 4.5はInference Profile経由でのみ呼び出し可能
@@ -212,22 +247,6 @@ class ImomaruBotStack(Stack):
                     f"arn:aws:bedrock:{self.region}:{self.account}:inference-profile/jp.anthropic.claude-haiku-4-5-20251001-v1:0",
                     f"arn:aws:bedrock:{self.region}::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0",
                     f"arn:aws:bedrock:ap-northeast-3::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0",
-                ],
-            )
-        )
-
-        # AgentCore Runtime 呼び出し権限を付与
-        # InvokeAgentRuntime は runtime-endpoint/DEFAULT サブリソースにもアクセスするためワイルドカード必須
-        agentcore_runtime_arn = os.getenv("AGENTCORE_RUNTIME_ARN", "")
-        self.lambda_role.add_to_policy(
-            iam.PolicyStatement(
-                effect=iam.Effect.ALLOW,
-                actions=[
-                    "bedrock-agentcore:InvokeAgentRuntime",
-                ],
-                resources=[
-                    agentcore_runtime_arn,
-                    f"{agentcore_runtime_arn}/*",
                 ],
             )
         )
@@ -263,11 +282,13 @@ class ImomaruBotStack(Stack):
                 "PROCESSED_REPLIES_TABLE_NAME": self.processed_replies_table.table_name,
                 "ASSETS_BUCKET_NAME": self.assets_bucket.bucket_name,
                 "SECRET_NAME": self.x_api_secret.secret_name,
+                "BUFFER_SECRET_NAME": self.buffer_api_secret.secret_name,
+                "BUFFER_DAILY_CAP": "3",  # 1日の Buffer 予約投入件数の上限（無料枠10件を溢れさせない）
+                "PUBLIC_ASSETS_BUCKET_NAME": self.public_assets_bucket.bucket_name,
                 "OSHI_USER_ID": oshi_user_id,
                 "OSHI_USERNAME": oshi_username,
                 "GROUP_USER_ID": group_user_id,
                 "BOT_USER_ID": bot_user_id,
-                "AGENTCORE_RUNTIME_ARN": agentcore_runtime_arn,
                 "NOTIFICATION_EMAIL": notification_email,
                 "FROM_EMAIL": notification_email,
             },
@@ -371,6 +392,42 @@ class ImomaruBotStack(Stack):
         )
         self.lambda_duration_alarm.add_alarm_action(cw_actions.SnsAction(self.alarm_topic))
 
+        # アプリ内エラーアラーム（ログベース）
+        # try/except で捕捉したエラーは Lambda の Errors メトリクスに乗らないため、
+        # ランタイムが付与する [ERROR] / [CRITICAL] プレフィックスをメトリクスフィルタで拾う。
+        # ロググループは Lambda が自動作成するものを参照する（bot_lambda.log_group は
+        # LogRetention カスタムリソースを生やすため使わない）
+        bot_lambda_log_group = logs.LogGroup.from_log_group_name(
+            self,
+            "BotLambdaLogGroup",
+            "/aws/lambda/imomaru-bot-handler",
+        )
+        self.app_error_metric_filter = logs.MetricFilter(
+            self,
+            "AppErrorMetricFilter",
+            log_group=bot_lambda_log_group,
+            metric_namespace="ImomaruBot",
+            metric_name="AppErrors",
+            filter_pattern=logs.FilterPattern.any_term("[ERROR]", "[CRITICAL]"),
+            metric_value="1",
+            default_value=0,
+        )
+        self.app_error_alarm = cloudwatch.Alarm(
+            self,
+            "AppErrorAlarm",
+            alarm_name="imomaru-bot-app-errors",
+            alarm_description="アプリケーション内で捕捉されたエラーがログに記録されました",
+            metric=self.app_error_metric_filter.metric(
+                period=Duration.minutes(5),
+                statistic="Sum",
+            ),
+            threshold=1,
+            evaluation_periods=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+        )
+        self.app_error_alarm.add_alarm_action(cw_actions.SnsAction(self.alarm_topic))
+
         # CloudWatch ダッシュボード
         self.dashboard = cloudwatch.Dashboard(
             self,
@@ -412,6 +469,7 @@ class ImomaruBotStack(Stack):
             alarms=[
                 self.lambda_error_alarm,
                 self.lambda_duration_alarm,
+                self.app_error_alarm,
             ],
             width=16,
             height=3,

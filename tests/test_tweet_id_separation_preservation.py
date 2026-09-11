@@ -342,9 +342,6 @@ def test_preservation_core_time_skips_group_timeline(oshi_tweets):
         draft_notifier,
     ) = _make_mocks(oshi_tweets=oshi_tweets, group_tweets=[])
 
-    # core_time モード用の設定
-    daily_reporter.should_post_morning_content.return_value = False
-
     result = _process_bot_logic(
         state=state,
         state_store=state_store,
@@ -415,64 +412,3 @@ def test_preservation_from_dict_fallback(latest_tweet_id, cumulative_xp, current
     # to_dict() → from_dict() のラウンドトリップで latest_tweet_id が保持されること
     restored = BotState.from_dict(state.to_dict())
     assert restored.latest_tweet_id == latest_tweet_id
-
-
-# =============================================================================
-# Property: 翻訳投稿で正しいIDが渡される
-# =============================================================================
-
-@settings(max_examples=50)
-@given(
-    latest_oshi_tweet_id=st.one_of(st.none(), tweet_id_strategy.map(str)),
-)
-def test_preservation_translation_receives_correct_id(latest_oshi_tweet_id):
-    """
-    翻訳投稿で latest_oshi_tweet_id が post_translation に正しく渡されること。
-
-    core_time モードで翻訳投稿が実行される際、state.latest_oshi_tweet_id（または "0"）が
-    post_translation の latest_tweet_id 引数として渡されること。
-
-    **Validates: Requirements 3.6**
-    """
-    (
-        state, state_store, timeline_monitor, xp_calculator,
-        level_manager, ai_generator, image_compositor,
-        profile_updater, daily_reporter, x_api_client,
-        reply_monitor, allowed_users_service, reply_processor,
-        draft_notifier,
-    ) = _make_mocks(oshi_tweets=[], group_tweets=[])
-
-    state.latest_oshi_tweet_id = latest_oshi_tweet_id
-
-    # core_time モード + 翻訳投稿が有効
-    daily_reporter.should_post_morning_content.return_value = True
-    daily_reporter.post_youtube_search.return_value = False
-    daily_reporter.should_post_translation.return_value = True
-    daily_reporter.post_translation.return_value = True
-
-    result = _process_bot_logic(
-        state=state,
-        state_store=state_store,
-        timeline_monitor=timeline_monitor,
-        reply_monitor=reply_monitor,
-        allowed_users_service=allowed_users_service,
-        reply_processor=reply_processor,
-        xp_calculator=xp_calculator,
-        level_manager=level_manager,
-        ai_generator=ai_generator,
-        image_compositor=image_compositor,
-        profile_updater=profile_updater,
-        daily_reporter=daily_reporter,
-        x_api_client=x_api_client,
-        draft_notifier=draft_notifier,
-        execution_mode="core_time",
-    )
-
-    # post_translation が呼ばれたこと
-    daily_reporter.post_translation.assert_called_once()
-
-    # 渡された latest_tweet_id を検証
-    call_kwargs = daily_reporter.post_translation.call_args.kwargs
-    expected_id = latest_oshi_tweet_id or "0"
-    assert call_kwargs["latest_tweet_id"] == expected_id, \
-        f"post_translation に渡された latest_tweet_id={call_kwargs['latest_tweet_id']}（期待: {expected_id}）"

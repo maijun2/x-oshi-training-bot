@@ -13,6 +13,7 @@ from .reply_monitor import ReplyMonitor
 from .allowed_users_service import AllowedUsersService
 from .reply_processor import ReplyProcessor
 from .draft_notifier import DraftNotifier
+from .buffer_scheduler import BufferScheduler, ScheduledPost
 
 __all__ = [
     "StateStore",
@@ -40,4 +41,6 @@ __all__ = [
     "AllowedUsersService",
     "ReplyProcessor",
     "DraftNotifier",
+    "BufferScheduler",
+    "ScheduledPost",
 ]

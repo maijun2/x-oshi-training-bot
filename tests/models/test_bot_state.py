@@ -231,3 +231,12 @@ class TestProperty1BotStateSerializationRoundTrip:
         state = BotState(last_engagement_check_date=date_value)
         restored = BotState.from_dict(state.to_dict())
         assert restored.last_engagement_check_date == state.last_engagement_check_date
+
+
+def test_bot_state_daily_buffer_count_round_trip():
+    """daily_buffer_count が to_dict()/from_dict() で保持され、未指定なら 0 になることを確認"""
+    state = BotState(daily_buffer_count=2)
+
+    assert state.to_dict()["daily_buffer_count"] == 2
+    assert BotState.from_dict(state.to_dict()).daily_buffer_count == 2
+    assert BotState.from_dict({}).daily_buffer_count == 0

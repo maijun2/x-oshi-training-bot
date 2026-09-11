@@ -6,9 +6,16 @@ DraftNotifierクラス
 """
 import logging
 import urllib.parse
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+JST = timezone(timedelta(hours=9))
+WEEKDAYS_JA = ["月", "火", "水", "木", "金", "土", "日"]
+
+# Buffer の予約キュー（メールから削除しに行く先）
+BUFFER_QUEUE_URL = "https://publish.buffer.com/"
 
 
 class DraftNotifier:
@@ -20,6 +27,12 @@ class DraftNotifier:
     """
 
     SUBJECT = "【いも丸】推し投稿への応答素案ｲﾓ🍠"
+
+    # Buffer 投入状況（_post_quote_safe から渡される）
+    BUFFER_STATUS_DISABLED = "disabled"    # Buffer 連携なし（セクション非表示）
+    BUFFER_STATUS_SCHEDULED = "scheduled"  # 予約投入済み（NG なら Buffer で削除）
+    BUFFER_STATUS_CAP = "cap"              # 本日のキャップ到達（メールのみ）
+    BUFFER_STATUS_FAILED = "failed"        # 投入失敗（メールのみ）
 
     def __init__(
         self,
@@ -46,6 +59,9 @@ class DraftNotifier:
         oshi_username: str,
         draft_text: str,
         emotion_key: Optional[str] = None,
+        buffer_status: str = BUFFER_STATUS_DISABLED,
+        buffer_due_at: Optional[datetime] = None,
+        buffer_daily_cap: Optional[int] = None,
     ) -> bool:
         """
         投稿素案をメールで送信
@@ -55,7 +71,10 @@ class DraftNotifier:
             original_tweet_id: 推しの元ツイート ID
             oshi_username: 推しの X ユーザー名
             draft_text: AI 生成した応答テキスト（URL なし）
-            emotion_key: 感情キー（メール表示用、省略可）
+            emotion_key: 感情キー（Buffer に画像添付した場合のみ。メール表示用）
+            buffer_status: Buffer 投入状況（BUFFER_STATUS_*）
+            buffer_due_at: Buffer の予約時刻（scheduled のとき）
+            buffer_daily_cap: 1日の投入キャップ（cap のときの表示用）
 
         Returns:
             送信成功の可否
@@ -63,6 +82,7 @@ class DraftNotifier:
         try:
             original_url = f"https://x.com/{oshi_username}/status/{original_tweet_id}"
             intent_url = self._build_intent_url(draft_text, original_url)
+            buffer_note = self._build_buffer_note(buffer_status, buffer_due_at, buffer_daily_cap)
 
             html_body = self._build_html(
                 original_tweet_text=original_tweet_text,
@@ -70,12 +90,15 @@ class DraftNotifier:
                 draft_text=draft_text,
                 intent_url=intent_url,
                 emotion_key=emotion_key,
+                buffer_status=buffer_status,
+                buffer_note=buffer_note,
             )
             text_body = self._build_plain_text(
                 original_tweet_text=original_tweet_text,
                 original_url=original_url,
                 draft_text=draft_text,
                 intent_url=intent_url,
+                buffer_note=buffer_note,
             )
 
             self._ses_client.send_email(
@@ -112,6 +135,39 @@ class DraftNotifier:
         full_text = f"{draft_text}\n\n{original_url}"
         return "https://x.com/intent/tweet?text=" + urllib.parse.quote(full_text)
 
+    @classmethod
+    def _build_buffer_note(
+        cls,
+        buffer_status: str,
+        buffer_due_at: Optional[datetime],
+        buffer_daily_cap: Optional[int],
+    ) -> Optional[str]:
+        """
+        Buffer 投入状況の説明文（HTML / テキスト共通）。disabled のときは None
+        """
+        if buffer_status == cls.BUFFER_STATUS_SCHEDULED:
+            if buffer_due_at is not None:
+                jst = buffer_due_at.astimezone(JST)
+                when = f"{jst.month}/{jst.day}({WEEKDAYS_JA[jst.weekday()]}) {jst:%H:%M} JST"
+            else:
+                when = "次の空きスロット"
+            return (
+                f"Buffer に予約済み: {when} に自動投稿されます。"
+                f"内容が NG なら Buffer のキューから削除してください。"
+            )
+        if buffer_status == cls.BUFFER_STATUS_CAP:
+            cap = f"{buffer_daily_cap}件" if buffer_daily_cap is not None else "上限"
+            return (
+                f"本日の Buffer 予約枠（{cap}）は上限に達したため、Buffer には入れていません。"
+                f"投稿する場合は下の X リンクから手動でどうぞ。"
+            )
+        if buffer_status == cls.BUFFER_STATUS_FAILED:
+            return (
+                "⚠️ Buffer への予約投入に失敗しました。"
+                "投稿する場合は下の X リンクから手動でどうぞ。"
+            )
+        return None
+
     @staticmethod
     def _build_html(
         original_tweet_text: str,
@@ -119,6 +175,8 @@ class DraftNotifier:
         draft_text: str,
         intent_url: str,
         emotion_key: Optional[str],
+        buffer_status: str = "disabled",
+        buffer_note: Optional[str] = None,
     ) -> str:
         def _escape(text: str) -> str:
             return (
@@ -141,6 +199,26 @@ class DraftNotifier:
             if emotion_key
             else ""
         )
+
+        if buffer_note:
+            # 予約済みは青系、キャップ/失敗は注意色で区別する
+            is_scheduled = buffer_status == "scheduled"
+            note_bg = "#e8f4fd" if is_scheduled else "#fff4e5"
+            note_color = "#1a5276" if is_scheduled else "#8a4b00"
+            buffer_link = (
+                f'<a href="{BUFFER_QUEUE_URL}" style="font-size: 13px; color: #1da1f2;">Buffer のキューを開く →</a>'
+                if is_scheduled
+                else ""
+            )
+            buffer_section = f"""
+        <div style="margin-bottom: 25px;">
+          <p style="font-weight: bold; margin-bottom: 8px; font-size: 14px;">▼ Buffer 予約</p>
+          <p style="background: {note_bg}; color: {note_color}; padding: 12px 15px; border-radius: 8px;
+                    font-size: 13px; line-height: 1.6; margin: 0 0 8px;">{_escape(buffer_note)}</p>
+          {buffer_link}
+        </div>"""
+        else:
+            buffer_section = ""
 
         return f"""<!DOCTYPE html>
 <html lang="ja">
@@ -179,6 +257,8 @@ class DraftNotifier:
                 line-height: 1.6; white-space: pre-wrap; margin: 0;">{escaped_post_text}</p>
     </div>
 
+    {buffer_section}
+
     {emotion_section}
 
     <div style="text-align: center; margin-top: 20px;">
@@ -209,10 +289,13 @@ class DraftNotifier:
         original_url: str,
         draft_text: str,
         intent_url: str,
+        buffer_note: Optional[str] = None,
     ) -> str:
+        buffer_block = f"■ Buffer 予約\n{buffer_note}\n{BUFFER_QUEUE_URL}\n\n" if buffer_note else ""
         return (
             f"【推し投稿への応答素案】\n\n"
             f"■ 元の投稿\n{original_tweet_text}\n{original_url}\n\n"
             f"■ 投稿素案\n{draft_text}\n\n"
+            f"{buffer_block}"
             f"■ X で投稿する\n{intent_url}\n"
         )

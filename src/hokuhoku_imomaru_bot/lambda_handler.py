@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 
 import boto3
 
-from .clients import XAPIClient
+from .clients import XAPIClient, BufferClient
 from .models import BotState
 from .services import (
     StateStore,
@@ -27,6 +27,7 @@ from .services import (
     AllowedUsersService,
     ReplyProcessor,
     DraftNotifier,
+    BufferScheduler,
 )
 from .services.daily_reporter import JST
 from .utils import (
@@ -54,6 +55,14 @@ ALLOWED_USERS_TABLE_NAME = os.environ.get("ALLOWED_USERS_TABLE_NAME", "imomaru-b
 PROCESSED_REPLIES_TABLE_NAME = os.environ.get("PROCESSED_REPLIES_TABLE_NAME", "imomaru-bot-processed-replies")
 NOTIFICATION_EMAIL = os.environ.get("NOTIFICATION_EMAIL", "")
 FROM_EMAIL = os.environ.get("FROM_EMAIL", "")
+# Buffer 半人力投稿（推し投稿への応答を Buffer キューに予約投入）
+BUFFER_SECRET_NAME = os.environ.get("BUFFER_SECRET_NAME", "imomaru-bot/buffer-api")
+BUFFER_DAILY_CAP = int(os.environ.get("BUFFER_DAILY_CAP", "3"))
+# 感情画像の公開バケット（Buffer が投稿公開時に取りに来る）
+PUBLIC_ASSETS_BUCKET_NAME = os.environ.get("PUBLIC_ASSETS_BUCKET_NAME", "imomaru-bot-public-assets")
+PUBLIC_ASSETS_BASE_URL = (
+    f"https://{PUBLIC_ASSETS_BUCKET_NAME}.s3.{os.environ.get('AWS_REGION', 'ap-northeast-1')}.amazonaws.com"
+)
 
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
@@ -142,6 +151,17 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             from_email=FROM_EMAIL,
             to_email=NOTIFICATION_EMAIL,
         )
+
+        buffer_scheduler = BufferScheduler(
+            buffer_client=BufferClient(
+                secrets_client=secrets_client,
+                secret_name=BUFFER_SECRET_NAME,
+            ),
+            state_store=state_store,
+            public_image_base_url=PUBLIC_ASSETS_BASE_URL,
+            oshi_username=OSHI_USERNAME,
+            daily_cap=BUFFER_DAILY_CAP,
+        )
         
         # 状態の読み込み
         state = state_store.load_state()
@@ -166,6 +186,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             daily_reporter=daily_reporter,
             x_api_client=x_api_client,
             draft_notifier=draft_notifier,
+            buffer_scheduler=buffer_scheduler,
             s3_client=s3_client,
             bucket_name=ASSETS_BUCKET_NAME,
             execution_mode=execution_mode,
@@ -206,6 +227,7 @@ def _process_bot_logic(
     daily_reporter: DailyReporter,
     x_api_client: XAPIClient,
     draft_notifier: DraftNotifier = None,
+    buffer_scheduler: BufferScheduler = None,
     s3_client = None,
     bucket_name: str = None,
     execution_mode: str = "daily_report",
@@ -319,7 +341,7 @@ def _process_bot_logic(
         result["oshi_posts_detected"] += 1
         result["xp_gained"] += xp
         
-        # AI応答を生成してメールで通知（Web UI 経由でポスト）
+        # AI応答を生成し、メール素案通知 ＋ Buffer 予約投入（半人力）
         posted = _post_quote_safe(
             tweet=tweet,
             post_type="oshi",
@@ -331,6 +353,7 @@ def _process_bot_logic(
             bucket_name=bucket_name,
             oshi_username=OSHI_USERNAME,
             draft_notifier=draft_notifier,
+            buffer_scheduler=buffer_scheduler,
         )
         
         if posted:
@@ -534,37 +557,6 @@ def _process_bot_logic(
                 message="Daily report posted",
             )
     
-    # 朝コンテンツ（YouTube検索・翻訳）チェック（core_timeのみ）
-    if is_core_time and daily_reporter.should_post_morning_content(
-        prev_daily_oshi_count=state.prev_daily_oshi_count,
-        current_time=current_time,
-    ):
-        # YouTube新着検索（新着があれば投稿）
-        youtube_posted = daily_reporter.post_youtube_search(
-            oshi_user_id=OSHI_USER_ID,
-        )
-        if youtube_posted:
-            result["youtube_posted"] = True
-            log_event(
-                level=LogLevel.INFO,
-                event_type=EventType.DAILY_REPORT,
-                message="YouTube search posted",
-            )
-
-        # 日曜のみ: 人気ポストの翻訳（推し専用IDをフォールバックとして使用）
-        if daily_reporter.should_post_translation(current_time):
-            translation_posted = daily_reporter.post_translation(
-                oshi_user_id=OSHI_USER_ID,
-                latest_tweet_id=state.latest_oshi_tweet_id or "0",
-            )
-            if translation_posted:
-                result["translation_posted"] = True
-                log_event(
-                    level=LogLevel.INFO,
-                    event_type=EventType.DAILY_REPORT,
-                    message="Translation posted",
-                )
-    
     # 状態を保存
     state_store.save_state(state)
     
@@ -605,12 +597,15 @@ def _post_quote_safe(
     bucket_name: str = None,
     oshi_username: str = "",
     draft_notifier: "DraftNotifier" = None,
+    buffer_scheduler: "BufferScheduler" = None,
 ) -> bool:
     """
-    推しの投稿への AI 応答素案をメールで通知する（冪等性制御付き）
+    推しの投稿への AI 応答を、メール素案通知 ＋ Buffer 予約投入で処理する（半人力）
 
-    X API の ContentCreateWithUrl 課金を避けるため、直接ポストせず
-    SES メールで素案を送信し、X Intent リンクから Web UI 経由でポストする。
+    X API の ContentCreateWithUrl 課金を避けるため直接ポストせず、
+    ① SES メールで素案を通知（人間の目視・X Intent リンクの非常口）
+    ② Buffer のキューに予約投入（次の空きスロットで Buffer が自動投稿。NG なら人間が削除）
+    を並列に行う。Buffer 投入の失敗は握りつぶし、XP 計算・日報・リプライを巻き込まない。
 
     Args:
         tweet: 反応する元ツイート
@@ -618,11 +613,12 @@ def _post_quote_safe(
         ai_generator: AIGeneratorインスタンス
         x_api_client: XAPIClientインスタンス
         state_store: StateStoreインスタンス
-        state: BotStateインスタンス（感情分類判定用）
+        state: BotStateインスタンス（キャップ・画像フラグ判定用）
         s3_client: boto3 S3クライアント
         bucket_name: S3バケット名
         oshi_username: 推しのXユーザー名
         draft_notifier: DraftNotifierインスタンス
+        buffer_scheduler: BufferSchedulerインスタンス（None なら Buffer 投入なし）
 
     Returns:
         メール送信成功の可否
@@ -634,18 +630,17 @@ def _post_quote_safe(
             post_type=post_type,
         )
 
-        # 感情キーを取得（メール表示用、1日1回限定）
+        # 感情分類は「Buffer に画像付きで投入できる」ときだけ行う（1日1回）
+        # フラグは投入成功時に BufferScheduler 側で立てる
         emotion_key = None
         if (
             post_type == "oshi"
             and state is not None
-            and not state.daily_image_posted
-            and s3_client is not None
-            and bucket_name is not None
+            and buffer_scheduler is not None
+            and buffer_scheduler.can_attach_image(state)
         ):
             emotion_key = ai_generator.classify_emotion(response_text)
             if emotion_key:
-                state.daily_image_posted = True
                 log_event(
                     level=LogLevel.INFO,
                     event_type=EventType.POST_DETECTED,
@@ -653,7 +648,30 @@ def _post_quote_safe(
                     message=f"Emotion classified for draft: {emotion_key}",
                 )
 
-        # メールで素案を通知（Web UI 経由でポスト → API 課金なし）
+        # Buffer 予約投入（失敗しても他機能を巻き込まない）
+        buffer_status = "disabled"
+        buffer_due_at = None
+        if post_type == "oshi" and state is not None and buffer_scheduler is not None:
+            try:
+                scheduled = buffer_scheduler.schedule_quote(
+                    state=state,
+                    tweet_id=tweet.id,
+                    draft_text=response_text,
+                    emotion_key=emotion_key,
+                )
+                if scheduled is None:
+                    buffer_status = "cap"
+                else:
+                    buffer_status = "scheduled"
+                    buffer_due_at = scheduled.due_at
+                    if not scheduled.image_attached:
+                        emotion_key = None
+            except Exception as e:
+                handle_api_error(e, "buffer_schedule")
+                buffer_status = "failed"
+                emotion_key = None
+
+        # メールで素案を通知（目視確認 ＋ X Intent リンクの非常口）
         if draft_notifier is not None:
             sent = draft_notifier.send_draft_email(
                 original_tweet_text=tweet.text,
@@ -661,6 +679,9 @@ def _post_quote_safe(
                 oshi_username=oshi_username,
                 draft_text=response_text,
                 emotion_key=emotion_key,
+                buffer_status=buffer_status,
+                buffer_due_at=buffer_due_at,
+                buffer_daily_cap=buffer_scheduler.daily_cap if buffer_scheduler else None,
             )
             return sent
 

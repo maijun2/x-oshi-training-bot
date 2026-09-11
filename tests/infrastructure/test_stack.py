@@ -141,8 +141,8 @@ def test_s3_bucket_created():
     stack = ImomaruBotStack(app, "test-stack")
     template = assertions.Template.from_stack(stack)
     
-    # S3バケットが1つ作成されることを確認
-    template.resource_count_is("AWS::S3::Bucket", 1)
+    # S3バケットが2つ作成されることを確認（アセット用 ＋ 感情画像の公開用）
+    template.resource_count_is("AWS::S3::Bucket", 2)
     
     # S3バケットの検証
     template.has_resource_properties("AWS::S3::Bucket", {
@@ -210,14 +210,90 @@ def test_secrets_manager_secret_created():
     stack = ImomaruBotStack(app, "test-stack")
     template = assertions.Template.from_stack(stack)
     
-    # Secrets Managerシークレットが1つ作成されることを確認
-    template.resource_count_is("AWS::SecretsManager::Secret", 1)
+    # Secrets Managerシークレットが2つ作成されることを確認（X API / Buffer API）
+    template.resource_count_is("AWS::SecretsManager::Secret", 2)
     
     # シークレットの検証
     template.has_resource_properties("AWS::SecretsManager::Secret", {
         "Name": "imomaru-bot/x-api-credentials",
         "Description": "X API認証情報（OAuth 1.0a + Bearer Token）"
     })
+
+
+def test_public_assets_bucket_created():
+    """
+    感情画像の公開バケット: emotions/* のみ匿名 GetObject を許可し、ACL は引き続きブロック。
+    既存の assets バケットは BLOCK_ALL のまま
+    """
+    app = cdk.App()
+    stack = ImomaruBotStack(app, "test-stack")
+    template = assertions.Template.from_stack(stack)
+
+    template.has_resource_properties("AWS::S3::Bucket", {
+        "BucketName": {"Fn::Join": ["", assertions.Match.array_with(["imomaru-bot-public-assets-"])]},
+        "PublicAccessBlockConfiguration": {
+            "BlockPublicAcls": True,
+            "IgnorePublicAcls": True,
+            "BlockPublicPolicy": False,
+            "RestrictPublicBuckets": False,
+        },
+    })
+    template.has_resource_properties("AWS::S3::Bucket", {
+        "BucketName": {"Fn::Join": ["", assertions.Match.array_with(["imomaru-bot-assets-"])]},
+        "PublicAccessBlockConfiguration": {
+            "BlockPublicAcls": True,
+            "IgnorePublicAcls": True,
+            "BlockPublicPolicy": True,
+            "RestrictPublicBuckets": True,
+        },
+    })
+    template.has_resource_properties("AWS::S3::BucketPolicy", {
+        "Bucket": {"Ref": assertions.Match.string_like_regexp("PublicAssetsBucket.*")},
+        "PolicyDocument": {
+            "Statement": assertions.Match.array_with([
+                assertions.Match.object_like({
+                    "Sid": "PublicReadEmotionImages",
+                    "Effect": "Allow",
+                    "Principal": {"AWS": "*"},
+                    "Action": "s3:GetObject",
+                    "Resource": assertions.Match.object_like({
+                        "Fn::Join": ["", assertions.Match.array_with([
+                            assertions.Match.object_like({"Fn::GetAtt": [assertions.Match.string_like_regexp("PublicAssetsBucket.*"), "Arn"]}),
+                            "/emotions/*",
+                        ])]
+                    }),
+                })
+            ])
+        },
+    })
+
+
+def test_buffer_api_secret_created():
+    """
+    Buffer API認証情報用のシークレットが作成され、Lambdaから名前で参照できることを確認
+    """
+    app = cdk.App()
+    stack = ImomaruBotStack(app, "test-stack")
+    template = assertions.Template.from_stack(stack)
+
+    template.has_resource_properties("AWS::SecretsManager::Secret", {
+        "Name": "imomaru-bot/buffer-api",
+        "Description": "Buffer API認証情報（Personal Access Token + channel ID）",
+    })
+    template.has_resource("AWS::SecretsManager::Secret", {
+        "Properties": {"Name": "imomaru-bot/buffer-api"},
+        "DeletionPolicy": "Retain",
+    })
+    template.has_resource_properties("AWS::Lambda::Function", {
+        "Environment": {
+            "Variables": assertions.Match.object_like({
+                "BUFFER_SECRET_NAME": assertions.Match.any_value(),
+                "BUFFER_DAILY_CAP": "3",
+                "PUBLIC_ASSETS_BUCKET_NAME": assertions.Match.any_value(),
+            })
+        }
+    })
+
 
 
 def test_lambda_execution_role_created():
@@ -581,8 +657,8 @@ def test_cdk_stack_all_resources():
     
     # リソース数の確認
     template.resource_count_is("AWS::DynamoDB::Table", 6)
-    template.resource_count_is("AWS::S3::Bucket", 1)
-    template.resource_count_is("AWS::SecretsManager::Secret", 1)
+    template.resource_count_is("AWS::S3::Bucket", 2)
+    template.resource_count_is("AWS::SecretsManager::Secret", 2)
     template.resource_count_is("AWS::Lambda::Function", 1)
     template.resource_count_is("AWS::Scheduler::Schedule", 4)
 
@@ -719,8 +795,8 @@ def test_lambda_error_alarm_created():
     stack = ImomaruBotStack(app, "test-stack")
     template = assertions.Template.from_stack(stack)
     
-    # CloudWatchアラームが2つ作成されることを確認（エラーと実行時間）
-    template.resource_count_is("AWS::CloudWatch::Alarm", 2)
+    # CloudWatchアラームが3つ作成されることを確認（エラー・実行時間・アプリ内エラー）
+    template.resource_count_is("AWS::CloudWatch::Alarm", 3)
     
     # Lambdaエラーアラームの検証
     template.has_resource_properties("AWS::CloudWatch::Alarm", {
@@ -757,6 +833,59 @@ def test_lambda_duration_alarm_created():
         "Threshold": 150000,  # 150秒（2分30秒）
         "ComparisonOperator": "GreaterThanOrEqualToThreshold",
         "TreatMissingData": "notBreaching",
+    })
+
+
+def test_app_error_metric_filter_created():
+    """
+    運用要件: try/except で捕捉されたエラーを拾うログメトリクスフィルタが作成されることを確認
+
+    Lambda ランタイムが付与する [ERROR] / [CRITICAL] プレフィックスを term フィルタで検出する。
+    （LogFormat=Text のため JSON フィルタ {$.level = "ERROR"} は使えない）
+    """
+    app = cdk.App()
+    stack = ImomaruBotStack(app, "test-stack")
+    template = assertions.Template.from_stack(stack)
+
+    template.resource_count_is("AWS::Logs::MetricFilter", 1)
+    template.has_resource_properties("AWS::Logs::MetricFilter", {
+        "LogGroupName": "/aws/lambda/imomaru-bot-handler",
+        "FilterPattern": '?"[ERROR]" ?"[CRITICAL]"',
+        "MetricTransformations": [
+            assertions.Match.object_like({
+                "MetricNamespace": "ImomaruBot",
+                "MetricName": "AppErrors",
+                "MetricValue": "1",
+                "DefaultValue": 0,
+            })
+        ],
+    })
+
+
+def test_app_error_alarm_created():
+    """
+    運用要件: アプリ内エラーアラームがメトリクスフィルタのカスタムメトリクスを監視し、
+    SNS トピックへ通知することを確認
+    """
+    app = cdk.App()
+    stack = ImomaruBotStack(app, "test-stack")
+    template = assertions.Template.from_stack(stack)
+
+    template.has_resource_properties("AWS::CloudWatch::Alarm", {
+        "AlarmName": "imomaru-bot-app-errors",
+        "Namespace": "ImomaruBot",
+        "MetricName": "AppErrors",
+        "Statistic": "Sum",
+        "Period": 300,
+        "EvaluationPeriods": 1,
+        "Threshold": 1,
+        "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+        "TreatMissingData": "notBreaching",
+        "AlarmActions": assertions.Match.array_with([
+            assertions.Match.object_like({
+                "Ref": assertions.Match.string_like_regexp("AlarmTopic.*")
+            })
+        ]),
     })
 
 

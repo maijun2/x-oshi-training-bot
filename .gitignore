@@ -39,6 +39,10 @@ package-lock.json
 htmlcov/
 .hypothesis/
 
+# Local test/debug artifacts
+response.json
+test_banner_output.png
+
 # IDE
 .vscode/
 .idea/
