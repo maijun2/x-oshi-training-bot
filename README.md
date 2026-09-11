@@ -15,8 +15,6 @@ X（旧Twitter）育成ボット - AWSサーバーレスアーキテクチャ
 - 📊 **日報投稿**: 毎日23:58 JST以降に活動報告を投稿
 - 💬 **リプライ機能**: 許可ユーザーからボット投稿へのリプライに対してAIが自動応答（冪等性制御・3日チェック付き）
 - 💰 **APIコスト最適化**: グループオリジナル投稿の引用ポスト停止（XP加算のみ継続）、エンゲージメントチェックを1日1回に制限
-- 🎬 **YouTube新着検索**: 推しの投稿が少ない日の朝に、関連YouTube動画を検索して投稿（AgentCore Runtime）
-- 🌎 **翻訳投稿**: 日曜の朝に人気ポストを英語翻訳して投稿（AgentCore Runtime、週1回）
 
 ## アーキテクチャ
 
@@ -26,8 +24,6 @@ EventBridge Scheduler → Lambda → X API (投稿・リプライ)
                     DynamoDB (状態管理・許可ユーザー・処理済みリプライ)
                           ↓
                     Bedrock (AI生成)
-                          ↓
-                    AgentCore Runtime (YouTube検索・翻訳)
                           ↓
                     S3 (画像アセット)
                           ↓
@@ -142,15 +138,11 @@ GROUP_USER_ID=9876543210987654321
 
 # ボット自身のXアカウントユーザーID
 BOT_USER_ID=1111111111111111111
-
-# AgentCore Runtime（Supervisor Agent）のARN
-AGENTCORE_RUNTIME_ARN=arn:aws:bedrock-agentcore:ap-northeast-1:ACCOUNT_ID:runtime/AGENT_NAME
 ```
 
 **注意**: 
 - これらはXのユーザーIDです。ユーザー名（@xxx）ではありません。
 - `BOT_USER_ID` はボット自身の投稿へのエンゲージメント（いいね・リポスト）を追跡するために使用します。
-- `AGENTCORE_RUNTIME_ARN` はAgentCore Runtime のSupervisor AgentのARNです。YouTube検索・翻訳機能に使用します。
 - `.env`ファイルは`.gitignore`で除外されているため、リポジトリにはコミットされません。
 
 ### 2. CDKブートストラップ（初回のみ）
@@ -266,8 +258,6 @@ table.put_item(Item={
 | 時刻 | 実行モード | 投稿内容 | 条件 |
 |------|-----------|---------|------|
 | 朝10時（±15分） | core_time | 推しタイムライン監視・引用ポスト・リプライ検出 | 毎日 |
-| 朝10時（±15分） | core_time | YouTube新着検索（単独ポスト） | 前日の推し投稿3件以下 & 新着あり |
-| 朝10時（日曜） | core_time | 人気ポスト翻訳（単独ポスト） | 前日の推し投稿3件以下 |
 | 昼13時（±23分） | core_time | 推しタイムライン監視・引用ポスト・リプライ検出 | 毎日 |
 | 夕方18時（±3分） | core_time | 推しタイムライン監視・引用ポスト・リプライ検出 | 毎日 |
 | 23:58（±1分） | daily_report | 全処理（推し+グループ監視・リプライ検出・エンゲージメント・日報） | 毎日（エンゲージメントは1日1回） |

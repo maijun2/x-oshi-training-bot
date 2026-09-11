@@ -216,22 +216,6 @@ class ImomaruBotStack(Stack):
             )
         )
 
-        # AgentCore Runtime 呼び出し権限を付与
-        # InvokeAgentRuntime は runtime-endpoint/DEFAULT サブリソースにもアクセスするためワイルドカード必須
-        agentcore_runtime_arn = os.getenv("AGENTCORE_RUNTIME_ARN", "")
-        self.lambda_role.add_to_policy(
-            iam.PolicyStatement(
-                effect=iam.Effect.ALLOW,
-                actions=[
-                    "bedrock-agentcore:InvokeAgentRuntime",
-                ],
-                resources=[
-                    agentcore_runtime_arn,
-                    f"{agentcore_runtime_arn}/*",
-                ],
-            )
-        )
-
         # SES 送信権限を付与（検証済みメールアドレスへの送信のみ許可）
         self.lambda_role.add_to_policy(
             iam.PolicyStatement(
@@ -267,7 +251,6 @@ class ImomaruBotStack(Stack):
                 "OSHI_USERNAME": oshi_username,
                 "GROUP_USER_ID": group_user_id,
                 "BOT_USER_ID": bot_user_id,
-                "AGENTCORE_RUNTIME_ARN": agentcore_runtime_arn,
                 "NOTIFICATION_EMAIL": notification_email,
                 "FROM_EMAIL": notification_email,
             },

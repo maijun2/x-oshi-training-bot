@@ -1296,156 +1296,6 @@ class TestCheckEngagementSafe:
         )
 
 
-class TestMorningContentIntegration:
-    """朝コンテンツ（YouTube/翻訳）の統合テスト"""
-
-    def test_morning_content_youtube_posted(self):
-        """core_timeモードの朝10時台で推し投稿が少ない日にYouTubeが投稿されることを確認"""
-        state = BotState(prev_daily_oshi_count=2)
-        state_store = MagicMock(spec=StateStore)
-        state_store.reset_daily_counts.return_value = state
-
-        timeline_monitor = MagicMock(spec=TimelineMonitor)
-        timeline_monitor.check_oshi_timeline.return_value = []
-        timeline_monitor.filter_original_posts.return_value = []
-        timeline_monitor.filter_retweets.return_value = []
-
-        xp_calculator = XPCalculator()
-        level_manager = MagicMock(spec=LevelManager)
-        level_manager.check_level_up.return_value = (False, 1)
-
-        ai_generator = MagicMock(spec=AIGenerator)
-        image_compositor = MagicMock(spec=ImageCompositor)
-        profile_updater = MagicMock(spec=ProfileUpdater)
-
-        daily_reporter = MagicMock(spec=DailyReporter)
-        daily_reporter.should_post_morning_content.return_value = True
-        daily_reporter.post_youtube_search.return_value = True
-        daily_reporter.should_post_translation.return_value = False
-
-        x_api_client = MagicMock()
-
-        reply_monitor, allowed_users_service, reply_processor = _make_reply_mocks()
-        result = _process_bot_logic(
-            state=state,
-            state_store=state_store,
-            timeline_monitor=timeline_monitor,
-            reply_monitor=reply_monitor,
-            allowed_users_service=allowed_users_service,
-            reply_processor=reply_processor,
-            xp_calculator=xp_calculator,
-            level_manager=level_manager,
-            ai_generator=ai_generator,
-            image_compositor=image_compositor,
-            profile_updater=profile_updater,
-            daily_reporter=daily_reporter,
-            x_api_client=x_api_client,
-            execution_mode="core_time",
-        )
-
-        assert result.get("youtube_posted") is True
-        daily_reporter.post_youtube_search.assert_called_once()
-
-    def test_morning_content_translation_on_sunday(self):
-        """日曜のcore_timeモードで翻訳が投稿されることを確認"""
-        state = BotState(prev_daily_oshi_count=1)
-        state_store = MagicMock(spec=StateStore)
-        state_store.reset_daily_counts.return_value = state
-
-        timeline_monitor = MagicMock(spec=TimelineMonitor)
-        timeline_monitor.check_oshi_timeline.return_value = []
-        timeline_monitor.filter_original_posts.return_value = []
-        timeline_monitor.filter_retweets.return_value = []
-
-        xp_calculator = XPCalculator()
-        level_manager = MagicMock(spec=LevelManager)
-        level_manager.check_level_up.return_value = (False, 1)
-
-        daily_reporter = MagicMock(spec=DailyReporter)
-        daily_reporter.should_post_morning_content.return_value = True
-        daily_reporter.post_youtube_search.return_value = False
-        daily_reporter.should_post_translation.return_value = True
-        daily_reporter.post_translation.return_value = True
-
-        x_api_client = MagicMock()
-
-        reply_monitor, allowed_users_service, reply_processor = _make_reply_mocks()
-        result = _process_bot_logic(
-            state=state,
-            state_store=state_store,
-            timeline_monitor=timeline_monitor,
-            reply_monitor=reply_monitor,
-            allowed_users_service=allowed_users_service,
-            reply_processor=reply_processor,
-            xp_calculator=xp_calculator,
-            level_manager=level_manager,
-            ai_generator=MagicMock(spec=AIGenerator),
-            image_compositor=MagicMock(spec=ImageCompositor),
-            profile_updater=MagicMock(spec=ProfileUpdater),
-            daily_reporter=daily_reporter,
-            x_api_client=x_api_client,
-            execution_mode="core_time",
-        )
-
-        assert result.get("translation_posted") is True
-
-    def test_morning_content_skipped_when_high_activity(self):
-        """推し投稿が多い日は朝コンテンツがスキップされることを確認"""
-        state = BotState(prev_daily_oshi_count=5)
-        state_store = MagicMock(spec=StateStore)
-
-        timeline_monitor = MagicMock(spec=TimelineMonitor)
-        timeline_monitor.check_oshi_timeline.return_value = []
-        timeline_monitor.filter_original_posts.return_value = []
-        timeline_monitor.filter_retweets.return_value = []
-
-        level_manager = MagicMock(spec=LevelManager)
-        level_manager.check_level_up.return_value = (False, 1)
-
-        daily_reporter = MagicMock(spec=DailyReporter)
-        daily_reporter.should_post_morning_content.return_value = False
-
-        x_api_client = MagicMock()
-
-        reply_monitor, allowed_users_service, reply_processor = _make_reply_mocks()
-        result = _process_bot_logic(
-            state=state,
-            state_store=state_store,
-            timeline_monitor=timeline_monitor,
-            reply_monitor=reply_monitor,
-            allowed_users_service=allowed_users_service,
-            reply_processor=reply_processor,
-            xp_calculator=XPCalculator(),
-            level_manager=level_manager,
-            ai_generator=MagicMock(spec=AIGenerator),
-            image_compositor=MagicMock(spec=ImageCompositor),
-            profile_updater=MagicMock(spec=ProfileUpdater),
-            daily_reporter=daily_reporter,
-            x_api_client=x_api_client,
-            execution_mode="core_time",
-        )
-
-        reply_monitor, allowed_users_service, reply_processor = _make_reply_mocks()
-        result = _process_bot_logic(
-            state=state,
-            state_store=state_store,
-            timeline_monitor=timeline_monitor,
-            reply_monitor=reply_monitor,
-            allowed_users_service=allowed_users_service,
-            reply_processor=reply_processor,
-            xp_calculator=XPCalculator(),
-            level_manager=level_manager,
-            ai_generator=MagicMock(spec=AIGenerator),
-            image_compositor=MagicMock(spec=ImageCompositor),
-            profile_updater=MagicMock(spec=ProfileUpdater),
-            daily_reporter=daily_reporter,
-            x_api_client=x_api_client,
-        )
-
-        assert "youtube_posted" not in result
-        daily_reporter.post_youtube_search.assert_not_called()
-
-
 class TestDailyReportPosted:
     """日報投稿の統合テスト"""
 
@@ -1469,7 +1319,6 @@ class TestDailyReportPosted:
         daily_reporter.should_post_daily_report.return_value = True
         daily_reporter.post_daily_report.return_value = "report_tweet_id"
         daily_reporter.get_today_date_jst.return_value = "2024-01-15"
-        daily_reporter.should_post_morning_content.return_value = False
 
         x_api_client = MagicMock()
         x_api_client.get_my_tweets_with_metrics.return_value = {}
@@ -1532,7 +1381,6 @@ class TestProperty2ExecutionModeRoundTrip:
 
         daily_reporter = MagicMock(spec=DailyReporter)
         daily_reporter.should_post_daily_report.return_value = False
-        daily_reporter.should_post_morning_content.return_value = False
 
         x_api_client = MagicMock()
         x_api_client.get_my_tweets_with_metrics.return_value = {}
@@ -1578,7 +1426,6 @@ class TestCoreTimeMode:
 
         daily_reporter = MagicMock(spec=DailyReporter)
         daily_reporter.should_post_daily_report.return_value = False
-        daily_reporter.should_post_morning_content.return_value = False
 
         x_api_client = MagicMock()
 
@@ -1630,7 +1477,6 @@ class TestCoreTimeMode:
         ai_generator.generate_response.return_value = "応答ｲﾓ🍠"
 
         daily_reporter = MagicMock(spec=DailyReporter)
-        daily_reporter.should_post_morning_content.return_value = False
 
         x_api_client = MagicMock()
         draft_notifier = _make_draft_notifier_mock()
@@ -1678,7 +1524,6 @@ class TestDailyReportMode:
 
         daily_reporter = MagicMock(spec=DailyReporter)
         daily_reporter.should_post_daily_report.return_value = False
-        daily_reporter.should_post_morning_content.return_value = False
 
         x_api_client = MagicMock()
         x_api_client.get_my_tweets_with_metrics.return_value = {}
@@ -1726,7 +1571,6 @@ class TestDailyReportMode:
 
         daily_reporter = MagicMock(spec=DailyReporter)
         daily_reporter.should_post_daily_report.return_value = False
-        daily_reporter.should_post_morning_content.return_value = False
 
         x_api_client = MagicMock()
         x_api_client.get_my_tweets_with_metrics.return_value = {}
@@ -1983,7 +1827,6 @@ class TestReplyProcessingIntegration:
     def test_reply_processing_in_core_time_mode(self):
         """Core Time Modeでリプライ処理が実行されることを確認"""
         mocks = self._make_base_mocks()
-        mocks["daily_reporter"].should_post_morning_content.return_value = False
         reply = self._make_reply()
         mocks["reply_monitor"].detect_replies.return_value = [reply]
         mocks["allowed_users_service"].is_user_allowed.return_value = True

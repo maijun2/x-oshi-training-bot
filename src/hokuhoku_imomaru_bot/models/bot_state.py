@@ -62,7 +62,7 @@ class BotState:
     total_received_retweets: int = 0   # ボット投稿への累積リポスト数
     # 感情画像添付制限（1日1回）
     daily_image_posted: bool = False   # 本日の画像添付済みフラグ
-    # 前日の推し投稿数（朝のYouTube/翻訳投稿判定用）
+    # 前日の推し投稿数
     prev_daily_oshi_count: int = 0
     # リプライチェック用の最新Tweet ID
     latest_reply_check_id: Optional[str] = None

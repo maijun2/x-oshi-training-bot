@@ -2,7 +2,6 @@
 DailyReporter スケジュール最適化のプロパティベーステスト
 
 Property 3: 日報投稿時刻の境界条件
-Property 4: 朝コンテンツの時刻・活動量ゲート
 """
 import pytest
 from datetime import datetime, timezone, timedelta
@@ -13,7 +12,6 @@ from unittest.mock import Mock
 from src.hokuhoku_imomaru_bot.services.daily_reporter import (
     DailyReporter,
     DAILY_REPORT_HOUR,
-    LOW_ACTIVITY_THRESHOLD,
     JST,
 )
 from src.hokuhoku_imomaru_bot.models.bot_state import BotState
@@ -59,36 +57,5 @@ class TestProperty3DailyReportHourBoundary:
         assert result == expected, (
             f"dt={dt}, jst_hour={jst_time.hour}, "
             f"already_posted={already_posted_today}, "
-            f"result={result}, expected={expected}"
-        )
-
-
-class TestProperty4MorningContentGate:
-    """
-    **Property 4: 朝コンテンツの時刻・活動量ゲート**
-
-    For any datetime and prev_daily_oshi_count, should_post_morning_content
-    SHALL return True if and only if the JST hour equals 10 AND
-    prev_daily_oshi_count <= LOW_ACTIVITY_THRESHOLD.
-
-    **Validates: Requirements 4.1, 4.3**
-    """
-
-    @given(
-        dt=jst_datetimes,
-        prev_count=st.integers(min_value=0, max_value=100),
-    )
-    @settings(max_examples=200)
-    def test_morning_content_gate(self, dt, prev_count):
-        """朝コンテンツはJST 10時台かつ閾値以下のみTrue"""
-        reporter = DailyReporter(api_client=Mock())
-
-        jst_time = dt.astimezone(JST)
-        result = reporter.should_post_morning_content(prev_count, dt)
-
-        expected = (jst_time.hour == 10) and (prev_count <= LOW_ACTIVITY_THRESHOLD)
-        assert result == expected, (
-            f"dt={dt}, jst_hour={jst_time.hour}, "
-            f"prev_count={prev_count}, threshold={LOW_ACTIVITY_THRESHOLD}, "
             f"result={result}, expected={expected}"
         )

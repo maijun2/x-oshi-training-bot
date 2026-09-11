@@ -534,37 +534,6 @@ def _process_bot_logic(
                 message="Daily report posted",
             )
     
-    # 朝コンテンツ（YouTube検索・翻訳）チェック（core_timeのみ）
-    if is_core_time and daily_reporter.should_post_morning_content(
-        prev_daily_oshi_count=state.prev_daily_oshi_count,
-        current_time=current_time,
-    ):
-        # YouTube新着検索（新着があれば投稿）
-        youtube_posted = daily_reporter.post_youtube_search(
-            oshi_user_id=OSHI_USER_ID,
-        )
-        if youtube_posted:
-            result["youtube_posted"] = True
-            log_event(
-                level=LogLevel.INFO,
-                event_type=EventType.DAILY_REPORT,
-                message="YouTube search posted",
-            )
-
-        # 日曜のみ: 人気ポストの翻訳（推し専用IDをフォールバックとして使用）
-        if daily_reporter.should_post_translation(current_time):
-            translation_posted = daily_reporter.post_translation(
-                oshi_user_id=OSHI_USER_ID,
-                latest_tweet_id=state.latest_oshi_tweet_id or "0",
-            )
-            if translation_posted:
-                result["translation_posted"] = True
-                log_event(
-                    level=LogLevel.INFO,
-                    event_type=EventType.DAILY_REPORT,
-                    message="Translation posted",
-                )
-    
     # 状態を保存
     state_store.save_state(state)
     
