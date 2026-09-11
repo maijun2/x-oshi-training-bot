@@ -162,6 +162,29 @@ class ImomaruBotStack(Stack):
             enforce_ssl=True,  # SSL/TLS接続を強制
         )
 
+        # S3 バケット: 公開アセット（感情画像）
+        # Buffer は投稿公開時に画像 URL を取りに来るため、署名なしで読める公開 URL が必要。
+        # 公開するのはスタンプ画像だけなので専用バケットに分離し、assets_bucket は BLOCK_ALL のまま維持する
+        self.public_assets_bucket = s3.Bucket(
+            self,
+            "PublicAssetsBucket",
+            bucket_name=f"imomaru-bot-public-assets-{self.account}",
+            encryption=s3.BucketEncryption.S3_MANAGED,
+            block_public_access=s3.BlockPublicAccess.BLOCK_ACLS_ONLY,  # バケットポリシーによる公開読み取りのみ許可
+            removal_policy=RemovalPolicy.RETAIN,
+            versioned=False,
+            enforce_ssl=True,
+        )
+        self.public_assets_bucket.add_to_resource_policy(
+            iam.PolicyStatement(
+                sid="PublicReadEmotionImages",
+                effect=iam.Effect.ALLOW,
+                principals=[iam.AnyPrincipal()],
+                actions=["s3:GetObject"],
+                resources=[self.public_assets_bucket.arn_for_objects("emotions/*")],
+            )
+        )
+
         # Secrets Manager: X API認証情報
         # OAuth 1.0a（v1.1用）とBearer Token（v2用）を保存
         self.x_api_secret = secretsmanager.Secret(
@@ -261,7 +284,7 @@ class ImomaruBotStack(Stack):
                 "SECRET_NAME": self.x_api_secret.secret_name,
                 "BUFFER_SECRET_NAME": self.buffer_api_secret.secret_name,
                 "BUFFER_DAILY_CAP": "3",  # 1日の Buffer 予約投入件数の上限（無料枠10件を溢れさせない）
-                "BUFFER_IMAGE_URL_TTL_SECONDS": "3600",  # 感情画像 presigned URL の有効期限
+                "PUBLIC_ASSETS_BUCKET_NAME": self.public_assets_bucket.bucket_name,
                 "OSHI_USER_ID": oshi_user_id,
                 "OSHI_USERNAME": oshi_username,
                 "GROUP_USER_ID": group_user_id,

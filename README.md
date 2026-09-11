@@ -219,7 +219,7 @@ rm /tmp/buffer-secret.json
 | 変数 | 初期値 | 意味 |
 |------|--------|------|
 | `BUFFER_DAILY_CAP` | `3` | 1日に Buffer へ予約投入する上限件数。超えた分はメール素案のみ（Buffer 無料枠10件を溢れさせないため） |
-| `BUFFER_IMAGE_URL_TTL_SECONDS` | `3600` | 感情画像の S3 presigned URL の有効期限 |
+| `PUBLIC_ASSETS_BUCKET_NAME` | CDK が設定 | 感情画像の公開バケット（`imomaru-bot-public-assets-<account>`）。Buffer は**投稿公開時**に画像 URL を取りに来るため、署名付き URL ではなく公開 URL が必要 |
 
 **Buffer 側のスロット設定（予約時刻は Buffer に任せる）**
 
@@ -258,11 +258,13 @@ AWS_DEFAULT_REGION=ap-northeast-1 uv run python scripts/init_emotion_images.py
 
 ### 5. S3への感情画像アップロード
 
-感情別画像を`emotions/`プレフィックス内にアップロード:
+感情別画像を **公開バケット** の `emotions/` プレフィックス内にアップロード（Buffer が投稿公開時に取得する）:
 
 ```bash
-aws s3 cp emotions/ s3://imomaru-bot-assets-ACCOUNT_ID/emotions/ --recursive --region ap-northeast-1
+aws s3 sync ./emotions/ s3://imomaru-bot-public-assets-ACCOUNT_ID/emotions/
 ```
+
+※ 従来の `imomaru-bot-assets-ACCOUNT_ID/emotions/` は参照されなくなった（残っていても無害）。
 
 ### 6. 許可ユーザーリストの初期化
 

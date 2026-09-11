@@ -6,6 +6,7 @@ BufferSchedulerクラス
 NG なら Buffer 側で削除する。予約時刻は Buffer のスロット設定に任せる。
 """
 import logging
+import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
@@ -32,36 +33,32 @@ class BufferScheduler:
     推し投稿への応答を Buffer キューに投入するクラス
 
     - 1日の投入件数をキャップして Buffer 無料枠（10件）を溢れさせない
-    - 感情画像は S3 の presigned URL で添付（1日1回、成功時のみフラグを立てる）
+    - 感情画像は公開バケットの URL で添付（1日1回、成功時のみフラグを立てる）。
+      Buffer は投稿公開時に URL を取りに来るため、署名付き URL（期限あり）は使えない
     """
 
     def __init__(
         self,
         buffer_client: BufferClient,
         state_store: StateStore,
-        s3_client,
-        bucket_name: str,
+        public_image_base_url: str,
         oshi_username: str,
         daily_cap: int = 3,
-        image_url_ttl_seconds: int = 3600,
     ):
         """
         Args:
             buffer_client: BufferClient インスタンス
             state_store: StateStore（感情画像ファイル名の取得に使用）
-            s3_client: boto3 S3 クライアント（presigned URL 生成）
-            bucket_name: 感情画像を置いている S3 バケット名
+            public_image_base_url: 感情画像を公開している URL のベース
+                （例: https://imomaru-bot-public-assets-123.s3.ap-northeast-1.amazonaws.com）
             oshi_username: 推しの X ユーザー名（元ツイート URL 用）
             daily_cap: 1日の Buffer 投入件数の上限
-            image_url_ttl_seconds: presigned URL の有効期限（秒）
         """
         self._buffer_client = buffer_client
         self._state_store = state_store
-        self._s3_client = s3_client
-        self._bucket_name = bucket_name
+        self._public_image_base_url = public_image_base_url.rstrip("/")
         self._oshi_username = oshi_username
         self._daily_cap = daily_cap
-        self._image_url_ttl_seconds = image_url_ttl_seconds
 
     @property
     def daily_cap(self) -> int:
@@ -111,7 +108,7 @@ class BufferScheduler:
 
         image_url = None
         if emotion_key and not state.daily_image_posted:
-            image_url = self._build_emotion_image_url(emotion_key)
+            image_url = self.build_emotion_image_url(emotion_key)
 
         post = self._buffer_client.add_to_queue(
             text=self.build_post_text(draft_text, tweet_id),
@@ -135,9 +132,9 @@ class BufferScheduler:
         )
         return ScheduledPost(post_id=post.id, due_at=post.due_at, image_attached=image_attached)
 
-    def _build_emotion_image_url(self, emotion_key: str) -> Optional[str]:
+    def build_emotion_image_url(self, emotion_key: str) -> Optional[str]:
         """
-        感情キーに対応する S3 画像の presigned URL を返す
+        感情キーに対応する画像の公開 URL を返す（emotions/{filename}）
 
         失敗しても投稿自体は落とさない（画像なしで続行）ため、None を返す。
         """
@@ -145,11 +142,7 @@ class BufferScheduler:
             filename = self._state_store.get_emotion_image_filename(emotion_key)
             if not filename:
                 return None
-            return self._s3_client.generate_presigned_url(
-                "get_object",
-                Params={"Bucket": self._bucket_name, "Key": f"emotions/{filename}"},
-                ExpiresIn=self._image_url_ttl_seconds,
-            )
+            return f"{self._public_image_base_url}/emotions/{urllib.parse.quote(filename)}"
         except Exception as e:
             logger.error(f"Failed to build emotion image URL for {emotion_key}: {e}")
             return None

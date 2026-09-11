@@ -34,23 +34,17 @@ def state_store():
     return store
 
 
-@pytest.fixture
-def s3_client():
-    s3 = MagicMock()
-    s3.generate_presigned_url.return_value = "https://s3.example/emotions/cheer.png?X-Amz-Signature=abc"
-    return s3
+PUBLIC_BASE = "https://imomaru-bot-public-assets-123.s3.ap-northeast-1.amazonaws.com"
 
 
 @pytest.fixture
-def scheduler(buffer_client, state_store, s3_client):
+def scheduler(buffer_client, state_store):
     return BufferScheduler(
         buffer_client=buffer_client,
         state_store=state_store,
-        s3_client=s3_client,
-        bucket_name="assets",
+        public_image_base_url=PUBLIC_BASE + "/",  # 末尾スラッシュは正規化される
         oshi_username="juri_bigangel",
         daily_cap=3,
-        image_url_ttl_seconds=3600,
     )
 
 
@@ -92,9 +86,9 @@ class TestScheduleQuote:
         assert state.daily_buffer_count == 1
         assert state.daily_image_posted is False
 
-    def test_image_attached_sets_flag(self, scheduler, buffer_client, s3_client, state_store):
+    def test_image_attached_sets_flag(self, scheduler, buffer_client, state_store):
         buffer_client.add_to_queue.return_value = BufferPost(
-            id="p1", due_at=DUE_AT, asset_urls=["https://buffer.example/img.png"]
+            id="p1", due_at=DUE_AT, asset_urls=[PUBLIC_BASE + "/emotions/cheer.png"]
         )
         state = BotState()
 
@@ -104,23 +98,24 @@ class TestScheduleQuote:
         assert state.daily_image_posted is True
         assert state.daily_buffer_count == 1
         state_store.get_emotion_image_filename.assert_called_once_with("cheer")
-        s3_client.generate_presigned_url.assert_called_once_with(
-            "get_object",
-            Params={"Bucket": "assets", "Key": "emotions/cheer.png"},
-            ExpiresIn=3600,
-        )
         buffer_client.add_to_queue.assert_called_once_with(
             text="t\n\nhttps://x.com/juri_bigangel/status/123",
-            image_url="https://s3.example/emotions/cheer.png?X-Amz-Signature=abc",
+            image_url=PUBLIC_BASE + "/emotions/cheer.png",  # 署名なしの公開 URL
             alt_text=EMOTION_IMAGE_ALT_TEXT,
         )
 
-    def test_image_not_attached_when_already_posted_today(self, scheduler, buffer_client, s3_client):
+    def test_image_url_is_percent_encoded(self, scheduler, state_store):
+        state_store.get_emotion_image_filename.return_value = "いも丸 cheer.png"
+        assert scheduler.build_emotion_image_url("cheer") == (
+            PUBLIC_BASE + "/emotions/%E3%81%84%E3%82%82%E4%B8%B8%20cheer.png"
+        )
+
+    def test_image_not_attached_when_already_posted_today(self, scheduler, buffer_client, state_store):
         state = BotState(daily_image_posted=True)
 
         scheduler.schedule_quote(state, tweet_id="1", draft_text="t", emotion_key="cheer")
 
-        s3_client.generate_presigned_url.assert_not_called()
+        state_store.get_emotion_image_filename.assert_not_called()
         assert buffer_client.add_to_queue.call_args.kwargs["image_url"] is None
 
     def test_image_lookup_failure_falls_back_to_no_image(self, scheduler, buffer_client, state_store):
@@ -135,12 +130,11 @@ class TestScheduleQuote:
         assert state.daily_image_posted is False
         assert state.daily_buffer_count == 1
 
-    def test_unknown_emotion_key_posts_without_image(self, scheduler, buffer_client, state_store, s3_client):
+    def test_unknown_emotion_key_posts_without_image(self, scheduler, buffer_client, state_store):
         state_store.get_emotion_image_filename.return_value = None
 
         scheduler.schedule_quote(BotState(), tweet_id="1", draft_text="t", emotion_key="unknown")
 
-        s3_client.generate_presigned_url.assert_not_called()
         assert buffer_client.add_to_queue.call_args.kwargs["image_url"] is None
 
     def test_buffer_accepts_but_drops_asset_keeps_flag_false(self, scheduler, buffer_client):

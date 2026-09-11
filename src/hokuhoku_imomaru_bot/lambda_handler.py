@@ -58,7 +58,11 @@ FROM_EMAIL = os.environ.get("FROM_EMAIL", "")
 # Buffer 半人力投稿（推し投稿への応答を Buffer キューに予約投入）
 BUFFER_SECRET_NAME = os.environ.get("BUFFER_SECRET_NAME", "imomaru-bot/buffer-api")
 BUFFER_DAILY_CAP = int(os.environ.get("BUFFER_DAILY_CAP", "3"))
-BUFFER_IMAGE_URL_TTL_SECONDS = int(os.environ.get("BUFFER_IMAGE_URL_TTL_SECONDS", "3600"))
+# 感情画像の公開バケット（Buffer が投稿公開時に取りに来る）
+PUBLIC_ASSETS_BUCKET_NAME = os.environ.get("PUBLIC_ASSETS_BUCKET_NAME", "imomaru-bot-public-assets")
+PUBLIC_ASSETS_BASE_URL = (
+    f"https://{PUBLIC_ASSETS_BUCKET_NAME}.s3.{os.environ.get('AWS_REGION', 'ap-northeast-1')}.amazonaws.com"
+)
 
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
@@ -154,11 +158,9 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 secret_name=BUFFER_SECRET_NAME,
             ),
             state_store=state_store,
-            s3_client=s3_client,
-            bucket_name=ASSETS_BUCKET_NAME,
+            public_image_base_url=PUBLIC_ASSETS_BASE_URL,
             oshi_username=OSHI_USERNAME,
             daily_cap=BUFFER_DAILY_CAP,
-            image_url_ttl_seconds=BUFFER_IMAGE_URL_TTL_SECONDS,
         )
         
         # 状態の読み込み

@@ -5,7 +5,8 @@ Buffer 予約投入の実機確認スクリプト
 本番の Buffer キューに 1 件投入し、返却された post id / 予約時刻 / 添付画像の URL を表示する。
 初回導入時の確認項目:
   - createPost がスキーマどおりに通るか
-  - 感情画像（S3 presigned URL）を Buffer が自分の側にコピーするか（assets の URL ホストで判断）
+  - 感情画像（公開バケットの URL）が添付されるか。Buffer は投稿公開時に URL を取りに来る（実測 2026-09-12）ので、
+    公開後に X 側で画像が付いているかまで確認する
   - 公開後に元ツイート URL が埋め込みカードとして展開されるか（設計書 §9-11。公開まで残した場合）
 
 使い方:
@@ -24,7 +25,6 @@ import argparse
 import os
 import sys
 from pathlib import Path
-from urllib.parse import urlparse
 
 import boto3
 
@@ -40,9 +40,9 @@ from hokuhoku_imomaru_bot.services.buffer_scheduler import (  # noqa: E402
 
 REGION = os.environ.get("AWS_REGION", "ap-northeast-1")
 SECRET_NAME = os.environ.get("BUFFER_SECRET_NAME", "imomaru-bot/buffer-api")
-BUCKET_NAME = os.environ.get("ASSETS_BUCKET_NAME", "imomaru-bot-assets-353695163339")
+PUBLIC_BUCKET_NAME = os.environ.get("PUBLIC_ASSETS_BUCKET_NAME", "imomaru-bot-public-assets-353695163339")
+PUBLIC_BASE_URL = f"https://{PUBLIC_BUCKET_NAME}.s3.{REGION}.amazonaws.com"
 OSHI_USERNAME = os.environ.get("OSHI_USERNAME", "juri_bigangel")
-IMAGE_URL_TTL = int(os.environ.get("BUFFER_IMAGE_URL_TTL_SECONDS", "3600"))
 
 
 def main() -> int:
@@ -64,27 +64,24 @@ def main() -> int:
     if not args.text or not args.tweet_id:
         parser.error("--text と --tweet-id は必須です（--delete 以外）")
 
-    s3_client = boto3.client("s3", region_name=REGION)
     state_store = StateStore(dynamodb_client=boto3.client("dynamodb", region_name=REGION))
     scheduler = BufferScheduler(
         buffer_client=buffer_client,
         state_store=state_store,
-        s3_client=s3_client,
-        bucket_name=BUCKET_NAME,
+        public_image_base_url=PUBLIC_BASE_URL,
         oshi_username=OSHI_USERNAME,
         daily_cap=1,
-        image_url_ttl_seconds=IMAGE_URL_TTL,
     )
 
     text = scheduler.build_post_text(args.text, args.tweet_id)
-    image_url = scheduler._build_emotion_image_url(args.emotion) if args.emotion else None
+    image_url = scheduler.build_emotion_image_url(args.emotion) if args.emotion else None
     if args.emotion and not image_url:
         print(f"❌ 感情キー {args.emotion} の画像 URL を作れませんでした")
         return 1
 
     print("📤 Buffer に投入します")
     print("   本文:\n" + "\n".join(f"     {line}" for line in text.splitlines()))
-    print(f"   画像: {'あり（' + urlparse(image_url).netloc + '）' if image_url else 'なし'}")
+    print(f"   画像: {image_url if image_url else 'なし'}")
 
     post = buffer_client.add_to_queue(
         text=text,
@@ -101,10 +98,7 @@ def main() -> int:
         print(f"   予約 JST: {post.due_at.astimezone(timezone(timedelta(hours=9)))}")
     if image_url:
         if post.asset_urls:
-            host = urlparse(post.asset_urls[0]).netloc
-            copied = "amazonaws.com" not in host
-            print(f"   assets  : {post.asset_urls[0][:100]}")
-            print(f"   画像コピー: {'Buffer 側にコピー済み（presigned TTL は作成時だけ有効でよい）' if copied else 'S3 URL のまま（公開時に取りに来る → TTL 延長が必要）'}")
+            print(f"   assets  : {post.asset_urls[0][:120]}")
         else:
             print("   ⚠️ assets が空で返りました（画像は添付されていません）")
     print(f"\n後片付け: python scripts/test_buffer_post.py --delete {post.id}")

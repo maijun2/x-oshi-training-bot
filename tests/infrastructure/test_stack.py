@@ -141,8 +141,8 @@ def test_s3_bucket_created():
     stack = ImomaruBotStack(app, "test-stack")
     template = assertions.Template.from_stack(stack)
     
-    # S3バケットが1つ作成されることを確認
-    template.resource_count_is("AWS::S3::Bucket", 1)
+    # S3バケットが2つ作成されることを確認（アセット用 ＋ 感情画像の公開用）
+    template.resource_count_is("AWS::S3::Bucket", 2)
     
     # S3バケットの検証
     template.has_resource_properties("AWS::S3::Bucket", {
@@ -220,6 +220,54 @@ def test_secrets_manager_secret_created():
     })
 
 
+def test_public_assets_bucket_created():
+    """
+    感情画像の公開バケット: emotions/* のみ匿名 GetObject を許可し、ACL は引き続きブロック。
+    既存の assets バケットは BLOCK_ALL のまま
+    """
+    app = cdk.App()
+    stack = ImomaruBotStack(app, "test-stack")
+    template = assertions.Template.from_stack(stack)
+
+    template.has_resource_properties("AWS::S3::Bucket", {
+        "BucketName": {"Fn::Join": ["", assertions.Match.array_with(["imomaru-bot-public-assets-"])]},
+        "PublicAccessBlockConfiguration": {
+            "BlockPublicAcls": True,
+            "IgnorePublicAcls": True,
+            "BlockPublicPolicy": False,
+            "RestrictPublicBuckets": False,
+        },
+    })
+    template.has_resource_properties("AWS::S3::Bucket", {
+        "BucketName": {"Fn::Join": ["", assertions.Match.array_with(["imomaru-bot-assets-"])]},
+        "PublicAccessBlockConfiguration": {
+            "BlockPublicAcls": True,
+            "IgnorePublicAcls": True,
+            "BlockPublicPolicy": True,
+            "RestrictPublicBuckets": True,
+        },
+    })
+    template.has_resource_properties("AWS::S3::BucketPolicy", {
+        "Bucket": {"Ref": assertions.Match.string_like_regexp("PublicAssetsBucket.*")},
+        "PolicyDocument": {
+            "Statement": assertions.Match.array_with([
+                assertions.Match.object_like({
+                    "Sid": "PublicReadEmotionImages",
+                    "Effect": "Allow",
+                    "Principal": {"AWS": "*"},
+                    "Action": "s3:GetObject",
+                    "Resource": assertions.Match.object_like({
+                        "Fn::Join": ["", assertions.Match.array_with([
+                            assertions.Match.object_like({"Fn::GetAtt": [assertions.Match.string_like_regexp("PublicAssetsBucket.*"), "Arn"]}),
+                            "/emotions/*",
+                        ])]
+                    }),
+                })
+            ])
+        },
+    })
+
+
 def test_buffer_api_secret_created():
     """
     Buffer API認証情報用のシークレットが作成され、Lambdaから名前で参照できることを確認
@@ -241,7 +289,7 @@ def test_buffer_api_secret_created():
             "Variables": assertions.Match.object_like({
                 "BUFFER_SECRET_NAME": assertions.Match.any_value(),
                 "BUFFER_DAILY_CAP": "3",
-                "BUFFER_IMAGE_URL_TTL_SECONDS": "3600",
+                "PUBLIC_ASSETS_BUCKET_NAME": assertions.Match.any_value(),
             })
         }
     })
@@ -609,7 +657,7 @@ def test_cdk_stack_all_resources():
     
     # リソース数の確認
     template.resource_count_is("AWS::DynamoDB::Table", 6)
-    template.resource_count_is("AWS::S3::Bucket", 1)
+    template.resource_count_is("AWS::S3::Bucket", 2)
     template.resource_count_is("AWS::SecretsManager::Secret", 2)
     template.resource_count_is("AWS::Lambda::Function", 1)
     template.resource_count_is("AWS::Scheduler::Schedule", 4)
