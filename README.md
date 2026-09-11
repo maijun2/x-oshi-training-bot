@@ -185,6 +185,32 @@ aws secretsmanager put-secret-value \
   --region ap-northeast-1
 ```
 
+### 1-b. Buffer API認証情報の設定
+
+Buffer の Settings → API → Personal Access で発行した Personal Access Token と、投稿先チャンネルの ID を
+`imomaru-bot/buffer-api` シークレットに格納します（値はチャット・ログ・リポジトリに出さないこと）。
+
+```bash
+# 値はファイル経由で渡す（シェル履歴に残さない）
+cat > /tmp/buffer-secret.json <<'JSON'
+{
+  "access_token": "YOUR_BUFFER_PERSONAL_ACCESS_TOKEN",
+  "channel_id": "YOUR_CHANNEL_ID",
+  "organization_id": "YOUR_ORGANIZATION_ID"
+}
+JSON
+aws secretsmanager put-secret-value \
+  --secret-id imomaru-bot/buffer-api \
+  --secret-string file:///tmp/buffer-secret.json \
+  --region ap-northeast-1
+rm /tmp/buffer-secret.json
+```
+
+`channel_id` / `organization_id` は Buffer GraphQL API（`POST https://api.buffer.com`、
+`Authorization: Bearer <token>`）で `account { organizations { id } }` →
+`channels(input: {organizationId: ...}) { id name service }` を実行して取得します。
+参考: https://developers.buffer.com/guides/getting-started.html
+
 ### 2. S3へのベース画像アップロード
 
 ```bash

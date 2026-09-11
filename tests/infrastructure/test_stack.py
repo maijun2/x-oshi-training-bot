@@ -210,14 +210,40 @@ def test_secrets_manager_secret_created():
     stack = ImomaruBotStack(app, "test-stack")
     template = assertions.Template.from_stack(stack)
     
-    # Secrets Managerシークレットが1つ作成されることを確認
-    template.resource_count_is("AWS::SecretsManager::Secret", 1)
+    # Secrets Managerシークレットが2つ作成されることを確認（X API / Buffer API）
+    template.resource_count_is("AWS::SecretsManager::Secret", 2)
     
     # シークレットの検証
     template.has_resource_properties("AWS::SecretsManager::Secret", {
         "Name": "imomaru-bot/x-api-credentials",
         "Description": "X API認証情報（OAuth 1.0a + Bearer Token）"
     })
+
+
+def test_buffer_api_secret_created():
+    """
+    Buffer API認証情報用のシークレットが作成され、Lambdaから名前で参照できることを確認
+    """
+    app = cdk.App()
+    stack = ImomaruBotStack(app, "test-stack")
+    template = assertions.Template.from_stack(stack)
+
+    template.has_resource_properties("AWS::SecretsManager::Secret", {
+        "Name": "imomaru-bot/buffer-api",
+        "Description": "Buffer API認証情報（Personal Access Token + channel ID）",
+    })
+    template.has_resource("AWS::SecretsManager::Secret", {
+        "Properties": {"Name": "imomaru-bot/buffer-api"},
+        "DeletionPolicy": "Retain",
+    })
+    template.has_resource_properties("AWS::Lambda::Function", {
+        "Environment": {
+            "Variables": assertions.Match.object_like({
+                "BUFFER_SECRET_NAME": assertions.Match.any_value(),
+            })
+        }
+    })
+
 
 
 def test_lambda_execution_role_created():
@@ -582,7 +608,7 @@ def test_cdk_stack_all_resources():
     # リソース数の確認
     template.resource_count_is("AWS::DynamoDB::Table", 6)
     template.resource_count_is("AWS::S3::Bucket", 1)
-    template.resource_count_is("AWS::SecretsManager::Secret", 1)
+    template.resource_count_is("AWS::SecretsManager::Secret", 2)
     template.resource_count_is("AWS::Lambda::Function", 1)
     template.resource_count_is("AWS::Scheduler::Schedule", 4)
 

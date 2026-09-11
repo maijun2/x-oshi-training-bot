@@ -172,6 +172,16 @@ class ImomaruBotStack(Stack):
             removal_policy=RemovalPolicy.RETAIN,  # 本番環境では削除しない
         )
 
+        # Secrets Manager: Buffer API認証情報
+        # Personal Access Token と投稿先チャンネルID を保存（値は put-secret-value で手動投入）
+        self.buffer_api_secret = secretsmanager.Secret(
+            self,
+            "BufferAPISecret",
+            secret_name="imomaru-bot/buffer-api",
+            description="Buffer API認証情報（Personal Access Token + channel ID）",
+            removal_policy=RemovalPolicy.RETAIN,  # 本番環境では削除しない
+        )
+
         # Lambda実行ロール
         # 最小権限の原則に従い、必要な権限のみを付与
         self.lambda_role = iam.Role(
@@ -200,6 +210,7 @@ class ImomaruBotStack(Stack):
 
         # Secrets Manager読み取り権限を付与
         self.x_api_secret.grant_read(self.lambda_role)
+        self.buffer_api_secret.grant_read(self.lambda_role)
 
         # Bedrock呼び出し権限を付与
         # Claude Haiku 4.5はInference Profile経由でのみ呼び出し可能
@@ -248,6 +259,7 @@ class ImomaruBotStack(Stack):
                 "PROCESSED_REPLIES_TABLE_NAME": self.processed_replies_table.table_name,
                 "ASSETS_BUCKET_NAME": self.assets_bucket.bucket_name,
                 "SECRET_NAME": self.x_api_secret.secret_name,
+                "BUFFER_SECRET_NAME": self.buffer_api_secret.secret_name,
                 "OSHI_USER_ID": oshi_user_id,
                 "OSHI_USERNAME": oshi_username,
                 "GROUP_USER_ID": group_user_id,
