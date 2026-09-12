@@ -1,7 +1,7 @@
 """
 BufferScheduler のユニットテスト
 
-キャップ判定・本文組み立て・感情画像の presigned URL 添付・状態更新を検証する。
+キャップ判定（実行ごと／日次の 2 段）・本文組み立て・感情画像 URL 添付・状態更新を検証する。
 """
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
@@ -45,6 +45,18 @@ def scheduler(buffer_client, state_store):
         public_image_base_url=PUBLIC_BASE + "/",  # 末尾スラッシュは正規化される
         oshi_username="juri_bigangel",
         daily_cap=3,
+        run_cap=3,  # 既存テストは日次キャップの挙動を見るので実行キャップは日次と同じにしておく
+    )
+
+
+def _make_scheduler(buffer_client, state_store, *, run_cap, daily_cap):
+    return BufferScheduler(
+        buffer_client=buffer_client,
+        state_store=state_store,
+        public_image_base_url=PUBLIC_BASE,
+        oshi_username="juri_bigangel",
+        daily_cap=daily_cap,
+        run_cap=run_cap,
     )
 
 
@@ -67,6 +79,63 @@ class TestCapAndGates:
         assert result is None
         buffer_client.add_to_queue.assert_not_called()
         assert state.daily_buffer_count == 3
+
+
+class TestRunCap:
+    """実行ごとキャップ（主キャップ）。日次カウントが空でも 1 回の実行では run_cap 件までしか投入しない"""
+
+    def test_second_post_in_same_run_is_rejected(self, buffer_client, state_store):
+        scheduler = _make_scheduler(buffer_client, state_store, run_cap=1, daily_cap=7)
+        state = BotState(daily_buffer_count=0)
+
+        first = scheduler.schedule_quote(state, tweet_id="1", draft_text="a")
+        second = scheduler.schedule_quote(state, tweet_id="2", draft_text="b")
+
+        assert first is not None
+        assert second is None
+        assert buffer_client.add_to_queue.call_count == 1
+        assert state.daily_buffer_count == 1
+        assert scheduler.can_schedule(state) is False
+
+    def test_run_count_is_per_instance(self, buffer_client, state_store):
+        """Lambda invocation ごとに新しいインスタンスが作られるので、次の実行では再び投入できる"""
+        state = BotState(daily_buffer_count=0)
+        run1 = _make_scheduler(buffer_client, state_store, run_cap=1, daily_cap=7)
+        run1.schedule_quote(state, tweet_id="1", draft_text="a")
+
+        run2 = _make_scheduler(buffer_client, state_store, run_cap=1, daily_cap=7)
+
+        assert run2.can_schedule(state) is True
+        assert run2.schedule_quote(state, tweet_id="2", draft_text="b") is not None
+        assert state.daily_buffer_count == 2
+
+    def test_daily_cap_still_applies_as_safety_valve(self, buffer_client, state_store):
+        scheduler = _make_scheduler(buffer_client, state_store, run_cap=1, daily_cap=7)
+        state = BotState(daily_buffer_count=7)
+
+        assert scheduler.can_schedule(state) is False
+        assert scheduler.schedule_quote(state, tweet_id="1", draft_text="a") is None
+        buffer_client.add_to_queue.assert_not_called()
+
+    def test_can_attach_image_follows_run_cap(self, buffer_client, state_store):
+        scheduler = _make_scheduler(buffer_client, state_store, run_cap=1, daily_cap=7)
+        state = BotState()
+        assert scheduler.can_attach_image(state) is True
+
+        scheduler.schedule_quote(state, tweet_id="1", draft_text="a")
+
+        assert scheduler.can_attach_image(state) is False
+
+    def test_api_failure_does_not_consume_run_cap(self, buffer_client, state_store):
+        scheduler = _make_scheduler(buffer_client, state_store, run_cap=1, daily_cap=7)
+        buffer_client.add_to_queue.side_effect = [BufferAPIError("boom"), BufferPost(id="p2", due_at=DUE_AT, asset_urls=[])]
+        state = BotState()
+
+        with pytest.raises(BufferAPIError):
+            scheduler.schedule_quote(state, tweet_id="1", draft_text="a")
+
+        assert scheduler.can_schedule(state) is True
+        assert scheduler.schedule_quote(state, tweet_id="2", draft_text="b") is not None
 
 
 class TestScheduleQuote:

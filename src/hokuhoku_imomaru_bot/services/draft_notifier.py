@@ -31,7 +31,7 @@ class DraftNotifier:
     # Buffer 投入状況（_post_quote_safe から渡される）
     BUFFER_STATUS_DISABLED = "disabled"    # Buffer 連携なし（セクション非表示）
     BUFFER_STATUS_SCHEDULED = "scheduled"  # 予約投入済み（NG なら Buffer で削除）
-    BUFFER_STATUS_CAP = "cap"              # 本日のキャップ到達（メールのみ）
+    BUFFER_STATUS_CAP = "cap"              # この実行/本日のキャップ到達（メールのみ）
     BUFFER_STATUS_FAILED = "failed"        # 投入失敗（メールのみ）
 
     def __init__(
@@ -61,7 +61,7 @@ class DraftNotifier:
         emotion_key: Optional[str] = None,
         buffer_status: str = BUFFER_STATUS_DISABLED,
         buffer_due_at: Optional[datetime] = None,
-        buffer_daily_cap: Optional[int] = None,
+        buffer_run_cap: Optional[int] = None,
     ) -> bool:
         """
         投稿素案をメールで送信
@@ -74,7 +74,7 @@ class DraftNotifier:
             emotion_key: 感情キー（Buffer に画像添付した場合のみ。メール表示用）
             buffer_status: Buffer 投入状況（BUFFER_STATUS_*）
             buffer_due_at: Buffer の予約時刻（scheduled のとき）
-            buffer_daily_cap: 1日の投入キャップ（cap のときの表示用）
+            buffer_run_cap: 1回の実行あたりの投入キャップ（cap のときの表示用）
 
         Returns:
             送信成功の可否
@@ -82,7 +82,7 @@ class DraftNotifier:
         try:
             original_url = f"https://x.com/{oshi_username}/status/{original_tweet_id}"
             intent_url = self._build_intent_url(draft_text, original_url)
-            buffer_note = self._build_buffer_note(buffer_status, buffer_due_at, buffer_daily_cap)
+            buffer_note = self._build_buffer_note(buffer_status, buffer_due_at, buffer_run_cap)
 
             html_body = self._build_html(
                 original_tweet_text=original_tweet_text,
@@ -140,7 +140,7 @@ class DraftNotifier:
         cls,
         buffer_status: str,
         buffer_due_at: Optional[datetime],
-        buffer_daily_cap: Optional[int],
+        buffer_run_cap: Optional[int],
     ) -> Optional[str]:
         """
         Buffer 投入状況の説明文（HTML / テキスト共通）。disabled のときは None
@@ -156,9 +156,9 @@ class DraftNotifier:
                 f"内容が NG なら Buffer のキューから削除してください。"
             )
         if buffer_status == cls.BUFFER_STATUS_CAP:
-            cap = f"{buffer_daily_cap}件" if buffer_daily_cap is not None else "上限"
+            cap = f"1回の実行につき {buffer_run_cap}件" if buffer_run_cap is not None else "上限あり"
             return (
-                f"本日の Buffer 予約枠（{cap}）は上限に達したため、Buffer には入れていません。"
+                f"この回の Buffer 予約枠（{cap}）は上限に達したため、Buffer には入れていません。"
                 f"投稿する場合は下の X リンクから手動でどうぞ。"
             )
         if buffer_status == cls.BUFFER_STATUS_FAILED:

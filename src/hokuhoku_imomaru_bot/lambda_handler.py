@@ -57,7 +57,8 @@ NOTIFICATION_EMAIL = os.environ.get("NOTIFICATION_EMAIL", "")
 FROM_EMAIL = os.environ.get("FROM_EMAIL", "")
 # Buffer 半人力投稿（推し投稿への応答を Buffer キューに予約投入）
 BUFFER_SECRET_NAME = os.environ.get("BUFFER_SECRET_NAME", "imomaru-bot/buffer-api")
-BUFFER_DAILY_CAP = int(os.environ.get("BUFFER_DAILY_CAP", "3"))
+BUFFER_DAILY_CAP = int(os.environ.get("BUFFER_DAILY_CAP", "7"))  # 1日の上限（安全弁）
+BUFFER_RUN_CAP = int(os.environ.get("BUFFER_RUN_CAP", "1"))  # 1回の実行あたりの上限（主キャップ）
 # 感情画像の公開バケット（Buffer が投稿公開時に取りに来る）
 PUBLIC_ASSETS_BUCKET_NAME = os.environ.get("PUBLIC_ASSETS_BUCKET_NAME", "imomaru-bot-public-assets")
 PUBLIC_ASSETS_BASE_URL = (
@@ -161,6 +162,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             public_image_base_url=PUBLIC_ASSETS_BASE_URL,
             oshi_username=OSHI_USERNAME,
             daily_cap=BUFFER_DAILY_CAP,
+            run_cap=BUFFER_RUN_CAP,
         )
         
         # 状態の読み込み
@@ -693,7 +695,7 @@ def _post_quote_safe(
                 emotion_key=emotion_key,
                 buffer_status=buffer_status,
                 buffer_due_at=buffer_due_at,
-                buffer_daily_cap=buffer_scheduler.daily_cap if buffer_scheduler else None,
+                buffer_run_cap=buffer_scheduler.run_cap if buffer_scheduler else None,
             )
             return sent
 
