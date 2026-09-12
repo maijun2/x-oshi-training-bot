@@ -283,7 +283,8 @@ class ImomaruBotStack(Stack):
                 "ASSETS_BUCKET_NAME": self.assets_bucket.bucket_name,
                 "SECRET_NAME": self.x_api_secret.secret_name,
                 "BUFFER_SECRET_NAME": self.buffer_api_secret.secret_name,
-                "BUFFER_DAILY_CAP": "3",  # 1日の Buffer 予約投入件数の上限（無料枠10件を溢れさせない）
+                "BUFFER_RUN_CAP": "1",  # 1回の実行あたりの Buffer 予約投入件数の上限（主キャップ）
+                "BUFFER_DAILY_CAP": "7",  # 1日の上限（安全弁。スロット 8 枠/日より小さくして無料枠10件を溢れさせない）
                 "PUBLIC_ASSETS_BUCKET_NAME": self.public_assets_bucket.bucket_name,
                 "OSHI_USER_ID": oshi_user_id,
                 "OSHI_USERNAME": oshi_username,

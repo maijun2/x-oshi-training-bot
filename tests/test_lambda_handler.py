@@ -579,7 +579,7 @@ class TestPostQuoteSafe:
             emotion_key=None,
             buffer_status="disabled",
             buffer_due_at=None,
-            buffer_daily_cap=None,
+            buffer_run_cap=None,
         )
 
     def test_returns_false_when_no_draft_notifier(self):
@@ -1131,7 +1131,7 @@ class TestDraftNotifier:
         html, text = self._send(
             buffer_status="scheduled",
             buffer_due_at=datetime(2026, 9, 12, 23, 21, tzinfo=timezone.utc),
-            buffer_daily_cap=3,
+            buffer_run_cap=3,
         )
         for body in (html, text):
             assert "Buffer 予約" in body
@@ -1142,9 +1142,9 @@ class TestDraftNotifier:
         assert "https://x.com/intent/tweet?text=" in html
 
     def test_buffer_cap_section(self):
-        html, text = self._send(buffer_status="cap", buffer_daily_cap=3)
+        html, text = self._send(buffer_status="cap", buffer_run_cap=3)
         for body in (html, text):
-            assert "Buffer 予約枠（3件）は上限" in body
+            assert "この回の Buffer 予約枠（1回の実行につき 3件）は上限" in body
             assert "手動" in body
 
     def test_buffer_failed_section(self):
@@ -1165,7 +1165,7 @@ class TestPostQuoteSafeWithEmotionImage:
         from src.hokuhoku_imomaru_bot.services import BufferScheduler
 
         scheduler = MagicMock(spec=BufferScheduler)
-        scheduler.daily_cap = cap
+        scheduler.run_cap = cap
         scheduler.can_attach_image.return_value = (
             state.daily_buffer_count < cap and not state.daily_image_posted
         )
@@ -1218,7 +1218,7 @@ class TestPostQuoteSafeWithEmotionImage:
             emotion_key="joy",
             buffer_status="scheduled",
             buffer_due_at=due_at,
-            buffer_daily_cap=3,
+            buffer_run_cap=3,
         )
         # X API は呼ばれない（課金なし）
         x_api_client.post_tweet.assert_not_called()
@@ -1319,7 +1319,7 @@ class TestPostQuoteSafeWithEmotionImage:
         ai_generator.classify_emotion.assert_not_called()
         kwargs = draft_notifier.send_draft_email.call_args.kwargs
         assert kwargs["buffer_status"] == "cap"
-        assert kwargs["buffer_daily_cap"] == 3
+        assert kwargs["buffer_run_cap"] == 3
         assert kwargs["emotion_key"] is None
 
     def test_buffer_failure_still_sends_email(self):

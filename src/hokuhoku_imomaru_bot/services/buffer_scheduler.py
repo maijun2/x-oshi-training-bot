@@ -32,7 +32,10 @@ class BufferScheduler:
     """
     推し投稿への応答を Buffer キューに投入するクラス
 
-    - 1日の投入件数をキャップして Buffer 無料枠（10件）を溢れさせない
+    - 投入件数は 2 段でキャップする
+      - run_cap: Lambda 1 回の実行あたりの上限（主キャップ。各実行の検知分を均等に Buffer へ載せる）
+      - daily_cap: 1 日の上限（安全弁。スロット数/日より小さくして Buffer 無料枠 10 件を溢れさせない）
+      実行内カウンタはこのインスタンスに持つ（invocation ごとに生成される前提）
     - 感情画像は公開バケットの URL で添付（1日1回、成功時のみフラグを立てる）。
       Buffer は投稿公開時に URL を取りに来るため、署名付き URL（期限あり）は使えない
     """
@@ -43,7 +46,8 @@ class BufferScheduler:
         state_store: StateStore,
         public_image_base_url: str,
         oshi_username: str,
-        daily_cap: int = 3,
+        daily_cap: int = 7,
+        run_cap: int = 1,
     ):
         """
         Args:
@@ -52,21 +56,31 @@ class BufferScheduler:
             public_image_base_url: 感情画像を公開している URL のベース
                 （例: https://imomaru-bot-public-assets-123.s3.ap-northeast-1.amazonaws.com）
             oshi_username: 推しの X ユーザー名（元ツイート URL 用）
-            daily_cap: 1日の Buffer 投入件数の上限
+            daily_cap: 1日の Buffer 投入件数の上限（安全弁）
+            run_cap: Lambda 1 回の実行あたりの Buffer 投入件数の上限（主キャップ）
         """
         self._buffer_client = buffer_client
         self._state_store = state_store
         self._public_image_base_url = public_image_base_url.rstrip("/")
         self._oshi_username = oshi_username
         self._daily_cap = daily_cap
+        self._run_cap = run_cap
+        self._run_count = 0
 
     @property
     def daily_cap(self) -> int:
         return self._daily_cap
 
+    @property
+    def run_cap(self) -> int:
+        return self._run_cap
+
     def can_schedule(self, state: BotState) -> bool:
-        """本日のキャップに達していなければ True"""
-        return state.daily_buffer_count < self._daily_cap
+        """この実行のキャップにも本日のキャップにも達していなければ True"""
+        return (
+            self._run_count < self._run_cap
+            and state.daily_buffer_count < self._daily_cap
+        )
 
     def can_attach_image(self, state: BotState) -> bool:
         """本日まだ画像を添付しておらず、かつ投入枠が残っていれば True"""
@@ -99,7 +113,13 @@ class BufferScheduler:
         Raises:
             BufferAPIError 等: 投入に失敗した場合（握りつぶしは呼び出し元の責務）
         """
-        if not self.can_schedule(state):
+        if self._run_count >= self._run_cap:
+            logger.info(
+                f"Buffer run cap reached ({self._run_count}/{self._run_cap}); "
+                f"email only for tweet {tweet_id}"
+            )
+            return None
+        if state.daily_buffer_count >= self._daily_cap:
             logger.info(
                 f"Buffer daily cap reached ({state.daily_buffer_count}/{self._daily_cap}); "
                 f"email only for tweet {tweet_id}"
@@ -116,6 +136,7 @@ class BufferScheduler:
             alt_text=EMOTION_IMAGE_ALT_TEXT if image_url else None,
         )
 
+        self._run_count += 1
         state.daily_buffer_count += 1
         image_attached = bool(image_url) and len(post.asset_urls) > 0
         if image_attached:
@@ -128,7 +149,8 @@ class BufferScheduler:
         logger.info(
             f"Buffer scheduled quote for tweet {tweet_id}: post={post.id} "
             f"due_at={post.due_at} image={image_attached} "
-            f"count={state.daily_buffer_count}/{self._daily_cap}"
+            f"count=run {self._run_count}/{self._run_cap}, "
+            f"daily {state.daily_buffer_count}/{self._daily_cap}"
         )
         return ScheduledPost(post_id=post.id, due_at=post.due_at, image_attached=image_attached)
 

@@ -288,7 +288,8 @@ def test_buffer_api_secret_created():
         "Environment": {
             "Variables": assertions.Match.object_like({
                 "BUFFER_SECRET_NAME": assertions.Match.any_value(),
-                "BUFFER_DAILY_CAP": "3",
+                "BUFFER_RUN_CAP": "1",
+                "BUFFER_DAILY_CAP": "7",
                 "PUBLIC_ASSETS_BUCKET_NAME": assertions.Match.any_value(),
             })
         }
