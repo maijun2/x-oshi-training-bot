@@ -4,6 +4,7 @@ AIGeneratorクラスのユニットテスト
 要件 2.1, 2.2, 2.3, 2.4, 2.6: AI応答生成を検証
 """
 import json
+import logging
 import pytest
 from unittest.mock import Mock, MagicMock
 from io import BytesIO
@@ -327,3 +328,99 @@ class TestAIGeneratorReplyResponse:
             )
 
         assert "Failed to generate reply response" in caplog.text
+
+
+class TestBrainIntegration:
+    """頭脳（BrainClient）経由の生成と、失敗時の Bedrock 直呼びフォールバック"""
+
+    def _bedrock(self, text: str):
+        client = Mock()
+        client.invoke_model.return_value = {
+            "body": MagicMock(read=lambda: json.dumps({"content": [{"text": text}]}).encode("utf-8"))
+        }
+        return client
+
+    def _brain(self, text=None, error=None):
+        from src.hokuhoku_imomaru_bot.utils.brain_client import BrainClient, BrainError
+
+        brain = MagicMock(spec=BrainClient)
+        if error is not None:
+            brain.invoke.side_effect = BrainError(error)
+        else:
+            brain.invoke.return_value = text
+        return brain
+
+    def test_generate_response_uses_brain_and_skips_bedrock(self):
+        bedrock = self._bedrock("Haiku の応答")
+        brain = self._brain("頭脳の応答ｲﾓ🍠 #さつまいもの民 #びっくえんじぇる")
+        generator = AIGenerator(bedrock_client=bedrock, brain_client=brain)
+
+        result = generator.generate_response("投稿", post_type="oshi")
+
+        assert result == "頭脳の応答ｲﾓ🍠 #さつまいもの民 #びっくえんじぇる"
+        brain.invoke.assert_called_once_with("oshi_response", {"post_content": "投稿", "post_type": "oshi"})
+        bedrock.invoke_model.assert_not_called()
+
+    def test_generate_response_truncates_brain_output(self):
+        brain = self._brain("あ" * 200)
+        generator = AIGenerator(bedrock_client=Mock(), brain_client=brain)
+        assert len(generator.generate_response("投稿")) <= 140
+
+    def test_generate_response_falls_back_to_bedrock_on_brain_error(self, caplog):
+        bedrock = self._bedrock("Haiku の応答ｲﾓ🍠 #さつまいもの民 #びっくえんじぇる")
+        brain = self._brain(error="invoke failed")
+        generator = AIGenerator(bedrock_client=bedrock, brain_client=brain)
+
+        with caplog.at_level(logging.ERROR):
+            result = generator.generate_response("投稿", post_type="oshi")
+
+        assert result == "Haiku の応答ｲﾓ🍠 #さつまいもの民 #びっくえんじぇる"
+        bedrock.invoke_model.assert_called_once()
+        # アラームを鳴らすため ERROR で記録される
+        assert any(r.levelno == logging.ERROR and "Brain failed" in r.getMessage() for r in caplog.records)
+
+    def test_generate_response_without_brain_is_unchanged(self):
+        bedrock = self._bedrock("Haiku の応答")
+        generator = AIGenerator(bedrock_client=bedrock)
+        generator.generate_response("投稿")
+        bedrock.invoke_model.assert_called_once()
+
+    def test_classify_emotion_via_brain_validates_key(self):
+        bedrock = Mock()
+        generator = AIGenerator(bedrock_client=bedrock, brain_client=self._brain("  JOY \n"))
+        assert generator.classify_emotion("嬉しい") == "joy"
+        bedrock.invoke_model.assert_not_called()
+
+        generator = AIGenerator(bedrock_client=bedrock, brain_client=self._brain("banana"))
+        assert generator.classify_emotion("嬉しい") is None
+
+        generator = AIGenerator(bedrock_client=bedrock, brain_client=self._brain("none"))
+        assert generator.classify_emotion("嬉しい") is None
+
+    def test_classify_emotion_falls_back_on_brain_error(self):
+        bedrock = self._bedrock("cheer")
+        generator = AIGenerator(bedrock_client=bedrock, brain_client=self._brain(error="down"))
+        assert generator.classify_emotion("応援") == "cheer"
+        bedrock.invoke_model.assert_called_once()
+
+    def test_reply_response_uses_brain(self):
+        bedrock = Mock()
+        brain = self._brain("fan_taroさんありがとうｲﾓ🍠 #さつまいもの民 #びっくえんじぇる")
+        generator = AIGenerator(bedrock_client=bedrock, brain_client=brain)
+
+        result = generator.generate_reply_response(
+            reply_text="かわいい", reply_username="fan_taro", bot_tweet_text="元投稿"
+        )
+
+        assert result.startswith("fan_taroさん")
+        brain.invoke.assert_called_once_with(
+            "reply_response",
+            {"reply_text": "かわいい", "reply_username": "fan_taro", "bot_tweet_text": "元投稿"},
+        )
+        bedrock.invoke_model.assert_not_called()
+
+    def test_reply_response_falls_back_on_brain_error(self):
+        bedrock = self._bedrock("Haiku のリプライ")
+        generator = AIGenerator(bedrock_client=bedrock, brain_client=self._brain(error="down"))
+        assert generator.generate_reply_response("a", "u", "b") == "Haiku のリプライ"
+        bedrock.invoke_model.assert_called_once()

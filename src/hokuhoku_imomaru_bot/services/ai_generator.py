@@ -1,11 +1,16 @@
 """
 AIGeneratorクラス
 
-Amazon Bedrockを使用してキャラクターに合った応答テキストを生成します。
+キャラクターに合った応答テキストを生成します。
+
+生成元は 2 段構え（フェーズ2a）:
+1. 頭脳（AgentCore Runtime、BrainClient 経由）— 設定されていればまずこちら
+2. Bedrock Haiku 直呼び — 頭脳が未設定、または頭脳の呼び出しに失敗したときのフォールバック
+   （失敗は logger.error で記録し、imomaru-bot-app-errors アラームを鳴らす）
 """
 import json
 import logging
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from ..prompts import (  # noqa: F401  (re-export: 既存の import 経路を維持)
     DEFAULT_RESPONSE_OSHI,
@@ -19,6 +24,7 @@ from ..prompts import (  # noqa: F401  (re-export: 既存の import 経路を維
     EMOTION_CLASSIFICATION_PROMPT,
     VALID_EMOTION_KEYS,
 )
+from ..utils.brain_client import BrainClient, BrainError
 
 logger = logging.getLogger(__name__)
 
@@ -45,19 +51,22 @@ class AIGenerator:
         model_id: str = DEFAULT_MODEL_ID,
         max_tokens: int = DEFAULT_MAX_TOKENS,
         temperature: float = DEFAULT_TEMPERATURE,
+        brain_client: Optional[BrainClient] = None,
     ):
         """
         AIGeneratorを初期化
         
         Args:
-            bedrock_client: boto3 Bedrock Runtimeクライアント
-            model_id: 使用するモデルID
+            bedrock_client: boto3 Bedrock Runtimeクライアント（フォールバック用）
+            model_id: 使用するモデルID（フォールバック用）
             max_tokens: 最大トークン数
             temperature: 温度パラメータ
+            brain_client: 頭脳（AgentCore Runtime）クライアント。None なら Bedrock 直呼びのみ
         """
         self.bedrock_client = bedrock_client
         self.model_id = model_id
         self.max_tokens = max_tokens
+        self.brain_client = brain_client
         self.temperature = temperature
     
     def build_prompt(self, post_content: str) -> str:
@@ -107,6 +116,19 @@ class AIGenerator:
         
         return text
     
+    def _ask_brain(self, task: str, task_input: Dict[str, Any]) -> Optional[str]:
+        """
+        頭脳にタスクを依頼する。未設定なら None、失敗したら ERROR ログを出して None
+        （呼び出し側は None のとき Bedrock 直呼びにフォールバックする）
+        """
+        if self.brain_client is None:
+            return None
+        try:
+            return self.brain_client.invoke(task, task_input)
+        except BrainError as e:
+            logger.error(f"Brain failed for task={task}; falling back to direct Bedrock: {e}")
+            return None
+
     def generate_response(
         self,
         post_content: str,
@@ -122,6 +144,12 @@ class AIGenerator:
         Returns:
             生成された応答テキスト（140文字以内）
         """
+        brain_text = self._ask_brain("oshi_response", {"post_content": post_content, "post_type": post_type})
+        if brain_text is not None:
+            truncated_text = self.truncate_text(brain_text)
+            logger.info(f"Generated response using brain for {post_type} post: {len(truncated_text)} chars")
+            return truncated_text
+
         try:
             prompt = self.build_prompt(post_content)
             
@@ -204,29 +232,33 @@ class AIGenerator:
             感情キー（emotion_key）、分類失敗時はNone
         """
         try:
-            prompt = EMOTION_CLASSIFICATION_PROMPT.format(response_text=response_text)
-            
-            request_body = {
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 50,
-                "temperature": 0.0,  # 決定的な応答を得るため
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": prompt,
-                    }
-                ],
-            }
-            
-            response = self.bedrock_client.invoke_model(
-                modelId=self.model_id,
-                body=json.dumps(request_body),
-                contentType="application/json",
-                accept="application/json",
-            )
-            
-            response_body = json.loads(response["body"].read())
-            emotion_key = response_body["content"][0]["text"].strip().lower()
+            brain_text = self._ask_brain("classify_emotion", {"response_text": response_text})
+            if brain_text is not None:
+                emotion_key = brain_text.strip().lower()
+            else:
+                prompt = EMOTION_CLASSIFICATION_PROMPT.format(response_text=response_text)
+
+                request_body = {
+                    "anthropic_version": "bedrock-2023-05-31",
+                    "max_tokens": 50,
+                    "temperature": 0.0,  # 決定的な応答を得るため
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": prompt,
+                        }
+                    ],
+                }
+
+                response = self.bedrock_client.invoke_model(
+                    modelId=self.model_id,
+                    body=json.dumps(request_body),
+                    contentType="application/json",
+                    accept="application/json",
+                )
+
+                response_body = json.loads(response["body"].read())
+                emotion_key = response_body["content"][0]["text"].strip().lower()
             
             # 有効な感情キーかチェック
             if emotion_key in VALID_EMOTION_KEYS:
@@ -259,6 +291,15 @@ class AIGenerator:
         Returns:
             生成された応答テキスト（140文字以内）
         """
+        brain_text = self._ask_brain(
+            "reply_response",
+            {"reply_text": reply_text, "reply_username": reply_username, "bot_tweet_text": bot_tweet_text},
+        )
+        if brain_text is not None:
+            truncated_text = self.truncate_text(brain_text)
+            logger.info(f"Generated reply response using brain: {len(truncated_text)} chars")
+            return truncated_text
+
         try:
             prompt = REPLY_PROMPT_TEMPLATE.format(
                 username=reply_username,

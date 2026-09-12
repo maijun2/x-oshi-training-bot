@@ -9,6 +9,7 @@ from .error_handler import (
     BotError,
     CriticalError,
 )
+from .brain_client import BrainClient, BrainError
 
 __all__ = [
     "log_event",
@@ -19,4 +20,6 @@ __all__ = [
     "generate_response_with_fallback",
     "BotError",
     "CriticalError",
+    "BrainClient",
+    "BrainError",
 ]
