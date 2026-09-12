@@ -7,79 +7,20 @@ import json
 import logging
 from typing import Optional
 
+from ..prompts import (  # noqa: F401  (re-export: 既存の import 経路を維持)
+    DEFAULT_RESPONSE_OSHI,
+    DEFAULT_RESPONSE_GROUP,
+    DEFAULT_RESPONSE_OSHI_RETWEET,
+    DEFAULT_RESPONSE_GROUP_RETWEET,
+    DEFAULT_REPLY_RESPONSE_TEMPLATE,
+    MAX_TEXT_LENGTH,
+    PROMPT_TEMPLATE,
+    REPLY_PROMPT_TEMPLATE,
+    EMOTION_CLASSIFICATION_PROMPT,
+    VALID_EMOTION_KEYS,
+)
+
 logger = logging.getLogger(__name__)
-
-# デフォルト応答テキスト（Bedrock API失敗時のフォールバック）
-DEFAULT_RESPONSE_OSHI = "じゅりちゃんの投稿を見つけたｲﾓ🍠✨ #さつまいもの民 #びっくえんじぇる"
-DEFAULT_RESPONSE_GROUP = "グループの投稿を見つけたｲﾓ🍠✨ #さつまいもの民 #びっくえんじぇる"
-DEFAULT_RESPONSE_OSHI_RETWEET = "甘木ジュリちゃんがリポストしたｲﾓ🍠✨ #さつまいもの民 #びっくえんじぇる"
-DEFAULT_RESPONSE_GROUP_RETWEET = "びっくえんじぇるがリポストしたｲﾓ🍠✨ #さつまいもの民 #びっくえんじぇる"
-
-# 文字数制限
-MAX_TEXT_LENGTH = 140
-
-# プロンプトテンプレート
-PROMPT_TEMPLATE = """あなたは「ほくほくいも丸くん🍠」というキャラクターです。
-甘木ジュリさん(@juri_bigangel)の熱心なファンで、常に語尾に「◯◯ｲﾓ🍠」をつけて話します。
-
-以下の投稿に対して、キャラクターに合った応答を生成してください：
-
-{post_content}
-
-制約:
-- 適切な絵文字を使用すること
-- 文末に必ず「#さつまいもの民 #びっくえんじぇる」を含めること
-- ハッシュタグを含めて140文字以内に収めること
-- 語尾は必ず「◯◯ｲﾓ🍠」の形式にすること（例：「嬉しいｲﾓ🍠」「最高ｲﾓ🍠」）
-- 推しの名前は「甘木ジュリ」です。「天木」ではありません。必ず「甘木」と書いてください。
-
-応答:"""
-
-# リプライ専用プロンプトテンプレート
-REPLY_PROMPT_TEMPLATE = """あなたは「ほくほくいも丸くん🍠」というキャラクターです。
-甘木ジュリさん(@juri_bigangel)の熱心なファンで、常に語尾に「◯◯ｲﾓ🍠」をつけて話します。
-
-{username}さんから以下のリプライを受け取りました：
-
-元のツイート: {bot_tweet_text}
-リプライ: {reply_text}
-
-キャラクターに合った応答を生成してください。
-
-制約:
-- 適切な絵文字を使用すること
-- 文末に必ず「#さつまいもの民 #びっくえんじぇる」を含めること
-- ハッシュタグを含めて140文字以内に収めること
-- 語尾は必ず「◯◯ｲﾓ🍠」の形式にすること（例：「嬉しいｲﾓ🍠」「最高ｲﾓ🍠」）
-- 推しの名前は「甘木ジュリ」です。「天木」ではありません。必ず「甘木」と書いてください。
-- {username}さんに対して親しみを込めて応答すること
-
-応答:"""
-
-# リプライ用デフォルト応答テキスト（Bedrock API失敗時のフォールバック）
-DEFAULT_REPLY_RESPONSE_TEMPLATE = "@{username} ありがとうｲﾓ🍠✨ #さつまいもの民 #びっくえんじぇる"
-
-# 感情分類プロンプトテンプレート
-EMOTION_CLASSIFICATION_PROMPT = """以下の応答文の感情を分類してください。
-
-応答文: {response_text}
-
-選択肢（emotion_keyのみを1つ返してください）:
-- passion: 推しへの情熱・愛
-- cheer: 躍動的な応援・エール
-- gratitude_hug: 感謝・幸福感（抱擁）
-- reverence: 感動・尊さ（拝む）
-- excitement_move: 高揚・現場移動（チャリ）
-- support_financial: 献身・支援（スパチャ）
-- infatuation: 心酔・魅了（目がハート）
-- deeply_moved: 感銘・落涙（感動の涙）
-- kindness: 受容・穏やかな感謝（合掌）
-- joy: 歓喜・達成感（やったあ）
-- encouragement: 激励・ペンライト応援
-- meal_time: 食事・期待（いただきます）
-
-該当する感情がない場合は "none" と返してください。
-emotion_keyのみを返してください（説明不要）:"""
 
 
 class AIGenerator:
@@ -288,13 +229,7 @@ class AIGenerator:
             emotion_key = response_body["content"][0]["text"].strip().lower()
             
             # 有効な感情キーかチェック
-            valid_keys = {
-                "passion", "cheer", "gratitude_hug", "reverence",
-                "excitement_move", "support_financial", "infatuation",
-                "deeply_moved", "kindness", "joy", "encouragement", "meal_time"
-            }
-            
-            if emotion_key in valid_keys:
+            if emotion_key in VALID_EMOTION_KEYS:
                 logger.info(f"Classified emotion: {emotion_key}")
                 return emotion_key
             elif emotion_key == "none":
