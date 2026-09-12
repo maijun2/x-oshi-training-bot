@@ -166,6 +166,69 @@ class TestProcessBotLogic:
         assert state.daily_oshi_count == 1
         assert state.cumulative_xp == 5.0
 
+    def test_oshi_quote_tweet_xp_only_no_quote(self):
+        """推し自身の引用ポストは XP のみ加算し、AI 生成・引用（Buffer/メール）はスキップする"""
+        state = BotState()
+        state_store = MagicMock(spec=StateStore)
+        state_store.reset_daily_counts.return_value = state
+
+        oshi_quote = Tweet(
+            id="123456790",
+            text="他の人の投稿を引用したコメント",
+            author_id="oshi_user_id",
+            is_quote_tweet=True,
+            referenced_tweet_id="111111111",
+        )
+
+        timeline_monitor = MagicMock(spec=TimelineMonitor)
+        timeline_monitor.check_oshi_timeline.return_value = [oshi_quote]
+        timeline_monitor.check_group_timeline.return_value = []
+        timeline_monitor.filter_original_posts.side_effect = lambda tweets: tweets
+        timeline_monitor.filter_retweets.return_value = []
+
+        xp_calculator = XPCalculator()
+        level_manager = MagicMock(spec=LevelManager)
+        level_manager.check_level_up.return_value = (False, 1)
+
+        ai_generator = MagicMock(spec=AIGenerator)
+        image_compositor = MagicMock(spec=ImageCompositor)
+        profile_updater = MagicMock(spec=ProfileUpdater)
+
+        daily_reporter = MagicMock(spec=DailyReporter)
+        daily_reporter.should_post_daily_report.return_value = False
+
+        x_api_client = MagicMock()
+        draft_notifier = _make_draft_notifier_mock()
+
+        reply_monitor, allowed_users_service, reply_processor = _make_reply_mocks()
+        result = _process_bot_logic(
+            state=state,
+            state_store=state_store,
+            timeline_monitor=timeline_monitor,
+            reply_monitor=reply_monitor,
+            allowed_users_service=allowed_users_service,
+            reply_processor=reply_processor,
+            xp_calculator=xp_calculator,
+            level_manager=level_manager,
+            ai_generator=ai_generator,
+            image_compositor=image_compositor,
+            profile_updater=profile_updater,
+            daily_reporter=daily_reporter,
+            x_api_client=x_api_client,
+            draft_notifier=draft_notifier,
+        )
+
+        # XP と検出カウントは通常の推し投稿と同じ
+        assert result["oshi_posts_detected"] == 1
+        assert result["xp_gained"] == 5.0
+        assert state.oshi_post_count == 1
+        assert state.latest_oshi_tweet_id == "123456790"
+        # 引用側は一切動かない
+        assert result["quotes_posted"] == 0
+        ai_generator.generate_response.assert_not_called()
+        draft_notifier.send_draft_email.assert_not_called()
+        state_store.acquire_tweet_lock.assert_called_once_with("123456790", "quote_oshi")
+
     def test_group_post_detected(self):
         """グループの投稿が検出された場合のテスト"""
         state = BotState()

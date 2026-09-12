@@ -341,6 +341,18 @@ def _process_bot_logic(
         result["oshi_posts_detected"] += 1
         result["xp_gained"] += xp
         
+        # 推し自身の引用ポストは本文に推しのコメントしか含まれず、引用元の文脈を AI が読めないため
+        # 応答がズレる。XP は加算したうえで AI 生成・メール・Buffer 投入はスキップする（2026-09-12 決定）
+        if tweet.is_quote_tweet:
+            log_event(
+                level=LogLevel.INFO,
+                event_type=EventType.POST_DETECTED,
+                data={"tweet_id": tweet.id, "action": "xp_only", "quote_post_skipped": True},
+                message=f"Oshi quote tweet processed (XP only, quote post skipped): {tweet.id}",
+            )
+            all_tweets.append(tweet)
+            continue
+
         # AI応答を生成し、メール素案通知 ＋ Buffer 予約投入（半人力）
         posted = _post_quote_safe(
             tweet=tweet,
