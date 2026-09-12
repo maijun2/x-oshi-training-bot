@@ -7,7 +7,7 @@ X（旧Twitter）育成ボット - AWSサーバーレスアーキテクチャ
 ## 機能
 
 - 🔍 **タイムライン監視**: コアタイム3回（10:00/13:00/18:00 JST ±ゆらぎ）で推し投稿を監視、日報時（23:58 JST）に全処理実行
-- 🤖 **AI応答生成**: Amazon Bedrock（Claude Haiku 4.5）でキャラクターに合った応答を生成
+- 🤖 **AI応答生成**: AgentCore Runtime「頭脳」（Strands ＋ Bedrock Kimi K2.5）でキャラクターに合った応答を生成。頭脳が落ちたら Bedrock Claude Haiku 4.5 直呼びにフォールバック
 - 📮 **推し投稿への反応（半人力）**: AI応答をSESメールで素案通知しつつ、Buffer のキューに予約投入。Buffer のスロット時刻に自動投稿され、NG なら人間が Buffer から削除（X API 課金 $0）
 - 🎨 **感情別画像添付**: Buffer 予約投入時、AI応答の感情を分類してLINEスタンプ画像を添付（1日1回限定）
 - ⭐ **XP獲得**: 活動に応じてXPを獲得（推し投稿: 5.0 XP、グループ投稿: 2.0 XP、いいね: 0.1 XP、リポスト: 0.5 XP）
@@ -56,7 +56,22 @@ EventBridge Scheduler → Lambda → X API (日報・レベルアップ・リプ
 |-----------|------|------|
 | `imomaru-bot-lambda-errors` | エラー数 ≥ 1（5分間） | Lambda関数でエラーが発生 |
 | `imomaru-bot-lambda-duration` | 実行時間 ≥ 150秒（5分間） | 実行時間が長すぎる（タイムアウト警告） |
-| `imomaru-bot-app-errors` | `[ERROR]`/`[CRITICAL]` ログ ≥ 1（5分間） | try/except で捕捉されたアプリ内エラー（Lambda Errors メトリクスに乗らないもの） |
+| `imomaru-bot-app-errors` | `[ERROR]`/`[CRITICAL]` ログ ≥ 1（5分間） | try/except で捕捉されたアプリ内エラー（Lambda Errors メトリクスに乗らないもの）。頭脳の呼び出し失敗（`Brain failed …` → Haiku フォールバック）もここで検知 |
+
+### ログの場所
+
+| 対象 | ロググループ |
+|------|-------------|
+| Lambda | `/aws/lambda/imomaru-bot-handler` |
+| 頭脳（AgentCore Runtime） | `/aws/bedrock-agentcore/runtimes/imomaru_brain-<id>-DEFAULT`（`brain task=… model=…` の 1 行と例外のスタックトレース） |
+
+```bash
+# 直近の実行で頭脳が使われたか（推し投稿が 0 件の回は頭脳を呼ばない）
+LS=$(aws logs describe-log-streams --log-group-name /aws/lambda/imomaru-bot-handler \
+  --order-by LastEventTime --descending --limit 1 --query 'logStreams[0].logStreamName' --output text)
+aws logs get-log-events --log-group-name /aws/lambda/imomaru-bot-handler --log-stream-name "$LS" \
+  --query 'events[].message' --output text | grep -E "brain|Brain"
+```
 
 ### アラーム通知の設定
 
