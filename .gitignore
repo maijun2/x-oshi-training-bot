@@ -63,3 +63,7 @@ Thumbs.db
 
 # Backup
 .backup/
+
+# 頭脳（AgentCore Runtime）のビルド成果物
+agent_package/
+dist/

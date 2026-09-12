@@ -26,7 +26,8 @@ EventBridge Scheduler → Lambda → X API (日報・レベルアップ・リプ
                           ↓
                     DynamoDB (状態管理・許可ユーザー・処理済みリプライ)
                           ↓
-                    Bedrock (AI生成)
+                    AgentCore Runtime「頭脳」(Strands + Bedrock Kimi K2.5: 応答生成・感情分類)
+                          └→ 失敗時は Lambda が Bedrock Haiku を直接呼ぶ（フォールバック）
                           ↓
                     S3 (画像アセット)
                           ↓
@@ -159,14 +160,51 @@ uv run npx cdk bootstrap aws://ACCOUNT_ID/ap-northeast-1
 ### 3. CDKスタックのデプロイ
 
 ```bash
-# スタックをsynthesizeして確認
-uv run npx cdk synth
+# 頭脳（AgentCore Runtime）のデプロイパッケージ dist/brain.zip を作る（arm64 wheel、Docker 不要）
+bash scripts/build_agent_package.sh
 
-# デプロイ（.envの環境変数が自動的にLambdaに設定されます）
-uv run npx cdk deploy
+# Lambda パッケージを src/ から同期する（CDK は lambda_package/ を見る）
+bash scripts/sync_lambda_package.sh
 
 # 変更差分を確認
 uv run npx cdk diff
+
+# デプロイ（.envの環境変数が自動的にLambdaに設定されます）
+uv run npx cdk deploy
+```
+
+### 4. 頭脳（AgentCore Runtime）
+
+推し投稿への応答文・リプライ応答・感情分類は、Lambda から Amazon Bedrock AgentCore Runtime `imomaru_brain`
+（Strands Agent）に依頼して生成します（フェーズ2a、2026-09-12）。
+
+| 項目 | 内容 |
+|------|------|
+| デプロイ方式 | direct code deploy（`dist/brain.zip`、`PYTHON_3_12`、arm64）。`agent/` 配下のコードと `agent/requirements.txt` を `scripts/build_agent_package.sh` が zip 化し、CDK が S3 アセットとして配置 |
+| モデル | Runtime の環境変数 `BRAIN_MODEL_ID`（`stack.py` の `BRAIN_MODEL_ID`）。既定 `moonshotai.kimi-k2.5`（東京 In-Region）。差し替えは値を変えて `cdk deploy` するだけ。Grok 4.6 はこのアカウントでは提供制限（`AccessDeniedException … not available for this account`）のため未使用 |
+| 呼び出し | Lambda の `AIGenerator` → `utils/brain_client.py`（`bedrock-agentcore:InvokeAgentRuntime`）。Lambda 1 回の実行で 1 セッションを使い回す。Runtime 側の Agent はリクエストごとに使い捨て |
+| フォールバック | 頭脳の呼び出しに失敗すると `[ERROR] Brain failed …` を出して（アラーム発火）Bedrock Haiku 4.5 直呼びに切り替える。`BRAIN_RUNTIME_ARN` が空なら直呼びのみ |
+| プロンプト | `src/hokuhoku_imomaru_bot/prompts.py` が単一ソース（`agent/prompts.py` はそのシンボリックリンク）。キャラクター定義は system prompt、反応対象は user message |
+| ログ | `/aws/bedrock-agentcore/runtimes/imomaru_brain-*` |
+
+```bash
+# ローカルで頭脳を起動して確認（Bedrock を実際に呼びます）
+uv run python agent/main.py
+curl -X POST localhost:8080/invocations -H 'Content-Type: application/json' \
+  -d '{"task":"oshi_response","input":{"post_content":"今日はライブでした！","post_type":"oshi"}}'
+
+# deploy 後の本番疎通確認（3 タスクを 1 回ずつ invoke）
+uv run python scripts/test_brain_invoke.py
+```
+
+**クレジット相殺の確認**（モデルカードに Marketplace 文言がない ＝ AWS 販売 ＝ クレジット対象の見込み。最終確認は実請求）:
+
+```bash
+aws ce get-cost-and-usage --region us-east-1 \
+  --time-period Start=2026-09-12,End=2026-09-15 --granularity DAILY --metrics UnblendedCost \
+  --filter '{"Dimensions":{"Key":"SERVICE","Values":["Amazon Bedrock"]}}' \
+  --group-by Type=DIMENSION,Key=USAGE_TYPE
+# Kimi の USAGE_TYPE が計上されていることを確認し、月次請求書の Credit 行で相殺を確認する
 ```
 
 ## デプロイ後の設定
@@ -313,14 +351,22 @@ table.put_item(Item={
 ├── pyproject.toml                  # Python依存関係
 ├── data/
 │   └── dq3_xp_table.json          # DQ3経験値テーブルデータ
+├── agent/                          # 頭脳（AgentCore Runtime）のコード
+│   ├── main.py                    # エントリポイント（BedrockAgentCoreApp）
+│   ├── brain.py                   # Strands Agent による 3 タスク
+│   ├── prompts.py                 # → src/hokuhoku_imomaru_bot/prompts.py へのシンボリックリンク
+│   └── requirements.txt           # Runtime の依存（strands-agents / bedrock-agentcore）
 ├── scripts/
 │   ├── init_xp_table.py           # 経験値テーブル初期化スクリプト
 │   ├── init_emotion_images.py     # 感情画像マスタ初期化スクリプト
-│   └── sync_lambda_package.sh     # Lambda パッケージ同期スクリプト
+│   ├── build_agent_package.sh     # 頭脳のデプロイパッケージ（dist/brain.zip）作成
+│   ├── sync_lambda_package.sh     # Lambda パッケージ同期スクリプト
+│   └── test_brain_invoke.py       # 頭脳の本番疎通確認
 ├── src/
 │   └── hokuhoku_imomaru_bot/
 │       ├── __init__.py
 │       ├── lambda_handler.py      # Lambdaメインハンドラー
+│       ├── prompts.py             # プロンプト定義（Lambda と頭脳の単一ソース）
 │       ├── clients/               # 外部APIクライアント
 │       ├── infrastructure/        # CDKスタック定義
 │       ├── models/                # データモデル
