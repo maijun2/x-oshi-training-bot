@@ -37,6 +37,7 @@ from .utils import (
     handle_api_error,
     handle_critical_error,
     generate_response_with_fallback,
+    BrainClient,
 )
 
 
@@ -59,6 +60,7 @@ FROM_EMAIL = os.environ.get("FROM_EMAIL", "")
 BUFFER_SECRET_NAME = os.environ.get("BUFFER_SECRET_NAME", "imomaru-bot/buffer-api")
 BUFFER_DAILY_CAP = int(os.environ.get("BUFFER_DAILY_CAP", "7"))  # 1日の上限（安全弁）
 BUFFER_RUN_CAP = int(os.environ.get("BUFFER_RUN_CAP", "1"))  # 1回の実行あたりの上限（主キャップ）
+BRAIN_RUNTIME_ARN = os.environ.get("BRAIN_RUNTIME_ARN", "")  # 頭脳（AgentCore Runtime）。空なら Bedrock 直呼びのみ
 # 感情画像の公開バケット（Buffer が投稿公開時に取りに来る）
 PUBLIC_ASSETS_BUCKET_NAME = os.environ.get("PUBLIC_ASSETS_BUCKET_NAME", "imomaru-bot-public-assets")
 PUBLIC_ASSETS_BASE_URL = (
@@ -117,7 +119,9 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         
         xp_calculator = XPCalculator()
         
-        ai_generator = AIGenerator(bedrock_client=bedrock_client)
+        # 頭脳（AgentCore Runtime）。invocation ごとに BrainClient を作り、1 セッションを使い回す
+        brain_client = BrainClient(runtime_arn=BRAIN_RUNTIME_ARN) if BRAIN_RUNTIME_ARN else None
+        ai_generator = AIGenerator(bedrock_client=bedrock_client, brain_client=brain_client)
         
         image_compositor = ImageCompositor(
             s3_client=s3_client,

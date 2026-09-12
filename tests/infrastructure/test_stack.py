@@ -434,7 +434,7 @@ def test_lambda_function_created():
     検証項目:
     - Lambda関数が作成される
     - Python 3.12ランタイムが使用される
-    - タイムアウトが3分に設定される
+    - タイムアウトが5分に設定される
     """
     app = cdk.App()
     stack = ImomaruBotStack(app, "test-stack")
@@ -448,7 +448,7 @@ def test_lambda_function_created():
         "FunctionName": "imomaru-bot-handler",
         "Runtime": "python3.12",
         "Handler": "hokuhoku_imomaru_bot.lambda_handler.lambda_handler",
-        "Timeout": 180,  # 3分 = 180秒
+        "Timeout": 300,  # 5分 = 300秒（フェーズ2a で頭脳呼び出しを投稿ごとに行うため 3 分 → 5 分）
         "MemorySize": 256,
         "Description": "Imomaru Bot - Main Handler",
     })
@@ -666,14 +666,14 @@ def test_cdk_stack_all_resources():
 
 def test_cdk_stack_lambda_timeout():
     """
-    要件 9.5: Lambda関数のタイムアウトが3分に設定されることを確認
+    要件 9.5: Lambda関数のタイムアウトが5分に設定されることを確認（フェーズ2a で 3 分 → 5 分）
     """
     app = cdk.App()
     stack = ImomaruBotStack(app, "test-stack")
     template = assertions.Template.from_stack(stack)
     
     template.has_resource_properties("AWS::Lambda::Function", {
-        "Timeout": 180,  # 3分 = 180秒
+        "Timeout": 300,  # 5分 = 300秒（フェーズ2a で頭脳呼び出しを投稿ごとに行うため 3 分 → 5 分）
     })
 
 
@@ -973,3 +973,74 @@ class TestProperty1AllSchedulesHaveExecutionMode:
         assert parsed_input["execution_mode"] in ("core_time", "daily_report"), (
             f"Schedule {logical_id} has invalid execution_mode: {parsed_input['execution_mode']}"
         )
+
+
+def test_brain_runtime_created():
+    """
+    頭脳（AgentCore Runtime）が direct code deploy で作成され、Lambda が呼び出せることを確認（フェーズ2a）
+    """
+    app = cdk.App()
+    stack = ImomaruBotStack(app, "test-stack")
+    template = assertions.Template.from_stack(stack)
+
+    template.resource_count_is("AWS::BedrockAgentCore::Runtime", 1)
+    template.has_resource_properties("AWS::BedrockAgentCore::Runtime", {
+        "AgentRuntimeName": "imomaru_brain",
+        "AgentRuntimeArtifact": {
+            "CodeConfiguration": assertions.Match.object_like({
+                "Runtime": "PYTHON_3_12",
+                "EntryPoint": ["main.py"],
+                "Code": {"S3": assertions.Match.object_like({"Bucket": assertions.Match.any_value()})},
+            })
+        },
+        "NetworkConfiguration": {"NetworkMode": "PUBLIC"},
+        "ProtocolConfiguration": "HTTP",
+        "LifecycleConfiguration": {"IdleRuntimeSessionTimeout": 300, "MaxLifetime": 1800},
+        "EnvironmentVariables": {
+            "BRAIN_MODEL_ID": "moonshotai.kimi-k2.5",
+            "BEDROCK_REGION": assertions.Match.any_value(),
+        },
+    })
+
+    # 実行ロール: AgentCore が assume でき、モデル呼び出し・zip 読み取り・ログ書き込みができる
+    template.has_resource_properties("AWS::IAM::Role", {
+        "RoleName": "imomaru-brain-runtime-role",
+        "AssumeRolePolicyDocument": assertions.Match.object_like({
+            "Statement": [assertions.Match.object_like({
+                "Principal": {"Service": "bedrock-agentcore.amazonaws.com"},
+                "Condition": assertions.Match.object_like({"StringEquals": assertions.Match.any_value()}),
+            })]
+        }),
+        "Policies": [assertions.Match.object_like({
+            "PolicyDocument": assertions.Match.object_like({
+                "Statement": assertions.Match.array_with([
+                    assertions.Match.object_like({"Sid": "GetAgentAccessToken"}),
+                    assertions.Match.object_like({
+                        "Sid": "BedrockModelInvocation",
+                        "Action": ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
+                    }),
+                    assertions.Match.object_like({"Sid": "ReadDeploymentPackage"}),
+                ])
+            })
+        })],
+    })
+
+    # Lambda: Runtime ARN を環境変数で受け取り、InvokeAgentRuntime できる。timeout は 5 分
+    template.has_resource_properties("AWS::Lambda::Function", {
+        "Timeout": 300,
+        "Environment": {
+            "Variables": assertions.Match.object_like({
+                "BRAIN_RUNTIME_ARN": assertions.Match.any_value(),
+            })
+        },
+    })
+    template.has_resource_properties("AWS::IAM::Policy", {
+        "PolicyDocument": assertions.Match.object_like({
+            "Statement": assertions.Match.array_with([
+                assertions.Match.object_like({
+                    "Action": "bedrock-agentcore:InvokeAgentRuntime",
+                    "Effect": "Allow",
+                })
+            ])
+        })
+    })

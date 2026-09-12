@@ -1,85 +1,32 @@
 """
 AIGeneratorクラス
 
-Amazon Bedrockを使用してキャラクターに合った応答テキストを生成します。
+キャラクターに合った応答テキストを生成します。
+
+生成元は 2 段構え（フェーズ2a）:
+1. 頭脳（AgentCore Runtime、BrainClient 経由）— 設定されていればまずこちら
+2. Bedrock Haiku 直呼び — 頭脳が未設定、または頭脳の呼び出しに失敗したときのフォールバック
+   （失敗は logger.error で記録し、imomaru-bot-app-errors アラームを鳴らす）
 """
 import json
 import logging
-from typing import Optional
+from typing import Any, Dict, Optional
+
+from ..prompts import (  # noqa: F401  (re-export: 既存の import 経路を維持)
+    DEFAULT_RESPONSE_OSHI,
+    DEFAULT_RESPONSE_GROUP,
+    DEFAULT_RESPONSE_OSHI_RETWEET,
+    DEFAULT_RESPONSE_GROUP_RETWEET,
+    DEFAULT_REPLY_RESPONSE_TEMPLATE,
+    MAX_TEXT_LENGTH,
+    PROMPT_TEMPLATE,
+    REPLY_PROMPT_TEMPLATE,
+    EMOTION_CLASSIFICATION_PROMPT,
+    VALID_EMOTION_KEYS,
+)
+from ..utils.brain_client import BrainClient, BrainError
 
 logger = logging.getLogger(__name__)
-
-# デフォルト応答テキスト（Bedrock API失敗時のフォールバック）
-DEFAULT_RESPONSE_OSHI = "じゅりちゃんの投稿を見つけたｲﾓ🍠✨ #さつまいもの民 #びっくえんじぇる"
-DEFAULT_RESPONSE_GROUP = "グループの投稿を見つけたｲﾓ🍠✨ #さつまいもの民 #びっくえんじぇる"
-DEFAULT_RESPONSE_OSHI_RETWEET = "甘木ジュリちゃんがリポストしたｲﾓ🍠✨ #さつまいもの民 #びっくえんじぇる"
-DEFAULT_RESPONSE_GROUP_RETWEET = "びっくえんじぇるがリポストしたｲﾓ🍠✨ #さつまいもの民 #びっくえんじぇる"
-
-# 文字数制限
-MAX_TEXT_LENGTH = 140
-
-# プロンプトテンプレート
-PROMPT_TEMPLATE = """あなたは「ほくほくいも丸くん🍠」というキャラクターです。
-甘木ジュリさん(@juri_bigangel)の熱心なファンで、常に語尾に「◯◯ｲﾓ🍠」をつけて話します。
-
-以下の投稿に対して、キャラクターに合った応答を生成してください：
-
-{post_content}
-
-制約:
-- 適切な絵文字を使用すること
-- 文末に必ず「#さつまいもの民 #びっくえんじぇる」を含めること
-- ハッシュタグを含めて140文字以内に収めること
-- 語尾は必ず「◯◯ｲﾓ🍠」の形式にすること（例：「嬉しいｲﾓ🍠」「最高ｲﾓ🍠」）
-- 推しの名前は「甘木ジュリ」です。「天木」ではありません。必ず「甘木」と書いてください。
-
-応答:"""
-
-# リプライ専用プロンプトテンプレート
-REPLY_PROMPT_TEMPLATE = """あなたは「ほくほくいも丸くん🍠」というキャラクターです。
-甘木ジュリさん(@juri_bigangel)の熱心なファンで、常に語尾に「◯◯ｲﾓ🍠」をつけて話します。
-
-{username}さんから以下のリプライを受け取りました：
-
-元のツイート: {bot_tweet_text}
-リプライ: {reply_text}
-
-キャラクターに合った応答を生成してください。
-
-制約:
-- 適切な絵文字を使用すること
-- 文末に必ず「#さつまいもの民 #びっくえんじぇる」を含めること
-- ハッシュタグを含めて140文字以内に収めること
-- 語尾は必ず「◯◯ｲﾓ🍠」の形式にすること（例：「嬉しいｲﾓ🍠」「最高ｲﾓ🍠」）
-- 推しの名前は「甘木ジュリ」です。「天木」ではありません。必ず「甘木」と書いてください。
-- {username}さんに対して親しみを込めて応答すること
-
-応答:"""
-
-# リプライ用デフォルト応答テキスト（Bedrock API失敗時のフォールバック）
-DEFAULT_REPLY_RESPONSE_TEMPLATE = "@{username} ありがとうｲﾓ🍠✨ #さつまいもの民 #びっくえんじぇる"
-
-# 感情分類プロンプトテンプレート
-EMOTION_CLASSIFICATION_PROMPT = """以下の応答文の感情を分類してください。
-
-応答文: {response_text}
-
-選択肢（emotion_keyのみを1つ返してください）:
-- passion: 推しへの情熱・愛
-- cheer: 躍動的な応援・エール
-- gratitude_hug: 感謝・幸福感（抱擁）
-- reverence: 感動・尊さ（拝む）
-- excitement_move: 高揚・現場移動（チャリ）
-- support_financial: 献身・支援（スパチャ）
-- infatuation: 心酔・魅了（目がハート）
-- deeply_moved: 感銘・落涙（感動の涙）
-- kindness: 受容・穏やかな感謝（合掌）
-- joy: 歓喜・達成感（やったあ）
-- encouragement: 激励・ペンライト応援
-- meal_time: 食事・期待（いただきます）
-
-該当する感情がない場合は "none" と返してください。
-emotion_keyのみを返してください（説明不要）:"""
 
 
 class AIGenerator:
@@ -104,19 +51,22 @@ class AIGenerator:
         model_id: str = DEFAULT_MODEL_ID,
         max_tokens: int = DEFAULT_MAX_TOKENS,
         temperature: float = DEFAULT_TEMPERATURE,
+        brain_client: Optional[BrainClient] = None,
     ):
         """
         AIGeneratorを初期化
         
         Args:
-            bedrock_client: boto3 Bedrock Runtimeクライアント
-            model_id: 使用するモデルID
+            bedrock_client: boto3 Bedrock Runtimeクライアント（フォールバック用）
+            model_id: 使用するモデルID（フォールバック用）
             max_tokens: 最大トークン数
             temperature: 温度パラメータ
+            brain_client: 頭脳（AgentCore Runtime）クライアント。None なら Bedrock 直呼びのみ
         """
         self.bedrock_client = bedrock_client
         self.model_id = model_id
         self.max_tokens = max_tokens
+        self.brain_client = brain_client
         self.temperature = temperature
     
     def build_prompt(self, post_content: str) -> str:
@@ -166,6 +116,19 @@ class AIGenerator:
         
         return text
     
+    def _ask_brain(self, task: str, task_input: Dict[str, Any]) -> Optional[str]:
+        """
+        頭脳にタスクを依頼する。未設定なら None、失敗したら ERROR ログを出して None
+        （呼び出し側は None のとき Bedrock 直呼びにフォールバックする）
+        """
+        if self.brain_client is None:
+            return None
+        try:
+            return self.brain_client.invoke(task, task_input)
+        except BrainError as e:
+            logger.error(f"Brain failed for task={task}; falling back to direct Bedrock: {e}")
+            return None
+
     def generate_response(
         self,
         post_content: str,
@@ -181,6 +144,12 @@ class AIGenerator:
         Returns:
             生成された応答テキスト（140文字以内）
         """
+        brain_text = self._ask_brain("oshi_response", {"post_content": post_content, "post_type": post_type})
+        if brain_text is not None:
+            truncated_text = self.truncate_text(brain_text)
+            logger.info(f"Generated response using brain for {post_type} post: {len(truncated_text)} chars")
+            return truncated_text
+
         try:
             prompt = self.build_prompt(post_content)
             
@@ -263,38 +232,36 @@ class AIGenerator:
             感情キー（emotion_key）、分類失敗時はNone
         """
         try:
-            prompt = EMOTION_CLASSIFICATION_PROMPT.format(response_text=response_text)
-            
-            request_body = {
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 50,
-                "temperature": 0.0,  # 決定的な応答を得るため
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": prompt,
-                    }
-                ],
-            }
-            
-            response = self.bedrock_client.invoke_model(
-                modelId=self.model_id,
-                body=json.dumps(request_body),
-                contentType="application/json",
-                accept="application/json",
-            )
-            
-            response_body = json.loads(response["body"].read())
-            emotion_key = response_body["content"][0]["text"].strip().lower()
+            brain_text = self._ask_brain("classify_emotion", {"response_text": response_text})
+            if brain_text is not None:
+                emotion_key = brain_text.strip().lower()
+            else:
+                prompt = EMOTION_CLASSIFICATION_PROMPT.format(response_text=response_text)
+
+                request_body = {
+                    "anthropic_version": "bedrock-2023-05-31",
+                    "max_tokens": 50,
+                    "temperature": 0.0,  # 決定的な応答を得るため
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": prompt,
+                        }
+                    ],
+                }
+
+                response = self.bedrock_client.invoke_model(
+                    modelId=self.model_id,
+                    body=json.dumps(request_body),
+                    contentType="application/json",
+                    accept="application/json",
+                )
+
+                response_body = json.loads(response["body"].read())
+                emotion_key = response_body["content"][0]["text"].strip().lower()
             
             # 有効な感情キーかチェック
-            valid_keys = {
-                "passion", "cheer", "gratitude_hug", "reverence",
-                "excitement_move", "support_financial", "infatuation",
-                "deeply_moved", "kindness", "joy", "encouragement", "meal_time"
-            }
-            
-            if emotion_key in valid_keys:
+            if emotion_key in VALID_EMOTION_KEYS:
                 logger.info(f"Classified emotion: {emotion_key}")
                 return emotion_key
             elif emotion_key == "none":
@@ -324,6 +291,15 @@ class AIGenerator:
         Returns:
             生成された応答テキスト（140文字以内）
         """
+        brain_text = self._ask_brain(
+            "reply_response",
+            {"reply_text": reply_text, "reply_username": reply_username, "bot_tweet_text": bot_tweet_text},
+        )
+        if brain_text is not None:
+            truncated_text = self.truncate_text(brain_text)
+            logger.info(f"Generated reply response using brain: {len(truncated_text)} chars")
+            return truncated_text
+
         try:
             prompt = REPLY_PROMPT_TEMPLATE.format(
                 username=reply_username,

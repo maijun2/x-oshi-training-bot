@@ -23,8 +23,18 @@ from aws_cdk import (
     aws_logs as logs,
     aws_sns as sns,
     aws_cloudwatch_actions as cw_actions,
+    aws_s3_assets as s3_assets,
+    aws_bedrockagentcore as agentcore,
+    CfnOutput,
 )
 from constructs import Construct
+
+# 頭脳（AgentCore Runtime）の設定
+BRAIN_RUNTIME_NAME = "imomaru_brain"
+# 既定モデル。Grok 4.6 はこのアカウントでは提供制限（AccessDenied）のため Kimi K2.5（東京 In-Region）。
+# 差し替えは Runtime の環境変数 BRAIN_MODEL_ID を変えて deploy するだけ
+BRAIN_MODEL_ID = "moonshotai.kimi-k2.5"
+BRAIN_PACKAGE_PATH = "dist/brain.zip"  # scripts/build_agent_package.sh が生成
 
 
 class ImomaruBotStack(Stack):
@@ -262,6 +272,17 @@ class ImomaruBotStack(Stack):
             )
         )
 
+        # 頭脳: AgentCore Runtime（direct code deploy）
+        self.brain_runtime = self._create_brain_runtime()
+        brain_runtime_arn = self.brain_runtime.attr_agent_runtime_arn
+        self.lambda_role.add_to_policy(
+            iam.PolicyStatement(
+                effect=iam.Effect.ALLOW,
+                actions=["bedrock-agentcore:InvokeAgentRuntime"],
+                resources=[brain_runtime_arn, f"{brain_runtime_arn}/runtime-endpoint/*"],
+            )
+        )
+
         # Lambda関数: メインロジック
         self.bot_lambda = lambda_.Function(
             self,
@@ -271,7 +292,7 @@ class ImomaruBotStack(Stack):
             handler="hokuhoku_imomaru_bot.lambda_handler.lambda_handler",
             code=lambda_.Code.from_asset("lambda_package"),
             role=self.lambda_role,
-            timeout=Duration.minutes(3),  # タイムアウト3分
+            timeout=Duration.minutes(5),  # 頭脳（Runtime）呼び出しを投稿ごとに行うため 3 分 → 5 分
             memory_size=256,
             environment={
                 "STATE_TABLE_NAME": self.bot_state_table.table_name,
@@ -286,6 +307,7 @@ class ImomaruBotStack(Stack):
                 "BUFFER_RUN_CAP": "1",  # 1回の実行あたりの Buffer 予約投入件数の上限（主キャップ）
                 "BUFFER_DAILY_CAP": "7",  # 1日の上限（安全弁。スロット 8 枠/日より小さくして無料枠10件を溢れさせない）
                 "PUBLIC_ASSETS_BUCKET_NAME": self.public_assets_bucket.bucket_name,
+                "BRAIN_RUNTIME_ARN": brain_runtime_arn,  # 頭脳。空なら Bedrock 直呼びのみ
                 "OSHI_USER_ID": oshi_user_id,
                 "OSHI_USERNAME": oshi_username,
                 "GROUP_USER_ID": group_user_id,
@@ -558,3 +580,132 @@ class ImomaruBotStack(Stack):
         )
         # 2行目: DynamoDBメトリクス
         self.dashboard.add_widgets(dynamodb_consumed_widget)
+
+    def _create_brain_runtime(self) -> agentcore.CfnRuntime:
+        """
+        頭脳: AgentCore Runtime を direct code deploy（zip）で構築する
+
+        - コードは scripts/build_agent_package.sh が作る dist/brain.zip（arm64 wheel 同梱）
+        - 実行ロールは公式「direct deploy execution role」＋ モデル呼び出し ＋ zip の読み取り
+          https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-permissions.html
+        - Lambda 側は attr_agent_runtime_arn を BRAIN_RUNTIME_ARN として受け取る
+        """
+        brain_code = s3_assets.Asset(self, "BrainCode", path=BRAIN_PACKAGE_PATH)
+
+        runtime_log_group_arn = (
+            f"arn:aws:logs:{self.region}:{self.account}:log-group:/aws/bedrock-agentcore/runtimes/*"
+        )
+        brain_role = iam.Role(
+            self,
+            "BrainRuntimeRole",
+            role_name="imomaru-brain-runtime-role",
+            assumed_by=iam.ServicePrincipal(
+                "bedrock-agentcore.amazonaws.com",
+                conditions={
+                    "StringEquals": {"aws:SourceAccount": self.account},
+                    "ArnLike": {"aws:SourceArn": f"arn:aws:bedrock-agentcore:{self.region}:{self.account}:*"},
+                },
+            ),
+            description="Execution role for the imomaru brain (AgentCore Runtime)",
+            # inline にして Role リソース単体で権限が揃うようにする（Runtime 作成時の依存を単純化）
+            inline_policies={
+                "BrainRuntimePolicy": iam.PolicyDocument(
+                    statements=[
+                        iam.PolicyStatement(
+                            actions=["logs:DescribeLogStreams", "logs:CreateLogGroup"],
+                            resources=[runtime_log_group_arn],
+                        ),
+                        iam.PolicyStatement(
+                            actions=["logs:PutResourcePolicy"],
+                            resources=[
+                                f"arn:aws:logs:{self.region}:{self.account}:log-group:/aws/bedrock-agentcore/runtimes/{BRAIN_RUNTIME_NAME}-*"
+                            ],
+                        ),
+                        iam.PolicyStatement(
+                            actions=["logs:DescribeLogGroups"],
+                            resources=[f"arn:aws:logs:{self.region}:{self.account}:log-group:*"],
+                        ),
+                        iam.PolicyStatement(
+                            actions=["logs:CreateLogStream", "logs:PutLogEvents"],
+                            resources=[f"{runtime_log_group_arn}:log-stream:*"],
+                        ),
+                        iam.PolicyStatement(
+                            actions=[
+                                "xray:PutTraceSegments",
+                                "xray:PutTelemetryRecords",
+                                "xray:GetSamplingRules",
+                                "xray:GetSamplingTargets",
+                            ],
+                            resources=["*"],
+                        ),
+                        iam.PolicyStatement(
+                            actions=["cloudwatch:PutMetricData"],
+                            resources=["*"],
+                            conditions={"StringEquals": {"cloudwatch:namespace": "bedrock-agentcore"}},
+                        ),
+                        iam.PolicyStatement(
+                            sid="GetAgentAccessToken",
+                            actions=[
+                                "bedrock-agentcore:GetWorkloadAccessToken",
+                                "bedrock-agentcore:GetWorkloadAccessTokenForJWT",
+                                "bedrock-agentcore:GetWorkloadAccessTokenForUserId",
+                            ],
+                            resources=[
+                                f"arn:aws:bedrock-agentcore:{self.region}:{self.account}:workload-identity-directory/default",
+                                f"arn:aws:bedrock-agentcore:{self.region}:{self.account}:workload-identity-directory/default/workload-identity/{BRAIN_RUNTIME_NAME}-*",
+                            ],
+                        ),
+                        iam.PolicyStatement(
+                            sid="BedrockModelInvocation",
+                            actions=["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
+                            resources=[
+                                # In-Region モデル、CRIS 用の inference profile、モデルによって要求される default project
+                                "arn:aws:bedrock:*::foundation-model/*",
+                                f"arn:aws:bedrock:{self.region}:{self.account}:inference-profile/*",
+                                f"arn:aws:bedrock:{self.region}:{self.account}:project/default",
+                            ],
+                        ),
+                        iam.PolicyStatement(
+                            sid="ReadDeploymentPackage",
+                            actions=["s3:GetObject", "s3:GetObjectVersion"],
+                            resources=[f"arn:aws:s3:::{brain_code.s3_bucket_name}/{brain_code.s3_object_key}"],
+                        ),
+                    ]
+                )
+            },
+        )
+
+        runtime = agentcore.CfnRuntime(
+            self,
+            "BrainRuntime",
+            agent_runtime_name=BRAIN_RUNTIME_NAME,
+            description="Imomaru brain: Strands agent generating responses (phase 2a)",
+            role_arn=brain_role.role_arn,
+            agent_runtime_artifact=agentcore.CfnRuntime.AgentRuntimeArtifactProperty(
+                code_configuration=agentcore.CfnRuntime.CodeConfigurationProperty(
+                    code=agentcore.CfnRuntime.CodeProperty(
+                        s3=agentcore.CfnRuntime.S3LocationProperty(
+                            bucket=brain_code.s3_bucket_name,
+                            prefix=brain_code.s3_object_key,
+                        )
+                    ),
+                    runtime="PYTHON_3_12",
+                    entry_point=["main.py"],
+                )
+            ),
+            network_configuration=agentcore.CfnRuntime.NetworkConfigurationProperty(network_mode="PUBLIC"),
+            protocol_configuration="HTTP",
+            lifecycle_configuration=agentcore.CfnRuntime.LifecycleConfigurationProperty(
+                idle_runtime_session_timeout=300,  # Lambda 1 回分の複数タスクをウォームで捌ければ十分
+                max_lifetime=1800,
+            ),
+            environment_variables={
+                "BRAIN_MODEL_ID": BRAIN_MODEL_ID,
+                "BEDROCK_REGION": self.region,
+            },
+        )
+        runtime.node.add_dependency(brain_role)
+
+        CfnOutput(self, "BrainRuntimeArn", value=runtime.attr_agent_runtime_arn)
+        return runtime
+
