@@ -7,7 +7,9 @@ Memory 側の戦略が非同期に行うので、ここでは短期記憶への�
 
 - actorId  = 推しの X ユーザー名（推し 1 本の namespace）
 - sessionId = 推しの 1 日（JST）。Episodic 戦略は 1 セッションを 1 エピソードとして抽出する
-- role     = USER。Semantic / User Preference 戦略は USER ロールの発言から「本人の事実・好み」を抽出する
+- role     = USER。Semantic / User Preference 戦略は USER ロールの「発言者本人」の事実・好みを抽出するので、
+  本文の見出しは「推しの投稿」ではなく「@推し 本人の投稿」と書く（「推し」と書くと発言者＝ファンと解釈され、
+  ファンの好みとして抽出されてしまう。2026-09-13 実機で確認）
 - clientToken = tweet_id。再実行時の二重書き込みを防ぐ（冪等ロックの外側の保険）
 
 失敗時は例外を投げる。握りつぶし（ERROR ログ）は呼び出し側（lambda_handler）の責務。
@@ -30,6 +32,7 @@ DEFAULT_READ_TIMEOUT = 30
 SESSION_ID_PREFIX = "oshi-"
 CLIENT_TOKEN_PREFIX = "oshi-"
 EVENT_ROLE = "USER"
+OSHI_DISPLAY_NAME = "甘木ジュリ"  # prompts.py のキャラクター定義と同じ表記
 
 
 def parse_created_at(created_at: Optional[str]) -> Optional[datetime]:
@@ -50,14 +53,19 @@ def session_id_for(posted_at: datetime) -> str:
     return f"{SESSION_ID_PREFIX}{posted_at.astimezone(JST).strftime('%Y-%m-%d')}"
 
 
-def build_event_text(tweet: Tweet, username: str, posted_at: datetime) -> str:
+def build_event_text(
+    tweet: Tweet,
+    username: str,
+    posted_at: datetime,
+    display_name: str = OSHI_DISPLAY_NAME,
+) -> str:
     """
-    記憶に残す本文。日付を頭に付けて「9/13 にライブ」のような事実が日付付きで抽出されるようにする。
-    引用ポストは本文に推しのコメントしか無いので、その旨を見出しに書く
+    記憶に残す本文。発言者＝推し本人と読める見出しにし、日付を付けて「9/13 にライブ」のような事実が
+    日付付きで抽出されるようにする。引用ポストは本文に推しのコメントしか無いので、その旨を見出しに書く
     """
-    kind = "の引用ポストへのコメント" if tweet.is_quote_tweet else "の投稿"
+    kind = "本人の引用ポストへのコメント" if tweet.is_quote_tweet else "本人の投稿"
     stamp = posted_at.astimezone(JST).strftime("%Y-%m-%d %H:%M JST")
-    return f"[推し @{username} {kind} {stamp}]\n{tweet.text}"
+    return f"[@{username}（{display_name}）{kind} {stamp}]\n{tweet.text}"
 
 
 class OshiMemoryWriter:

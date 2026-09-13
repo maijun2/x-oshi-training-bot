@@ -40,12 +40,17 @@ class TestHelpers:
     def test_event_text_for_original_post(self):
         posted_at = datetime(2026, 9, 12, 16, 20, tzinfo=timezone.utc)
         text = build_event_text(_tweet(), "juri_bigangel", posted_at)
-        assert text == "[推し @juri_bigangel の投稿 2026-09-13 01:20 JST]\nおやすみ〜！明日はライブ！"
+        assert text == "[@juri_bigangel（甘木ジュリ）本人の投稿 2026-09-13 01:20 JST]\nおやすみ〜！明日はライブ！"
+
+    def test_event_text_does_not_frame_speaker_as_fan(self):
+        """「推し」と書くと抽出器が発言者＝ファンと解釈するので、見出しに「推し」を使わない"""
+        posted_at = datetime(2026, 9, 13, 3, 0, tzinfo=timezone.utc)
+        assert "推し" not in build_event_text(_tweet(), "juri_bigangel", posted_at).split("\n")[0]
 
     def test_event_text_for_quote_post(self):
         posted_at = datetime(2026, 9, 13, 3, 0, tzinfo=timezone.utc)
         text = build_event_text(_tweet(is_quote_tweet=True, text="これ最高"), "juri_bigangel", posted_at)
-        assert text.startswith("[推し @juri_bigangel の引用ポストへのコメント 2026-09-13 12:00 JST]\n")
+        assert text.startswith("[@juri_bigangel（甘木ジュリ）本人の引用ポストへのコメント 2026-09-13 12:00 JST]\n")
         assert text.endswith("これ最高")
 
 
@@ -91,7 +96,7 @@ class TestOshiMemoryWriter:
 
         kwargs = client.create_event.call_args.kwargs
         assert kwargs["metadata"]["kind"] == {"stringValue": "quote"}
-        assert "引用ポストへのコメント" in kwargs["payload"][0]["conversational"]["content"]["text"]
+        assert "本人の引用ポストへのコメント" in kwargs["payload"][0]["conversational"]["content"]["text"]
 
     def test_record_post_falls_back_to_now_when_created_at_missing(self):
         client = MagicMock()
