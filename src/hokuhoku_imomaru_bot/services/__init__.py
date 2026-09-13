@@ -14,6 +14,7 @@ from .allowed_users_service import AllowedUsersService
 from .reply_processor import ReplyProcessor
 from .draft_notifier import DraftNotifier
 from .buffer_scheduler import BufferScheduler, ScheduledPost
+from .oshi_memory_writer import OshiMemoryWriter
 
 __all__ = [
     "StateStore",
@@ -43,4 +44,5 @@ __all__ = [
     "DraftNotifier",
     "BufferScheduler",
     "ScheduledPost",
+    "OshiMemoryWriter",
 ]

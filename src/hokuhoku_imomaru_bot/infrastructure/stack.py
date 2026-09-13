@@ -36,6 +36,15 @@ BRAIN_RUNTIME_NAME = "imomaru_brain"
 BRAIN_MODEL_ID = "moonshotai.kimi-k2.5"
 BRAIN_PACKAGE_PATH = "dist/brain.zip"  # scripts/build_agent_package.sh が生成
 
+# 推しの記憶（AgentCore Memory、フェーズ3a）。namespace は推し 1 本（actorId = 推しの X ユーザー名）
+OSHI_MEMORY_NAME = "imomaru_oshi_memory"
+OSHI_MEMORY_EVENT_EXPIRY_DAYS = 365  # 生イベント = 推しの投稿本文の唯一のアーカイブなので最大
+OSHI_MEMORY_NAMESPACES = {
+    "facts": "/oshi/{actorId}/facts/",  # Semantic: プロフィール・予定などの事実
+    "preferences": "/oshi/{actorId}/preferences/",  # User Preference: 好み・口調の傾向
+    "episodes": "/oshi/{actorId}/episodes/",  # Episodic: 1 日 1 セッションのエピソードと actor 横断の reflection
+}
+
 
 class ImomaruBotStack(Stack):
     """
@@ -283,6 +292,16 @@ class ImomaruBotStack(Stack):
             )
         )
 
+        # 推しの記憶: AgentCore Memory（書き込みは Lambda 直、読み出しは頭脳が 3a-read で行う）
+        self.oshi_memory = self._create_oshi_memory()
+        self.lambda_role.add_to_policy(
+            iam.PolicyStatement(
+                effect=iam.Effect.ALLOW,
+                actions=["bedrock-agentcore:CreateEvent"],
+                resources=[self.oshi_memory.attr_memory_arn],
+            )
+        )
+
         # Lambda関数: メインロジック
         self.bot_lambda = lambda_.Function(
             self,
@@ -308,6 +327,7 @@ class ImomaruBotStack(Stack):
                 "BUFFER_DAILY_CAP": "7",  # 1日の上限（安全弁。スロット 8 枠/日より小さくして無料枠10件を溢れさせない）
                 "PUBLIC_ASSETS_BUCKET_NAME": self.public_assets_bucket.bucket_name,
                 "BRAIN_RUNTIME_ARN": brain_runtime_arn,  # 頭脳。空なら Bedrock 直呼びのみ
+                "OSHI_MEMORY_ID": self.oshi_memory.attr_memory_id,  # 推しの記憶。空なら書き込みなし
                 "OSHI_USER_ID": oshi_user_id,
                 "OSHI_USERNAME": oshi_username,
                 "GROUP_USER_ID": group_user_id,
@@ -580,6 +600,52 @@ class ImomaruBotStack(Stack):
         )
         # 2行目: DynamoDBメトリクス
         self.dashboard.add_widgets(dynamodb_consumed_widget)
+
+    def _create_oshi_memory(self) -> agentcore.CfnMemory:
+        """
+        推しの記憶（AgentCore Memory）を作る（設計書 §8 / §10-11）
+
+        - 戦略は Semantic（事実）＋ User Preference（好み）＋ Episodic（1 日 1 セッションのエピソード）。
+          後から戦略を足しても追加前のイベントは処理されないため、最初から 3 つ入れる
+        - ビルトイン戦略のみなので実行ロールは不要
+        - 記憶は消さない（RemovalPolicy.RETAIN）
+        """
+        memory = agentcore.CfnMemory(
+            self,
+            "OshiMemory",
+            name=OSHI_MEMORY_NAME,
+            description="Imomaru's memory of the oshi (@juri_bigangel): facts, preferences, episodes",
+            event_expiry_duration=OSHI_MEMORY_EVENT_EXPIRY_DAYS,
+            memory_strategies=[
+                agentcore.CfnMemory.MemoryStrategyProperty(
+                    semantic_memory_strategy=agentcore.CfnMemory.SemanticMemoryStrategyProperty(
+                        name="oshi_facts",
+                        description="Facts about the oshi: profile, schedule, activities",
+                        namespaces=[OSHI_MEMORY_NAMESPACES["facts"]],
+                    )
+                ),
+                agentcore.CfnMemory.MemoryStrategyProperty(
+                    user_preference_memory_strategy=agentcore.CfnMemory.UserPreferenceMemoryStrategyProperty(
+                        name="oshi_preferences",
+                        description="The oshi's preferences, tone, and how she talks to fans",
+                        namespaces=[OSHI_MEMORY_NAMESPACES["preferences"]],
+                    )
+                ),
+                agentcore.CfnMemory.MemoryStrategyProperty(
+                    episodic_memory_strategy=agentcore.CfnMemory.EpisodicMemoryStrategyProperty(
+                        name="oshi_episodes",
+                        description="Memorable days of the oshi (one session per day) and reflections across days",
+                        namespaces=[OSHI_MEMORY_NAMESPACES["episodes"]],
+                        reflection_configuration=agentcore.CfnMemory.EpisodicReflectionConfigurationInputProperty(
+                            namespaces=[OSHI_MEMORY_NAMESPACES["episodes"]],
+                        ),
+                    )
+                ),
+            ],
+        )
+        memory.apply_removal_policy(RemovalPolicy.RETAIN)
+        CfnOutput(self, "OshiMemoryId", value=memory.attr_memory_id)
+        return memory
 
     def _create_brain_runtime(self) -> agentcore.CfnRuntime:
         """
