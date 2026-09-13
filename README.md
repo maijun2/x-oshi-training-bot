@@ -9,6 +9,7 @@ X（旧Twitter）育成ボット - AWSサーバーレスアーキテクチャ
 - 🔍 **タイムライン監視**: コアタイム3回（10:00/13:00/18:00 JST ±ゆらぎ）で推し投稿を監視、日報時（23:58 JST）に全処理実行
 - 🤖 **AI応答生成**: AgentCore Runtime「頭脳」（Strands ＋ Bedrock Kimi K2.5）でキャラクターに合った応答を生成。頭脳が落ちたら Bedrock Claude Haiku 4.5 直呼びにフォールバック
 - 📮 **推し投稿への反応（半人力）**: AI応答をSESメールで素案通知しつつ、Buffer のキューに予約投入。Buffer のスロット時刻に自動投稿され、NG なら人間が Buffer から削除（X API 課金 $0）
+- 🧠 **推しの記憶（書き込み）**: 検知した推しのオリジナル投稿（引用ポスト含む。RT・リプライ除外）を Amazon Bedrock AgentCore Memory `imomaru_oshi_memory` に Lambda から直接書き込む。事実・好み・エピソードへの長期記憶抽出は Memory 側が非同期に行う（頭脳からの読み出しは次フェーズ）
 - 🎨 **感情別画像添付**: Buffer 予約投入時、AI応答の感情を分類してLINEスタンプ画像を添付（1日1回限定）
 - ⭐ **XP獲得**: 活動に応じてXPを獲得（推し投稿: 5.0 XP、グループ投稿: 2.0 XP、いいね: 0.1 XP、リポスト: 0.5 XP）
 - 📈 **レベルアップ**: DQ3勇者の経験値テーブルに基づいてレベルアップ
@@ -28,6 +29,8 @@ EventBridge Scheduler → Lambda → X API (日報・レベルアップ・リプ
                           ↓
                     AgentCore Runtime「頭脳」(Strands + Bedrock Kimi K2.5: 応答生成・感情分類)
                           └→ 失敗時は Lambda が Bedrock Haiku を直接呼ぶ（フォールバック）
+                          ↓
+                    AgentCore Memory「推しの記憶」(推し投稿を Lambda 直で書き込み。Semantic/UserPreference/Episodic で抽出)
                           ↓
                     S3 (画像アセット)
                           ↓
@@ -64,6 +67,7 @@ EventBridge Scheduler → Lambda → X API (日報・レベルアップ・リプ
 |------|-------------|
 | Lambda | `/aws/lambda/imomaru-bot-handler` |
 | 頭脳（AgentCore Runtime） | `/aws/bedrock-agentcore/runtimes/imomaru_brain-<id>-DEFAULT`（`brain task=… model=…` の 1 行と例外のスタックトレース） |
+| 推しの記憶（AgentCore Memory） | Lambda のログに `Oshi memory event recorded: <tweet_id>`。失敗は `[ERROR] … oshi_memory_write`（アラーム対象） |
 
 ```bash
 # 直近の実行で頭脳が使われたか（推し投稿が 0 件の回は頭脳を呼ばない）
@@ -220,6 +224,33 @@ aws ce get-cost-and-usage --region us-east-1 \
   --filter '{"Dimensions":{"Key":"SERVICE","Values":["Amazon Bedrock"]}}' \
   --group-by Type=DIMENSION,Key=USAGE_TYPE
 # Kimi の USAGE_TYPE が計上されていることを確認し、月次請求書の Credit 行で相殺を確認する
+```
+
+### 5. 推しの記憶（AgentCore Memory）
+
+検知した推しの投稿を Amazon Bedrock AgentCore Memory `imomaru_oshi_memory` に書き込みます（フェーズ3a-write、2026-09-13）。
+いも丸が「推しのことを覚える」ための記憶で、いも丸自身の人格（システムプロンプト）とは分離しています。
+
+| 項目 | 内容 |
+|------|------|
+| リソース | CDK `CfnMemory`（`stack.py` の `_create_oshi_memory`）。削除時は保持（RETAIN）。イベント保持 365 日 |
+| 戦略 | Semantic `/oshi/{actorId}/facts/`（事実）／ User Preference `/oshi/{actorId}/preferences/`（好み・口調）／ Episodic `/oshi/{actorId}/episodes/`（1 日 1 セッションのエピソード＋reflection） |
+| 書き込み | `services/oshi_memory_writer.py`。actorId = 推しの X ユーザー名、sessionId = `oshi-YYYY-MM-DD`（JST）、role = USER、`clientToken` = tweet_id（冪等）。対象は `filter_original_posts` 後の推し投稿（引用ポスト含む） |
+| 失敗時 | `[ERROR]` ログ（`imomaru-bot-app-errors` で検知）を出して握りつぶし、XP・Buffer・日報は続行。`OSHI_MEMORY_ID` が空なら書き込みなし |
+
+```bash
+MEM=$(aws cloudformation describe-stacks --stack-name ImomaruBotStack \
+  --query "Stacks[0].Outputs[?OutputKey=='OshiMemoryId'].OutputValue" --output text)
+
+# 今日書き込まれた推しの投稿（短期記憶）
+aws bedrock-agentcore list-events --memory-id "$MEM" --actor-id juri_bigangel \
+  --session-id "oshi-$(TZ=Asia/Tokyo date +%F)" --query 'events[].payload[0].conversational.content.text' --output text
+
+# 抽出された長期記憶（事実／好み／エピソード）
+for ns in facts preferences episodes; do
+  aws bedrock-agentcore list-memory-records --memory-id "$MEM" --namespace "/oshi/juri_bigangel/$ns/" \
+    --query 'memoryRecordSummaries[].content.text' --output text
+done
 ```
 
 ## デプロイ後の設定

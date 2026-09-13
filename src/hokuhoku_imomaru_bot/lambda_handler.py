@@ -28,6 +28,7 @@ from .services import (
     ReplyProcessor,
     DraftNotifier,
     BufferScheduler,
+    OshiMemoryWriter,
 )
 from .services.daily_reporter import JST
 from .utils import (
@@ -61,6 +62,7 @@ BUFFER_SECRET_NAME = os.environ.get("BUFFER_SECRET_NAME", "imomaru-bot/buffer-ap
 BUFFER_DAILY_CAP = int(os.environ.get("BUFFER_DAILY_CAP", "7"))  # 1日の上限（安全弁）
 BUFFER_RUN_CAP = int(os.environ.get("BUFFER_RUN_CAP", "1"))  # 1回の実行あたりの上限（主キャップ）
 BRAIN_RUNTIME_ARN = os.environ.get("BRAIN_RUNTIME_ARN", "")  # 頭脳（AgentCore Runtime）。空なら Bedrock 直呼びのみ
+OSHI_MEMORY_ID = os.environ.get("OSHI_MEMORY_ID", "")  # 推しの記憶（AgentCore Memory）。空なら書き込みなし
 # 感情画像の公開バケット（Buffer が投稿公開時に取りに来る）
 PUBLIC_ASSETS_BUCKET_NAME = os.environ.get("PUBLIC_ASSETS_BUCKET_NAME", "imomaru-bot-public-assets")
 PUBLIC_ASSETS_BASE_URL = (
@@ -168,6 +170,13 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             daily_cap=BUFFER_DAILY_CAP,
             run_cap=BUFFER_RUN_CAP,
         )
+
+        # 推しの記憶（AgentCore Memory）。推しの投稿を Lambda から直接書き込む（フェーズ3a-write）
+        oshi_memory_writer = (
+            OshiMemoryWriter(memory_id=OSHI_MEMORY_ID, actor_id=OSHI_USERNAME)
+            if OSHI_MEMORY_ID and OSHI_USERNAME
+            else None
+        )
         
         # 状態の読み込み
         state = state_store.load_state()
@@ -193,6 +202,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             x_api_client=x_api_client,
             draft_notifier=draft_notifier,
             buffer_scheduler=buffer_scheduler,
+            oshi_memory_writer=oshi_memory_writer,
             s3_client=s3_client,
             bucket_name=ASSETS_BUCKET_NAME,
             execution_mode=execution_mode,
@@ -234,6 +244,7 @@ def _process_bot_logic(
     x_api_client: XAPIClient,
     draft_notifier: DraftNotifier = None,
     buffer_scheduler: BufferScheduler = None,
+    oshi_memory_writer: OshiMemoryWriter = None,
     s3_client = None,
     bucket_name: str = None,
     execution_mode: str = "daily_report",
@@ -255,6 +266,7 @@ def _process_bot_logic(
         profile_updater: ProfileUpdaterインスタンス
         daily_reporter: DailyReporterインスタンス
         x_api_client: XAPIClientインスタンス
+        oshi_memory_writer: OshiMemoryWriterインスタンス（None なら推しの記憶を書き込まない）
         s3_client: boto3 S3クライアント（感情画像取得用）
         bucket_name: S3バケット名
     
@@ -273,6 +285,7 @@ def _process_bot_logic(
         "new_likes": 0,
         "new_retweets": 0,
         "replies_processed": 0,
+        "memory_events_recorded": 0,
     }
     
     is_core_time = (execution_mode == "core_time")
@@ -346,6 +359,10 @@ def _process_bot_logic(
         state.daily_oshi_count += 1
         result["oshi_posts_detected"] += 1
         result["xp_gained"] += xp
+
+        # 推しの記憶に書き込む（引用ポストも推し自身の言葉なので対象。失敗しても他機能を巻き込まない）
+        if oshi_memory_writer is not None and _record_oshi_memory_safe(oshi_memory_writer, tweet):
+            result["memory_events_recorded"] += 1
         
         # 推し自身の引用ポストは本文に推しのコメントしか含まれず、引用元の文脈を AI が読めないため
         # 応答がズレる。XP は加算したうえで AI 生成・メール・Buffer 投入はスキップする（2026-09-12 決定）
@@ -579,6 +596,29 @@ def _process_bot_logic(
     state_store.save_state(state)
     
     return result
+
+
+def _record_oshi_memory_safe(oshi_memory_writer: OshiMemoryWriter, tweet: Tweet) -> bool:
+    """
+    推しの投稿を AgentCore Memory に書き込む（フェーズ3a-write）
+
+    失敗は握りつぶすが、記憶が育っていないことに気づけるよう ERROR ログ（アラーム対象）を出す。
+
+    Returns:
+        書き込み成功の可否
+    """
+    try:
+        event_id = oshi_memory_writer.record_post(tweet)
+        log_event(
+            level=LogLevel.INFO,
+            event_type=EventType.POST_DETECTED,
+            data={"tweet_id": tweet.id, "memory_event_id": event_id},
+            message=f"Oshi memory event recorded: {tweet.id}",
+        )
+        return True
+    except Exception as e:
+        handle_api_error(e, "oshi_memory_write")
+        return False
 
 
 def _check_timeline_safe(

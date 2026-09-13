@@ -1044,3 +1044,51 @@ def test_brain_runtime_created():
             ])
         })
     })
+
+
+def test_oshi_memory_created():
+    """
+    フェーズ3a-write: 推しの記憶（AgentCore Memory）が作成され、Lambda から書き込めることを確認
+
+    検証項目:
+    - Memory が 1 つ、戦略は Semantic / User Preference / Episodic の 3 つ、削除時は保持
+    - Lambda 環境変数 OSHI_MEMORY_ID が設定される
+    - Lambda ロールに bedrock-agentcore:CreateEvent が付与される
+    """
+    app = cdk.App()
+    stack = ImomaruBotStack(app, "test-stack")
+    template = assertions.Template.from_stack(stack)
+
+    template.resource_count_is("AWS::BedrockAgentCore::Memory", 1)
+    template.has_resource("AWS::BedrockAgentCore::Memory", {
+        "Properties": {
+            "Name": "imomaru_oshi_memory",
+            "EventExpiryDuration": 365,
+            "MemoryStrategies": [
+                {"SemanticMemoryStrategy": assertions.Match.object_like({"Namespaces": ["/oshi/{actorId}/facts/"]})},
+                {"UserPreferenceMemoryStrategy": assertions.Match.object_like({"Namespaces": ["/oshi/{actorId}/preferences/"]})},
+                {"EpisodicMemoryStrategy": assertions.Match.object_like({
+                    "Namespaces": ["/oshi/{actorId}/episodes/"],
+                    "ReflectionConfiguration": {"Namespaces": ["/oshi/{actorId}/episodes/"]},
+                })},
+            ],
+        },
+        "DeletionPolicy": "Retain",
+    })
+    template.has_resource_properties("AWS::Lambda::Function", {
+        "Environment": {
+            "Variables": assertions.Match.object_like({
+                "OSHI_MEMORY_ID": assertions.Match.any_value(),
+            })
+        }
+    })
+    template.has_resource_properties("AWS::IAM::Policy", {
+        "PolicyDocument": {
+            "Statement": assertions.Match.array_with([
+                assertions.Match.object_like({
+                    "Action": "bedrock-agentcore:CreateEvent",
+                    "Effect": "Allow",
+                })
+            ])
+        }
+    })

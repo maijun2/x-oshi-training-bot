@@ -2250,3 +2250,100 @@ class TestReplyProcessingIntegration:
 
         assert result["xp_gained"] == 0.0
         assert mocks["state"].cumulative_xp == 0.0
+
+
+class TestOshiMemoryWrite:
+    """推しの投稿を AgentCore Memory に書き込むパス（フェーズ3a-write）"""
+
+    def _make_mocks(self, tweets):
+        state = BotState()
+        state_store = MagicMock(spec=StateStore)
+        state_store.reset_daily_counts.return_value = state
+
+        timeline_monitor = MagicMock(spec=TimelineMonitor)
+        timeline_monitor.check_oshi_timeline.return_value = tweets
+        timeline_monitor.check_group_timeline.return_value = []
+        timeline_monitor.filter_original_posts.side_effect = lambda ts: ts
+        timeline_monitor.filter_retweets.return_value = []
+
+        level_manager = MagicMock(spec=LevelManager)
+        level_manager.check_level_up.return_value = (False, 1)
+        ai_generator = MagicMock(spec=AIGenerator)
+        ai_generator.generate_response.return_value = "応答テキスト"
+        daily_reporter = MagicMock(spec=DailyReporter)
+        daily_reporter.should_post_daily_report.return_value = False
+        reply_monitor, allowed_users_service, reply_processor = _make_reply_mocks()
+
+        return dict(
+            state=state,
+            state_store=state_store,
+            timeline_monitor=timeline_monitor,
+            reply_monitor=reply_monitor,
+            allowed_users_service=allowed_users_service,
+            reply_processor=reply_processor,
+            xp_calculator=XPCalculator(),
+            level_manager=level_manager,
+            ai_generator=ai_generator,
+            image_compositor=MagicMock(spec=ImageCompositor),
+            profile_updater=MagicMock(spec=ProfileUpdater),
+            daily_reporter=daily_reporter,
+            x_api_client=MagicMock(),
+            draft_notifier=_make_draft_notifier_mock(),
+        )
+
+    def _writer(self):
+        from src.hokuhoku_imomaru_bot.services import OshiMemoryWriter
+
+        writer = MagicMock(spec=OshiMemoryWriter)
+        writer.record_post.return_value = "evt-1"
+        return writer
+
+    def test_records_original_and_quote_posts(self):
+        """純オリジナルも引用ポストも記憶に書く（引用ポストは Buffer 投入はスキップ）"""
+        original = Tweet(id="1", text="今日はライブ", author_id="oshi", created_at="2026-09-13T03:00:00.000Z")
+        quote = Tweet(id="2", text="これ最高", author_id="oshi", is_quote_tweet=True)
+        mocks = self._make_mocks([original, quote])
+        writer = self._writer()
+
+        result = _process_bot_logic(oshi_memory_writer=writer, **mocks)
+
+        assert result["memory_events_recorded"] == 2
+        assert [c.args[0].id for c in writer.record_post.call_args_list] == ["1", "2"]
+        assert result["quotes_posted"] == 1  # 引用ポストは Buffer/メールなし
+
+    def test_skips_when_writer_is_none(self):
+        mocks = self._make_mocks([Tweet(id="1", text="今日はライブ", author_id="oshi")])
+
+        result = _process_bot_logic(oshi_memory_writer=None, **mocks)
+
+        assert result["memory_events_recorded"] == 0
+        assert result["oshi_posts_detected"] == 1
+
+    def test_write_failure_does_not_break_other_processing(self):
+        """書き込み失敗は ERROR ログを出して握りつぶし、XP・引用ポスト処理は続く"""
+        mocks = self._make_mocks([Tweet(id="1", text="今日はライブ", author_id="oshi")])
+        writer = self._writer()
+        writer.record_post.side_effect = RuntimeError("memory down")
+
+        with patch("src.hokuhoku_imomaru_bot.lambda_handler.handle_api_error") as mock_error:
+            result = _process_bot_logic(oshi_memory_writer=writer, **mocks)
+
+        assert result["memory_events_recorded"] == 0
+        assert result["oshi_posts_detected"] == 1
+        assert result["quotes_posted"] == 1
+        assert mocks["state"].cumulative_xp == 5.0
+        mock_error.assert_called_once()
+        assert mock_error.call_args.args[1] == "oshi_memory_write"
+
+    def test_already_processed_posts_are_not_recorded(self):
+        """冪等ロックで弾かれた投稿は記憶にも書かない"""
+        from src.hokuhoku_imomaru_bot.services import TweetAlreadyProcessedError
+
+        mocks = self._make_mocks([Tweet(id="1", text="今日はライブ", author_id="oshi")])
+        mocks["state_store"].acquire_tweet_lock.side_effect = TweetAlreadyProcessedError("1")
+        writer = self._writer()
+
+        result = _process_bot_logic(oshi_memory_writer=writer, **mocks)
+
+        assert result["memory_events_recorded"] == 0
+        writer.record_post.assert_not_called()
