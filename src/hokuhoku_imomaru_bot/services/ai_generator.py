@@ -10,6 +10,7 @@ AIGeneratorクラス
 """
 import json
 import logging
+import re
 from typing import Any, Dict, Optional
 
 from ..prompts import (  # noqa: F401  (re-export: 既存の import 経路を維持)
@@ -18,6 +19,7 @@ from ..prompts import (  # noqa: F401  (re-export: 既存の import 経路を維
     DEFAULT_RESPONSE_OSHI_RETWEET,
     DEFAULT_RESPONSE_GROUP_RETWEET,
     DEFAULT_REPLY_RESPONSE_TEMPLATE,
+    HASHTAGS,
     MAX_TEXT_LENGTH,
     PROMPT_TEMPLATE,
     REPLY_PROMPT_TEMPLATE,
@@ -27,6 +29,26 @@ from ..prompts import (  # noqa: F401  (re-export: 既存の import 経路を維
 from ..utils.brain_client import BrainClient, BrainError
 
 logger = logging.getLogger(__name__)
+
+# 文末「ｲﾓ🍠」＋後続の絵文字・記号のあとに次の文が続いていれば、その境界（ハッシュタグ・空白は除く）
+# 絵文字・記号は possessive（*+、Python 3.11+）で全部食わせ、末尾の絵文字の手前で切らないようにする。
+# 開き括弧類は次の文の先頭なので記号に含めない
+_SENTENCE_BOUNDARY = re.compile(r"(ｲﾓ🍠[^\w\s#「『（(【\[〈《“‘]*+)[ \t]*(?=[^\s#])")
+
+
+def format_post_text(text: str) -> str:
+    """
+    投稿本文を「1 文 1 行 ＋ 空行 ＋ ハッシュタグ（最終行）」の形に整える
+
+    モデルが改行を出さずに 1 行で返してきた場合の保険。プロンプトの指示どおり改行済みなら
+    文の分割はせず、ハッシュタグの位置だけ正規化する。冪等。
+    """
+    body = text.replace(HASHTAGS, "").strip()
+    if "\n" not in body:
+        body = _SENTENCE_BOUNDARY.sub(r"\1\n", body)
+    body = re.sub(r"[ \t]+\n", "\n", body)
+    body = re.sub(r"\n{3,}", "\n\n", body)
+    return f"{body}\n\n{HASHTAGS}" if body else HASHTAGS
 
 
 class AIGenerator:
@@ -96,26 +118,30 @@ class AIGenerator:
             return text
         
         # ハッシュタグを保持するために、ハッシュタグ部分を抽出
-        hashtags = "#さつまいもの民 #びっくえんじぇる"
+        hashtags = HASHTAGS
         hashtag_len = len(hashtags)
         
-        # ハッシュタグを除いた最大長
-        content_max_len = max_length - hashtag_len - 1  # スペース分
+        # ハッシュタグを除いた最大長（本文とハッシュタグの間の空行 "\n\n" 分を引く）
+        content_max_len = max_length - hashtag_len - 2
         
         # テキストからハッシュタグを除去
         text_without_hashtags = text.replace(hashtags, "").strip()
         
         if len(text_without_hashtags) > content_max_len:
-            # 切り詰めて「...」を追加
-            truncated = text_without_hashtags[:content_max_len - 3] + "..."
-            return f"{truncated} {hashtags}"
+            # 切り詰めて「...」を追加（切れ目が改行で終わらないように詰める）
+            truncated = text_without_hashtags[:content_max_len - 3].rstrip() + "..."
+            return f"{truncated}\n\n{hashtags}"
         
         # ハッシュタグがない場合でも、本文が短ければハッシュタグを追加
         if hashtags not in text:
-            return f"{text_without_hashtags} {hashtags}"
+            return f"{text_without_hashtags}\n\n{hashtags}"
         
         return text
     
+    def _finalize_post_text(self, text: str) -> str:
+        """改行・ハッシュタグ位置を整えてから 140 字（改行込み）に収める"""
+        return self.truncate_text(format_post_text(text))
+
     def _ask_brain(self, task: str, task_input: Dict[str, Any]) -> Optional[str]:
         """
         頭脳にタスクを依頼する。未設定なら None、失敗したら ERROR ログを出して None
@@ -146,9 +172,9 @@ class AIGenerator:
         """
         brain_text = self._ask_brain("oshi_response", {"post_content": post_content, "post_type": post_type})
         if brain_text is not None:
-            truncated_text = self.truncate_text(brain_text)
-            logger.info(f"Generated response using brain for {post_type} post: {len(truncated_text)} chars")
-            return truncated_text
+            formatted_text = self._finalize_post_text(brain_text)
+            logger.info(f"Generated response using brain for {post_type} post: {len(formatted_text)} chars")
+            return formatted_text
 
         try:
             prompt = self.build_prompt(post_content)
@@ -178,16 +204,15 @@ class AIGenerator:
             response_body = json.loads(response["body"].read())
             generated_text = response_body["content"][0]["text"].strip()
             
-            # 140文字以内に切り詰め
-            truncated_text = self.truncate_text(generated_text)
+            formatted_text = self._finalize_post_text(generated_text)
             
-            logger.info(f"Generated response using model={self.model_id} for {post_type} post: {len(truncated_text)} chars")
-            return truncated_text
+            logger.info(f"Generated response using model={self.model_id} for {post_type} post: {len(formatted_text)} chars")
+            return formatted_text
             
         except Exception as e:
             logger.error(f"Failed to generate response: {e}")
             # フォールバック応答を返す
-            return self._get_fallback_response(post_type)
+            return format_post_text(self._get_fallback_response(post_type))
     
     def _get_fallback_response(self, post_type: str) -> str:
         """

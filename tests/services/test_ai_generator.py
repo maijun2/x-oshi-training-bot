@@ -17,7 +17,67 @@ from src.hokuhoku_imomaru_bot.services.ai_generator import (
     DEFAULT_RESPONSE_OSHI,
     DEFAULT_RESPONSE_GROUP,
     DEFAULT_REPLY_RESPONSE_TEMPLATE,
+    HASHTAGS,
+    format_post_text,
 )
+
+
+class TestFormatPostText:
+    """format_post_text: 本文を 1 文 1 行にし、ハッシュタグを空行の後の最終行に置く"""
+
+    def test_single_line_with_spaces_is_split_per_sentence(self):
+        # 2026-09-15 に Buffer へ実際に送られた 1 行の本文
+        text = "ジュリさん朝から大変ｲﾓ🍠💦 でもその可愛い天然さが推しポイントｲﾓ🍠✨ 今日も頑張ってねｲﾓ🍠🍠 #さつまいもの民 #びっくえんじぇる"
+
+        assert format_post_text(text) == (
+            "ジュリさん朝から大変ｲﾓ🍠💦\n"
+            "でもその可愛い天然さが推しポイントｲﾓ🍠✨\n"
+            "今日も頑張ってねｲﾓ🍠🍠\n"
+            "\n"
+            "#さつまいもの民 #びっくえんじぇる"
+        )
+
+    def test_single_line_without_spaces_is_split_per_sentence(self):
+        # 文の間にスペースも絵文字もない実例（2026-09-14）
+        text = "おはようございまｲﾓ🍠甘木ジュリさん、滝汗気をつけてねｲﾓ🍠ハードな撮影ファイトｲﾓ🍠だいすきｲﾓ🍠#さつまいもの民 #びっくえんじぇる"
+
+        assert format_post_text(text) == (
+            "おはようございまｲﾓ🍠\n"
+            "甘木ジュリさん、滝汗気をつけてねｲﾓ🍠\n"
+            "ハードな撮影ファイトｲﾓ🍠\n"
+            "だいすきｲﾓ🍠\n"
+            "\n"
+            "#さつまいもの民 #びっくえんじぇる"
+        )
+
+    def test_trailing_emoji_stays_on_the_same_line(self):
+        assert format_post_text("最高ｲﾓ🍠✨ #さつまいもの民 #びっくえんじぇる") == "最高ｲﾓ🍠✨\n\n#さつまいもの民 #びっくえんじぇる"
+
+    def test_opening_bracket_starts_next_line(self):
+        assert format_post_text("最高ｲﾓ🍠！「ライブ」楽しみｲﾓ🍠") == "最高ｲﾓ🍠！\n「ライブ」楽しみｲﾓ🍠\n\n#さつまいもの民 #びっくえんじぇる"
+
+    def test_existing_line_breaks_are_kept_and_hashtags_moved_to_last_line(self):
+        # モデルが指示どおり改行済み。ハッシュタグだけ同じ行にくっついている
+        text = "嬉しいｲﾓ🍠✨ 本当にｲﾓ🍠\n最高ｲﾓ🍠 #さつまいもの民 #びっくえんじぇる"
+
+        assert format_post_text(text) == "嬉しいｲﾓ🍠✨ 本当にｲﾓ🍠\n最高ｲﾓ🍠\n\n#さつまいもの民 #びっくえんじぇる"
+
+    def test_idempotent(self):
+        text = "嬉しいｲﾓ🍠✨ 最高ｲﾓ🍠 #さつまいもの民 #びっくえんじぇる"
+        once = format_post_text(text)
+        assert format_post_text(once) == once
+
+    def test_extra_blank_lines_are_collapsed(self):
+        assert format_post_text("嬉しいｲﾓ🍠\n\n\n\n#さつまいもの民 #びっくえんじぇる") == "嬉しいｲﾓ🍠\n\n#さつまいもの民 #びっくえんじぇる"
+
+    def test_text_without_sentence_ending_only_gets_hashtags_separated(self):
+        assert format_post_text("語尾なしの文 #さつまいもの民 #びっくえんじぇる") == "語尾なしの文\n\n#さつまいもの民 #びっくえんじぇる"
+
+    def test_missing_hashtags_are_added(self):
+        assert format_post_text("嬉しいｲﾓ🍠") == "嬉しいｲﾓ🍠\n\n#さつまいもの民 #びっくえんじぇる"
+
+    def test_empty_text_returns_hashtags_only(self):
+        assert format_post_text("") == HASHTAGS
 
 
 class TestAIGenerator:
@@ -120,7 +180,8 @@ class TestAIGenerator:
         
         result = generator.generate_response("テスト投稿", "oshi")
         
-        assert result == DEFAULT_RESPONSE_OSHI
+        assert result == format_post_text(DEFAULT_RESPONSE_OSHI)
+        assert result == "じゅりちゃんの投稿を見つけたｲﾓ🍠✨\n\n#さつまいもの民 #びっくえんじぇる"
     
     def test_generate_response_fallback_on_error_group(self, generator, mock_bedrock_client):
         """エラー時にフォールバック応答（グループ）が返されることを確認"""
@@ -128,7 +189,7 @@ class TestAIGenerator:
         
         result = generator.generate_response("テスト投稿", "group")
         
-        assert result == DEFAULT_RESPONSE_GROUP
+        assert result == format_post_text(DEFAULT_RESPONSE_GROUP)
     
     def test_generate_response_uses_correct_model(self, generator, mock_bedrock_client):
         """正しいモデルIDが使用されることを確認"""
@@ -357,7 +418,8 @@ class TestBrainIntegration:
 
         result = generator.generate_response("投稿", post_type="oshi")
 
-        assert result == "頭脳の応答ｲﾓ🍠 #さつまいもの民 #びっくえんじぇる"
+        # 頭脳の出力も整形（ハッシュタグは空行の後の最終行）される
+        assert result == "頭脳の応答ｲﾓ🍠\n\n#さつまいもの民 #びっくえんじぇる"
         brain.invoke.assert_called_once_with("oshi_response", {"post_content": "投稿", "post_type": "oshi"})
         bedrock.invoke_model.assert_not_called()
 
@@ -365,6 +427,18 @@ class TestBrainIntegration:
         brain = self._brain("あ" * 200)
         generator = AIGenerator(bedrock_client=Mock(), brain_client=brain)
         assert len(generator.generate_response("投稿")) <= 140
+
+    def test_generate_response_keeps_brain_line_breaks_within_limit(self):
+        # 改行込みで 140 字に収める（Property 5）。文の途中で切れても改行で終わらない
+        brain = self._brain("\n".join(["あ" * 30 + "ｲﾓ🍠"] * 6) + " #さつまいもの民 #びっくえんじぇる")
+        generator = AIGenerator(bedrock_client=Mock(), brain_client=brain)
+
+        result = generator.generate_response("投稿")
+
+        assert len(result) <= 140
+        assert result.endswith("\n\n#さつまいもの民 #びっくえんじぇる")
+        assert "...\n\n#" in result
+        assert "\n...\n" not in result
 
     def test_generate_response_falls_back_to_bedrock_on_brain_error(self, caplog):
         bedrock = self._bedrock("Haiku の応答ｲﾓ🍠 #さつまいもの民 #びっくえんじぇる")
@@ -374,7 +448,7 @@ class TestBrainIntegration:
         with caplog.at_level(logging.ERROR):
             result = generator.generate_response("投稿", post_type="oshi")
 
-        assert result == "Haiku の応答ｲﾓ🍠 #さつまいもの民 #びっくえんじぇる"
+        assert result == "Haiku の応答ｲﾓ🍠\n\n#さつまいもの民 #びっくえんじぇる"
         bedrock.invoke_model.assert_called_once()
         # アラームを鳴らすため ERROR で記録される
         assert any(r.levelno == logging.ERROR and "Brain failed" in r.getMessage() for r in caplog.records)

@@ -204,6 +204,7 @@ uv run npx cdk deploy
 | 呼び出し | Lambda の `AIGenerator` → `utils/brain_client.py`（`bedrock-agentcore:InvokeAgentRuntime`）。Lambda 1 回の実行で 1 セッションを使い回す。Runtime 側の Agent はリクエストごとに使い捨て |
 | フォールバック | 頭脳の呼び出しに失敗すると `[ERROR] Brain failed …` を出して（アラーム発火）Bedrock Haiku 4.5 直呼びに切り替える。`BRAIN_RUNTIME_ARN` が空なら直呼びのみ |
 | プロンプト | `src/hokuhoku_imomaru_bot/prompts.py` が単一ソース（`agent/prompts.py` はそのシンボリックリンク）。キャラクター定義は system prompt、反応対象は user message |
+| 本文の体裁 | 1 文 1 行 ＋ 空行 ＋ ハッシュタグ（最終行）。プロンプトで指示しつつ、Lambda 側 `AIGenerator.format_post_text` が文末「ｲﾓ🍠」を境に機械的に整える（モデルが 1 行で返しても保証）。整形後に改行込みで 140 字に切り詰める（2026-09-15） |
 | ログ | `/aws/bedrock-agentcore/runtimes/imomaru_brain-*` |
 
 ```bash
