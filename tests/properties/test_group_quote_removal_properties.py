@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 
 from src.hokuhoku_imomaru_bot.lambda_handler import _process_bot_logic
 from src.hokuhoku_imomaru_bot.models import BotState
+from src.hokuhoku_imomaru_bot.services.ai_generator import Reaction
 from src.hokuhoku_imomaru_bot.services import (
     StateStore,
     TimelineMonitor,
@@ -107,7 +108,7 @@ def _make_mocks(state, group_original=None, group_retweets=None,
     level_manager.check_level_up.return_value = (False, state.current_level)
 
     ai_generator = MagicMock(spec=AIGenerator)
-    ai_generator.generate_response.return_value = "応答テキスト"
+    ai_generator.generate_reaction.return_value = Reaction(action="post", text="応答テキスト", emotion_key=None)
 
     image_compositor = MagicMock(spec=ImageCompositor)
     profile_updater = MagicMock(spec=ProfileUpdater)
@@ -248,7 +249,7 @@ class TestProperty3GroupOriginalNoAIGeneration:
 
         _process_bot_logic(state=state, **mocks)
 
-        mocks["ai_generator"].generate_response.assert_not_called()
+        mocks["ai_generator"].generate_reaction.assert_not_called()
 
 
 # ============================================
@@ -287,7 +288,7 @@ class TestProperty4GroupRetweetBehavior:
         assert state.repost_count == n
         assert result["quotes_posted"] == 0
         mocks["x_api_client"].post_tweet.assert_not_called()
-        mocks["ai_generator"].generate_response.assert_not_called()
+        mocks["ai_generator"].generate_reaction.assert_not_called()
 
 
 # ============================================
@@ -323,7 +324,7 @@ class TestProperty5OshiOriginalBehavior:
 
         n = len(tweets)
         # AI応答が生成されること
-        assert mocks["ai_generator"].generate_response.call_count == n
+        assert mocks["ai_generator"].generate_reaction.call_count == n
         # X API は呼ばれない（メール通知方式）
         mocks["x_api_client"].post_tweet.assert_not_called()
         # メール通知が実行されること

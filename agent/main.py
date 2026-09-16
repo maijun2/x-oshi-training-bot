@@ -5,7 +5,7 @@ POST /invocations にペイロードを受け取り brain.handle() に渡す。G
 ローカル確認:
     uv run python agent/main.py
     curl -X POST localhost:8080/invocations -H 'Content-Type: application/json' \
-      -d '{"task":"oshi_response","input":{"post_content":"今日はライブでした！","post_type":"oshi"}}'
+      -d '{"task":"react","input":{"post_content":"今日はライブでした！","post_type":"oshi","posted_at":"2026-09-16(火) 01:42 JST","now":"2026-09-16(火) 10:07 JST","publish_at":"2026-09-16(火) 11:15 JST"}}'
 """
 import logging
 import os

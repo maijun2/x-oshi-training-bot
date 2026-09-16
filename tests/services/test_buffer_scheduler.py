@@ -12,8 +12,11 @@ from src.hokuhoku_imomaru_bot.clients.buffer_client import BufferClient, BufferP
 from src.hokuhoku_imomaru_bot.models.bot_state import BotState
 from src.hokuhoku_imomaru_bot.services.buffer_scheduler import (
     BufferScheduler,
+    DEFAULT_SLOT_TIMES_JST,
     EMOTION_IMAGE_ALT_TEXT,
+    parse_slot_times,
 )
+from src.hokuhoku_imomaru_bot.services.daily_reporter import JST
 from src.hokuhoku_imomaru_bot.services.state_store import StateStore
 
 
@@ -58,6 +61,45 @@ def _make_scheduler(buffer_client, state_store, *, run_cap, daily_cap):
         daily_cap=daily_cap,
         run_cap=run_cap,
     )
+
+
+class TestNextSlotAt:
+    """頭脳に渡す「公開予定時刻」＝現在時刻より後の最初の Buffer 枠（JST）"""
+
+    @pytest.mark.parametrize("now_utc, expected_jst", [
+        # 実測: 13:18 JST 検知 → 14:15 枠、23:58 JST 検知 → 翌 08:00 枠、10:07 JST 検知 → 11:15 枠
+        (datetime(2026, 9, 16, 4, 18, tzinfo=timezone.utc), datetime(2026, 9, 16, 14, 15, tzinfo=JST)),
+        (datetime(2026, 9, 15, 14, 58, tzinfo=timezone.utc), datetime(2026, 9, 16, 8, 0, tzinfo=JST)),
+        (datetime(2026, 9, 16, 1, 7, tzinfo=timezone.utc), datetime(2026, 9, 16, 11, 15, tzinfo=JST)),
+        # 枠の時刻ちょうどは「過ぎた」扱いで次の枠
+        (datetime(2026, 9, 16, 14, 15, tzinfo=JST), datetime(2026, 9, 16, 15, 15, tzinfo=JST)),
+        # 日付の境界（JST 00:30 → 当日 08:00）
+        (datetime(2026, 9, 16, 0, 30, tzinfo=JST), datetime(2026, 9, 16, 8, 0, tzinfo=JST)),
+    ])
+    def test_default_slots(self, scheduler, now_utc, expected_jst):
+        assert scheduler.next_slot_at(now_utc) == expected_jst
+
+    def test_custom_slots_from_env_style_string(self, buffer_client, state_store):
+        scheduler = BufferScheduler(
+            buffer_client=buffer_client, state_store=state_store,
+            public_image_base_url=PUBLIC_BASE, oshi_username="juri_bigangel",
+            slot_times_jst="21:00, 09:30".split(","),  # 順不同・空白あり
+        )
+        assert scheduler.next_slot_at(datetime(2026, 9, 16, 10, 0, tzinfo=JST)) == datetime(2026, 9, 16, 21, 0, tzinfo=JST)
+        assert scheduler.next_slot_at(datetime(2026, 9, 16, 22, 0, tzinfo=JST)) == datetime(2026, 9, 17, 9, 30, tzinfo=JST)
+
+    def test_no_slots_returns_none(self, buffer_client, state_store):
+        scheduler = BufferScheduler(
+            buffer_client=buffer_client, state_store=state_store,
+            public_image_base_url=PUBLIC_BASE, oshi_username="juri_bigangel",
+            slot_times_jst=[],
+        )
+        assert scheduler.next_slot_at(datetime.now(timezone.utc)) is None
+
+    def test_parse_slot_times_ignores_invalid(self):
+        slots = parse_slot_times("08:00,bogus,,25:99,11:15")
+        assert [f"{t:%H:%M}" for t in slots] == ["08:00", "11:15"]
+        assert len(parse_slot_times(",".join(DEFAULT_SLOT_TIMES_JST))) == 8
 
 
 class TestCapAndGates:

@@ -16,6 +16,7 @@ from hypothesis import strategies as st
 
 from src.hokuhoku_imomaru_bot.lambda_handler import _process_bot_logic
 from src.hokuhoku_imomaru_bot.models import BotState
+from src.hokuhoku_imomaru_bot.services.ai_generator import Reaction
 from src.hokuhoku_imomaru_bot.services import (
     StateStore,
     TimelineMonitor,
@@ -82,7 +83,7 @@ def _make_mocks(oshi_tweets=None, group_tweets=None):
     level_manager.check_level_up.return_value = (False, 1)
 
     ai_generator = MagicMock(spec=AIGenerator)
-    ai_generator.generate_response.return_value = "応答テキスト"
+    ai_generator.generate_reaction.return_value = Reaction(action="post", text="応答テキスト", emotion_key=None)
 
     image_compositor = MagicMock(spec=ImageCompositor)
     profile_updater = MagicMock(spec=ProfileUpdater)

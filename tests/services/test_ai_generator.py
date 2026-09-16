@@ -9,8 +9,12 @@ import pytest
 from unittest.mock import Mock, MagicMock
 from io import BytesIO
 
+from datetime import datetime, timezone
+
 from src.hokuhoku_imomaru_bot.services.ai_generator import (
     AIGenerator,
+    Reaction,
+    format_jst,
     PROMPT_TEMPLATE,
     REPLY_PROMPT_TEMPLATE,
     MAX_TEXT_LENGTH,
@@ -401,81 +405,151 @@ class TestBrainIntegration:
         }
         return client
 
-    def _brain(self, text=None, error=None):
+    def _brain(self, text=None, error=None, reaction=None):
         from src.hokuhoku_imomaru_bot.utils.brain_client import BrainClient, BrainError
 
         brain = MagicMock(spec=BrainClient)
         if error is not None:
             brain.invoke.side_effect = BrainError(error)
+            brain.invoke_json.side_effect = BrainError(error)
         else:
             brain.invoke.return_value = text
+            brain.invoke_json.return_value = reaction
         return brain
 
-    def test_generate_response_uses_brain_and_skips_bedrock(self):
+    POSTED_AT = datetime(2026, 9, 15, 16, 42, tzinfo=timezone.utc)   # 09-16 01:42 JST
+    NOW = datetime(2026, 9, 16, 4, 18, tzinfo=timezone.utc)          # 09-16 13:18 JST
+    PUBLISH_AT = datetime(2026, 9, 16, 5, 15, tzinfo=timezone.utc)   # 09-16 14:15 JST
+
+    def _react(self, generator, **kwargs):
+        params = dict(post_content="投稿", posted_at=self.POSTED_AT, now=self.NOW, publish_at=self.PUBLISH_AT)
+        params.update(kwargs)
+        return generator.generate_reaction(**params)
+
+    def test_format_jst(self):
+        assert format_jst(self.NOW) == "2026-09-16(水) 13:18 JST"
+
+    def test_generate_reaction_uses_brain_and_skips_bedrock(self):
         bedrock = self._bedrock("Haiku の応答")
-        brain = self._brain("頭脳の応答ｲﾓ🍠 #さつまいもの民 #びっくえんじぇる")
+        brain = self._brain(reaction={
+            "action": "post",
+            "text": "頭脳の応答ｲﾓ🍠 #さつまいもの民 #びっくえんじぇる",
+            "emotion_key": "JOY",
+            "reason": "嬉しい報告",
+        })
         generator = AIGenerator(bedrock_client=bedrock, brain_client=brain)
 
-        result = generator.generate_response("投稿", post_type="oshi")
+        reaction = self._react(generator, post_type="oshi")
 
-        # 頭脳の出力も整形（ハッシュタグは空行の後の最終行）される
-        assert result == "頭脳の応答ｲﾓ🍠\n\n#さつまいもの民 #びっくえんじぇる"
-        brain.invoke.assert_called_once_with("oshi_response", {"post_content": "投稿", "post_type": "oshi"})
+        # 頭脳の出力も整形（ハッシュタグは空行の後の最終行）、感情キーは検証・小文字化される
+        assert reaction == Reaction(
+            action="post",
+            text="頭脳の応答ｲﾓ🍠\n\n#さつまいもの民 #びっくえんじぇる",
+            emotion_key="joy",
+            reason="嬉しい報告",
+            source="brain",
+        )
+        brain.invoke_json.assert_called_once_with("react", {
+            "post_content": "投稿",
+            "post_type": "oshi",
+            "posted_at": "2026-09-16(水) 01:42 JST",
+            "now": "2026-09-16(水) 13:18 JST",
+            "publish_at": "2026-09-16(水) 14:15 JST",
+        })
         bedrock.invoke_model.assert_not_called()
 
-    def test_generate_response_truncates_brain_output(self):
-        brain = self._brain("あ" * 200)
+    def test_generate_reaction_without_publish_time(self):
+        brain = self._brain(reaction={"action": "post", "text": "x", "emotion_key": "none"})
         generator = AIGenerator(bedrock_client=Mock(), brain_client=brain)
-        assert len(generator.generate_response("投稿")) <= 140
+        reaction = self._react(generator, publish_at=None)
+        assert brain.invoke_json.call_args.args[1]["publish_at"] == "不明（数時間後）"
+        assert reaction.emotion_key is None
 
-    def test_generate_response_keeps_brain_line_breaks_within_limit(self):
+    def test_generate_reaction_skip(self):
+        bedrock = Mock()
+        brain = self._brain(reaction={"action": "skip", "text": "", "emotion_key": "none", "reason": "URL のみ"})
+        generator = AIGenerator(bedrock_client=bedrock, brain_client=brain)
+
+        reaction = self._react(generator)
+
+        assert reaction.action == "skip"
+        assert reaction.text == ""
+        assert reaction.emotion_key is None
+        assert reaction.reason == "URL のみ"
+        bedrock.invoke_model.assert_not_called()
+
+    def test_generate_reaction_truncates_and_keeps_line_breaks_within_limit(self):
         # 改行込みで 140 字に収める（Property 5）。文の途中で切れても改行で終わらない
-        brain = self._brain("\n".join(["あ" * 30 + "ｲﾓ🍠"] * 6) + " #さつまいもの民 #びっくえんじぇる")
+        text = "\n".join(["あ" * 30 + "ｲﾓ🍠"] * 6) + " #さつまいもの民 #びっくえんじぇる"
+        brain = self._brain(reaction={"action": "post", "text": text, "emotion_key": "joy"})
         generator = AIGenerator(bedrock_client=Mock(), brain_client=brain)
 
-        result = generator.generate_response("投稿")
+        result = self._react(generator).text
 
         assert len(result) <= 140
         assert result.endswith("\n\n#さつまいもの民 #びっくえんじぇる")
         assert "...\n\n#" in result
         assert "\n...\n" not in result
 
-    def test_generate_response_falls_back_to_bedrock_on_brain_error(self, caplog):
+    def test_generate_reaction_unknown_emotion_key_is_none(self):
+        brain = self._brain(reaction={"action": "post", "text": "x", "emotion_key": "banana"})
+        generator = AIGenerator(bedrock_client=Mock(), brain_client=brain)
+        assert self._react(generator).emotion_key is None
+
+    def test_generate_reaction_falls_back_to_bedrock_on_brain_error(self, caplog):
         bedrock = self._bedrock("Haiku の応答ｲﾓ🍠 #さつまいもの民 #びっくえんじぇる")
         brain = self._brain(error="invoke failed")
         generator = AIGenerator(bedrock_client=bedrock, brain_client=brain)
 
         with caplog.at_level(logging.ERROR):
-            result = generator.generate_response("投稿", post_type="oshi")
+            reaction = self._react(generator, post_type="oshi", classify=False)
 
-        assert result == "Haiku の応答ｲﾓ🍠\n\n#さつまいもの民 #びっくえんじぇる"
+        assert reaction.action == "post"
+        assert reaction.source == "bedrock"
+        assert reaction.text == "Haiku の応答ｲﾓ🍠\n\n#さつまいもの民 #びっくえんじぇる"
+        assert reaction.emotion_key is None
         bedrock.invoke_model.assert_called_once()
         # アラームを鳴らすため ERROR で記録される
         assert any(r.levelno == logging.ERROR and "Brain failed" in r.getMessage() for r in caplog.records)
 
-    def test_generate_response_without_brain_is_unchanged(self):
+    def test_generate_reaction_fallback_classifies_when_requested(self):
+        bedrock = Mock()
+        bodies = iter(["Haiku の応答ｲﾓ🍠", "cheer"])
+        bedrock.invoke_model.side_effect = lambda **kw: {
+            "body": MagicMock(read=lambda: json.dumps({"content": [{"text": next(bodies)}]}).encode("utf-8"))
+        }
+        generator = AIGenerator(bedrock_client=bedrock, brain_client=self._brain(error="down"))
+
+        reaction = self._react(generator, classify=True)
+
+        assert reaction.emotion_key == "cheer"
+        assert bedrock.invoke_model.call_count == 2
+
+    def test_generate_reaction_post_without_text_falls_back(self):
+        bedrock = self._bedrock("Haiku の応答")
+        brain = self._brain(reaction={"action": "post", "text": "   ", "emotion_key": "joy"})
+        generator = AIGenerator(bedrock_client=bedrock, brain_client=brain)
+        reaction = self._react(generator, classify=False)
+        assert reaction.source == "bedrock"
+        bedrock.invoke_model.assert_called_once()
+
+    def test_generate_reaction_without_brain_uses_bedrock(self):
         bedrock = self._bedrock("Haiku の応答")
         generator = AIGenerator(bedrock_client=bedrock)
-        generator.generate_response("投稿")
+        reaction = self._react(generator, classify=False)
+        assert reaction.source == "bedrock"
         bedrock.invoke_model.assert_called_once()
 
-    def test_classify_emotion_via_brain_validates_key(self):
-        bedrock = Mock()
-        generator = AIGenerator(bedrock_client=bedrock, brain_client=self._brain("  JOY \n"))
-        assert generator.classify_emotion("嬉しい") == "joy"
-        bedrock.invoke_model.assert_not_called()
-
-        generator = AIGenerator(bedrock_client=bedrock, brain_client=self._brain("banana"))
-        assert generator.classify_emotion("嬉しい") is None
-
-        generator = AIGenerator(bedrock_client=bedrock, brain_client=self._brain("none"))
-        assert generator.classify_emotion("嬉しい") is None
-
-    def test_classify_emotion_falls_back_on_brain_error(self):
+    def test_generate_response_never_calls_brain(self):
+        """generate_response / classify_emotion は Haiku 直呼び専用（Runtime にタスクが無い）"""
         bedrock = self._bedrock("cheer")
-        generator = AIGenerator(bedrock_client=bedrock, brain_client=self._brain(error="down"))
-        assert generator.classify_emotion("応援") == "cheer"
-        bedrock.invoke_model.assert_called_once()
+        brain = self._brain(text="頭脳")
+        generator = AIGenerator(bedrock_client=bedrock, brain_client=brain)
+        generator.generate_response("投稿")
+        generator.classify_emotion("応援")
+        brain.invoke.assert_not_called()
+        brain.invoke_json.assert_not_called()
+        assert bedrock.invoke_model.call_count == 2
 
     def test_reply_response_uses_brain(self):
         bedrock = Mock()

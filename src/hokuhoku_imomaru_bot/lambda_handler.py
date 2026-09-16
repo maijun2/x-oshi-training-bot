@@ -30,7 +30,10 @@ from .services import (
     BufferScheduler,
     OshiMemoryWriter,
 )
+from .services.ai_generator import REACTION_SKIP
+from .services.buffer_scheduler import DEFAULT_SLOT_TIMES_JST
 from .services.daily_reporter import JST
+from .services.oshi_memory_writer import parse_created_at
 from .utils import (
     log_event,
     EventType,
@@ -61,6 +64,8 @@ FROM_EMAIL = os.environ.get("FROM_EMAIL", "")
 BUFFER_SECRET_NAME = os.environ.get("BUFFER_SECRET_NAME", "imomaru-bot/buffer-api")
 BUFFER_DAILY_CAP = int(os.environ.get("BUFFER_DAILY_CAP", "7"))  # 1日の上限（安全弁）
 BUFFER_RUN_CAP = int(os.environ.get("BUFFER_RUN_CAP", "1"))  # 1回の実行あたりの上限（主キャップ）
+# Buffer UI のスロット時刻（JST、カンマ区切り）。頭脳に渡す「公開予定時刻」の見込み計算にだけ使う
+BUFFER_SLOT_TIMES_JST = os.environ.get("BUFFER_SLOT_TIMES_JST", ",".join(DEFAULT_SLOT_TIMES_JST)).split(",")
 BRAIN_RUNTIME_ARN = os.environ.get("BRAIN_RUNTIME_ARN", "")  # 頭脳（AgentCore Runtime）。空なら Bedrock 直呼びのみ
 OSHI_MEMORY_ID = os.environ.get("OSHI_MEMORY_ID", "")  # 推しの記憶（AgentCore Memory）。空なら書き込みなし
 # 感情画像の公開バケット（Buffer が投稿公開時に取りに来る）
@@ -169,6 +174,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             oshi_username=OSHI_USERNAME,
             daily_cap=BUFFER_DAILY_CAP,
             run_cap=BUFFER_RUN_CAP,
+            slot_times_jst=BUFFER_SLOT_TIMES_JST,
         )
 
         # 推しの記憶（AgentCore Memory）。推しの投稿を Lambda から直接書き込む（フェーズ3a-write）
@@ -664,6 +670,7 @@ def _post_quote_safe(
     ① SES メールで素案を通知（人間の目視・X Intent リンクの非常口）
     ② Buffer のキューに予約投入（次の空きスロットで Buffer が自動投稿。NG なら人間が削除）
     を並列に行う。Buffer 投入の失敗は握りつぶし、XP 計算・日報・リプライを巻き込まない。
+    頭脳が「反応を見送る」（action=skip）と判断した場合は Buffer に入れず、理由をメールに載せる。
 
     Args:
         tweet: 反応する元ツイート
@@ -682,34 +689,52 @@ def _post_quote_safe(
         メール送信成功の可否
     """
     try:
-        # AI応答を生成（ロック取得は呼び出し元で実施済み）
-        response_text = ai_generator.generate_response(
-            post_content=tweet.text,
-            post_type=post_type,
-        )
-
-        # 感情分類は「Buffer に画像付きで投入できる」ときだけ行う（1日1回）
-        # フラグは投入成功時に BufferScheduler 側で立てる
-        emotion_key = None
-        if (
+        # 頭脳に反応を提案させる（ロック取得は呼び出し元で実施済み）。
+        # 時刻情報（投稿時刻・現在時刻・公開予定＝次の Buffer 枠）を渡し、公開時に読まれる前提の文面にする。
+        # 感情キーは提案に含まれるが、使うのは「Buffer に画像付きで投入できる」ときだけ（1日1回）
+        now = datetime.now(timezone.utc)
+        posted_at = parse_created_at(tweet.created_at) or now
+        publish_at = buffer_scheduler.next_slot_at(now) if buffer_scheduler is not None else None
+        can_attach_image = (
             post_type == "oshi"
             and state is not None
             and buffer_scheduler is not None
             and buffer_scheduler.can_attach_image(state)
-        ):
-            emotion_key = ai_generator.classify_emotion(response_text)
-            if emotion_key:
-                log_event(
-                    level=LogLevel.INFO,
-                    event_type=EventType.POST_DETECTED,
-                    data={"emotion_key": emotion_key},
-                    message=f"Emotion classified for draft: {emotion_key}",
-                )
+        )
+        reaction = ai_generator.generate_reaction(
+            post_content=tweet.text,
+            posted_at=posted_at,
+            now=now,
+            publish_at=publish_at,
+            post_type=post_type,
+            classify=can_attach_image,
+        )
+        response_text = reaction.text
 
-        # Buffer 予約投入（失敗しても他機能を巻き込まない）
+        emotion_key = reaction.emotion_key if can_attach_image else None
+        if emotion_key:
+            log_event(
+                level=LogLevel.INFO,
+                event_type=EventType.POST_DETECTED,
+                data={"emotion_key": emotion_key},
+                message=f"Emotion classified for draft: {emotion_key}",
+            )
+
+        # Buffer 予約投入（失敗しても他機能を巻き込まない）。頭脳が skip と判断したら入れない
         buffer_status = "disabled"
         buffer_due_at = None
-        if post_type == "oshi" and state is not None and buffer_scheduler is not None:
+        skip_reason = None
+        if reaction.action == REACTION_SKIP:
+            buffer_status = DraftNotifier.BUFFER_STATUS_SKIPPED
+            skip_reason = reaction.reason or None
+            emotion_key = None
+            log_event(
+                level=LogLevel.INFO,
+                event_type=EventType.POST_DETECTED,
+                data={"tweet_id": tweet.id, "action": "skip", "reason": reaction.reason},
+                message=f"Brain skipped reaction for tweet {tweet.id}: {reaction.reason}",
+            )
+        elif post_type == "oshi" and state is not None and buffer_scheduler is not None:
             try:
                 scheduled = buffer_scheduler.schedule_quote(
                     state=state,
@@ -740,6 +765,7 @@ def _post_quote_safe(
                 buffer_status=buffer_status,
                 buffer_due_at=buffer_due_at,
                 buffer_run_cap=buffer_scheduler.run_cap if buffer_scheduler else None,
+                skip_reason=skip_reason,
             )
             return sent
 

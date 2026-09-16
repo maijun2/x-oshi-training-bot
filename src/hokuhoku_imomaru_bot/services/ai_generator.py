@@ -3,14 +3,19 @@ AIGeneratorクラス
 
 キャラクターに合った応答テキストを生成します。
 
-生成元は 2 段構え（フェーズ2a）:
+生成元は 2 段構え（フェーズ2b-2-1）:
 1. 頭脳（AgentCore Runtime、BrainClient 経由）— 設定されていればまずこちら
+   - 推し投稿への反応: `react` 1 回で JSON 提案 {action, text, emotion_key, reason} を受け取る（generate_reaction）
+   - リプライ応答: `reply_response`（generate_reply_response）
 2. Bedrock Haiku 直呼び — 頭脳が未設定、または頭脳の呼び出しに失敗したときのフォールバック
-   （失敗は logger.error で記録し、imomaru-bot-app-errors アラームを鳴らす）
+   （失敗は logger.error で記録し、imomaru-bot-app-errors アラームを鳴らす）。
+   generate_response / classify_emotion はこの直呼び経路そのもの（頭脳は呼ばない）
 """
 import json
 import logging
 import re
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Dict, Optional
 
 from ..prompts import (  # noqa: F401  (re-export: 既存の import 経路を維持)
@@ -27,8 +32,29 @@ from ..prompts import (  # noqa: F401  (re-export: 既存の import 経路を維
     VALID_EMOTION_KEYS,
 )
 from ..utils.brain_client import BrainClient, BrainError
+from .daily_reporter import JST
+from .draft_notifier import WEEKDAYS_JA
 
 logger = logging.getLogger(__name__)
+
+REACTION_POST = "post"
+REACTION_SKIP = "skip"
+
+
+@dataclass
+class Reaction:
+    """推し投稿への反応の提案（頭脳の JSON を Lambda 側で検証・整形したもの）"""
+    action: str                      # REACTION_POST | REACTION_SKIP
+    text: str                        # 投稿本文（整形・140 字済み。skip のときは空のことがある）
+    emotion_key: Optional[str]       # VALID_EMOTION_KEYS のいずれか。該当なし・不正は None
+    reason: str = ""                 # 判断理由（メール表示用）
+    source: str = "brain"            # "brain" | "bedrock"（フォールバック）| "fallback"（固定文）
+
+
+def format_jst(moment: datetime) -> str:
+    """頭脳に渡す時刻表記: 2026-09-16(火) 13:18 JST"""
+    jst = moment.astimezone(JST)
+    return f"{jst:%Y-%m-%d}({WEEKDAYS_JA[jst.weekday()]}) {jst:%H:%M} JST"
 
 # 文末「ｲﾓ🍠」＋後続の絵文字・記号のあとに次の文が続いていれば、その境界（ハッシュタグ・空白は除く）
 # 絵文字・記号は possessive（*+、Python 3.11+）で全部食わせ、末尾の絵文字の手前で切らないようにする。
@@ -155,13 +181,90 @@ class AIGenerator:
             logger.error(f"Brain failed for task={task}; falling back to direct Bedrock: {e}")
             return None
 
+    def _ask_brain_json(self, task: str, task_input: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """_ask_brain の JSON 提案版（react）。未設定なら None、失敗したら ERROR ログを出して None"""
+        if self.brain_client is None:
+            return None
+        try:
+            return self.brain_client.invoke_json(task, task_input)
+        except BrainError as e:
+            logger.error(f"Brain failed for task={task}; falling back to direct Bedrock: {e}")
+            return None
+
+    def generate_reaction(
+        self,
+        post_content: str,
+        posted_at: datetime,
+        now: datetime,
+        publish_at: Optional[datetime],
+        post_type: str = "oshi",
+        classify: bool = True,
+    ) -> Reaction:
+        """
+        推し投稿への反応を提案として生成する（頭脳 `react` → 失敗時は Haiku 直呼び 2 段）
+
+        Args:
+            post_content: 元の投稿内容
+            posted_at: 投稿時刻（aware datetime）
+            now: 現在時刻（aware datetime）
+            publish_at: 公開予定時刻（次の Buffer 予約枠）。不明なら None
+            post_type: "oshi" または "group"
+            classify: フォールバック時に感情分類まで行うか（頭脳経路では常に emotion_key が返る）
+
+        Returns:
+            Reaction。text は整形・140 字済み、emotion_key は検証済み（不正は None）
+        """
+        proposal = self._ask_brain_json(
+            "react",
+            {
+                "post_content": post_content,
+                "post_type": post_type,
+                "posted_at": format_jst(posted_at),
+                "now": format_jst(now),
+                "publish_at": format_jst(publish_at) if publish_at else "不明（数時間後）",
+            },
+        )
+        if proposal is not None:
+            action = proposal.get("action")
+            raw_text = proposal.get("text") or ""
+            if action not in (REACTION_POST, REACTION_SKIP):
+                logger.error(f"Brain returned unknown action={action!r}; treating as post")
+                action = REACTION_POST
+            text = self._finalize_post_text(raw_text) if raw_text.strip() else ""
+            if action == REACTION_POST and not text:
+                logger.error("Brain returned action=post without text; falling back to direct Bedrock")
+            else:
+                emotion_key = self._validate_emotion_key(proposal.get("emotion_key"))
+                reason = str(proposal.get("reason") or "")
+                logger.info(
+                    f"Generated reaction using brain for {post_type} post: action={action} "
+                    f"emotion={emotion_key} {len(text)} chars"
+                )
+                return Reaction(action=action, text=text, emotion_key=emotion_key, reason=reason, source="brain")
+
+        text = self.generate_response(post_content=post_content, post_type=post_type)
+        emotion_key = self.classify_emotion(text) if classify else None
+        return Reaction(action=REACTION_POST, text=text, emotion_key=emotion_key, reason="", source="bedrock")
+
+    @staticmethod
+    def _validate_emotion_key(value: Any) -> Optional[str]:
+        """感情キーを検証する。有効なら小文字のキー、none・不正・未指定は None"""
+        if not isinstance(value, str):
+            return None
+        emotion_key = value.strip().lower()
+        if emotion_key in VALID_EMOTION_KEYS:
+            return emotion_key
+        if emotion_key not in ("", "none"):
+            logger.warning(f"Unknown emotion key returned: {emotion_key}")
+        return None
+
     def generate_response(
         self,
         post_content: str,
         post_type: str = "oshi",
     ) -> str:
         """
-        投稿内容に基づいて応答テキストを生成
+        投稿内容に基づいて応答テキストを Bedrock Haiku 直呼びで生成（頭脳のフォールバック経路）
         
         Args:
             post_content: 元の投稿内容
@@ -170,12 +273,6 @@ class AIGenerator:
         Returns:
             生成された応答テキスト（140文字以内）
         """
-        brain_text = self._ask_brain("oshi_response", {"post_content": post_content, "post_type": post_type})
-        if brain_text is not None:
-            formatted_text = self._finalize_post_text(brain_text)
-            logger.info(f"Generated response using brain for {post_type} post: {len(formatted_text)} chars")
-            return formatted_text
-
         try:
             prompt = self.build_prompt(post_content)
             
@@ -248,7 +345,7 @@ class AIGenerator:
     
     def classify_emotion(self, response_text: str) -> Optional[str]:
         """
-        応答テキストの感情を分類
+        応答テキストの感情を Bedrock Haiku 直呼びで分類（頭脳のフォールバック経路）
         
         Args:
             response_text: 分類する応答テキスト
@@ -257,45 +354,37 @@ class AIGenerator:
             感情キー（emotion_key）、分類失敗時はNone
         """
         try:
-            brain_text = self._ask_brain("classify_emotion", {"response_text": response_text})
-            if brain_text is not None:
-                emotion_key = brain_text.strip().lower()
-            else:
-                prompt = EMOTION_CLASSIFICATION_PROMPT.format(response_text=response_text)
+            prompt = EMOTION_CLASSIFICATION_PROMPT.format(response_text=response_text)
 
-                request_body = {
-                    "anthropic_version": "bedrock-2023-05-31",
-                    "max_tokens": 50,
-                    "temperature": 0.0,  # 決定的な応答を得るため
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": prompt,
-                        }
-                    ],
-                }
+            request_body = {
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": 50,
+                "temperature": 0.0,  # 決定的な応答を得るため
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    }
+                ],
+            }
 
-                response = self.bedrock_client.invoke_model(
-                    modelId=self.model_id,
-                    body=json.dumps(request_body),
-                    contentType="application/json",
-                    accept="application/json",
-                )
+            response = self.bedrock_client.invoke_model(
+                modelId=self.model_id,
+                body=json.dumps(request_body),
+                contentType="application/json",
+                accept="application/json",
+            )
 
-                response_body = json.loads(response["body"].read())
-                emotion_key = response_body["content"][0]["text"].strip().lower()
-            
-            # 有効な感情キーかチェック
-            if emotion_key in VALID_EMOTION_KEYS:
-                logger.info(f"Classified emotion: {emotion_key}")
-                return emotion_key
+            response_body = json.loads(response["body"].read())
+            emotion_key = response_body["content"][0]["text"].strip().lower()
+
+            validated = self._validate_emotion_key(emotion_key)
+            if validated:
+                logger.info(f"Classified emotion: {validated}")
             elif emotion_key == "none":
                 logger.info("Emotion classification returned 'none'")
-                return None
-            else:
-                logger.warning(f"Unknown emotion key returned: {emotion_key}")
-                return None
-                
+            return validated
+
         except Exception as e:
             logger.error(f"Failed to classify emotion: {e}")
             return None

@@ -194,15 +194,24 @@ uv run npx cdk deploy
 
 ### 4. 頭脳（AgentCore Runtime）
 
-推し投稿への応答文・リプライ応答・感情分類は、Lambda から Amazon Bedrock AgentCore Runtime `imomaru_brain`
-（Strands Agent）に依頼して生成します（フェーズ2a、2026-09-12）。
+推し投稿への反応とリプライ応答は、Lambda から Amazon Bedrock AgentCore Runtime `imomaru_brain`
+（Strands Agent）に依頼して生成します（フェーズ2a、2026-09-12。2b-2-1 で `react` に統合、2026-09-16）。
+
+| タスク | 入力 | 出力 |
+|------|------|------|
+| `react` | 投稿本文 ＋ 時刻情報（投稿時刻・現在時刻・公開予定＝次の Buffer 枠、JST） | JSON 提案 `{"action": "post"\|"skip", "text", "emotion_key", "reason"}`。`skip` なら Lambda は Buffer に入れず、理由をメールに載せる |
+| `reply_response` | 許可ユーザーのリプライ本文・元投稿 | 応答文 |
+
+「考える頭脳・実行する Lambda」（設計書 §10-11）: 頭脳は提案を返すだけで、140 字整形・感情キー検証・Buffer／メール・キャップは Lambda が決定論で行います。
+時刻情報は Buffer 予約制で「検知 → 公開」に数時間のラグがあるため、公開時刻に合った挨拶・時制（「昨夜の〜」）にするためのものです。
 
 | 項目 | 内容 |
 |------|------|
 | デプロイ方式 | direct code deploy（`dist/brain.zip`、`PYTHON_3_12`、arm64）。`agent/` 配下のコードと `agent/requirements.txt` を `scripts/build_agent_package.sh` が zip 化し、CDK が S3 アセットとして配置 |
 | モデル | Runtime の環境変数 `BRAIN_MODEL_ID`（`stack.py` の `BRAIN_MODEL_ID`）。既定 `moonshotai.kimi-k2.5`（東京 In-Region）。差し替えは値を変えて `cdk deploy` するだけ。Grok 4.6 はこのアカウントでは提供制限（`AccessDeniedException … not available for this account`）のため未使用 |
 | 呼び出し | Lambda の `AIGenerator` → `utils/brain_client.py`（`bedrock-agentcore:InvokeAgentRuntime`）。Lambda 1 回の実行で 1 セッションを使い回す。Runtime 側の Agent はリクエストごとに使い捨て |
-| フォールバック | 頭脳の呼び出しに失敗すると `[ERROR] Brain failed …` を出して（アラーム発火）Bedrock Haiku 4.5 直呼びに切り替える。`BRAIN_RUNTIME_ARN` が空なら直呼びのみ |
+| フォールバック | 頭脳の呼び出しに失敗（JSON 提案の形が崩れた場合も含む）すると `[ERROR] Brain failed …` を出して（アラーム発火）Bedrock Haiku 4.5 直呼び（応答生成 → 感情分類の 2 段）に切り替える。`BRAIN_RUNTIME_ARN` が空なら直呼びのみ |
+| 公開予定時刻 | Lambda env `BUFFER_SLOT_TIMES_JST`（Buffer UI のスロット時刻の写し、既定 `08:00,11:15,12:15,14:15,15:15,19:15,20:15,21:15`）から現在時刻の次の枠を算出して頭脳に渡す。Buffer UI で枠を変えたらこの値も合わせる |
 | プロンプト | `src/hokuhoku_imomaru_bot/prompts.py` が単一ソース（`agent/prompts.py` はそのシンボリックリンク）。キャラクター定義は system prompt、反応対象は user message |
 | 本文の体裁 | 1 文 1 行 ＋ 空行 ＋ ハッシュタグ（最終行）。プロンプトで指示しつつ、Lambda 側 `AIGenerator.format_post_text` が文末「ｲﾓ🍠」を境に機械的に整える（モデルが 1 行で返しても保証）。整形後に改行込みで 140 字に切り詰める（2026-09-15） |
 | ログ | `/aws/bedrock-agentcore/runtimes/imomaru_brain-*` |
@@ -211,10 +220,12 @@ uv run npx cdk deploy
 # ローカルで頭脳を起動して確認（Bedrock を実際に呼びます）
 uv run python agent/main.py
 curl -X POST localhost:8080/invocations -H 'Content-Type: application/json' \
-  -d '{"task":"oshi_response","input":{"post_content":"今日はライブでした！","post_type":"oshi"}}'
+  -d '{"task":"react","input":{"post_content":"今日はライブでした！","post_type":"oshi","posted_at":"2026-09-16(火) 01:42 JST","now":"2026-09-16(火) 10:07 JST","publish_at":"2026-09-16(火) 11:15 JST"}}'
 
-# deploy 後の本番疎通確認（3 タスクを 1 回ずつ invoke）
+# deploy 後の本番疎通確認（2 タスクを 1 回ずつ invoke）
 uv run python scripts/test_brain_invoke.py
+# react の JSON 提案の安定性（パース成功率・action の分布）
+uv run python scripts/test_brain_invoke.py --task react --runs 5
 ```
 
 **クレジット相殺の確認**（モデルカードに Marketplace 文言がない ＝ AWS 販売 ＝ クレジット対象の見込み。最終確認は実請求）:
@@ -312,6 +323,7 @@ rm /tmp/buffer-secret.json
 |------|--------|------|
 | `BUFFER_RUN_CAP` | `1` | **主キャップ**。Lambda 1 回の実行で Buffer へ予約投入する上限件数。超えた分はメール素案のみ（X Intent リンクから手動投稿可）。各実行の検知分が均等に Buffer に載るよう「1日合計」ではなく「実行ごと」で数える |
 | `BUFFER_DAILY_CAP` | `7` | **安全弁**。1日の投入上限。スロット数/日（8）より小さくしてキューが必ず毎日減るようにし、Buffer 無料枠（キュー 10 件）を溢れさせない。`BUFFER_RUN_CAP` を上げるときはこの値とスロット数も見直す |
+| `BUFFER_SLOT_TIMES_JST` | `08:00,11:15,12:15,14:15,15:15,19:15,20:15,21:15` | Buffer UI のスロット時刻（JST）の写し。頭脳に渡す「公開予定時刻」（現在時刻の次の枠）の見込み計算にだけ使い、実際の予約時刻は Buffer が決める。UI で枠を変えたら合わせる |
 | `PUBLIC_ASSETS_BUCKET_NAME` | CDK が設定 | 感情画像の公開バケット（`imomaru-bot-public-assets-<account>`）。Buffer は**投稿公開時**に画像 URL を取りに来るため、署名付き URL ではなく公開 URL が必要 |
 
 **Buffer 側のスロット設定（予約時刻は Buffer に任せる）**
