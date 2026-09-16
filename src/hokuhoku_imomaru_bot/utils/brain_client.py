@@ -2,7 +2,7 @@
 BrainClient — 頭脳（AgentCore Runtime `imomaru_brain`）の呼び出し
 
 Lambda 1 invocation につき 1 つの runtimeSessionId を使い回し、Runtime 側の
-microVM をウォームのまま複数タスク（投稿ごとの応答生成・感情分類・リプライ応答）に使う。
+microVM をウォームのまま複数タスク（投稿ごとの反応提案・リプライ応答）に使う。
 Runtime 側の Agent はリクエストごとに使い捨てなので、セッションを共有しても
 会話履歴は混ざらない（agent/brain.py 参照）。
 
@@ -31,7 +31,7 @@ class BrainError(Exception):
 
 
 class BrainClient:
-    """AgentCore Runtime に {"task", "input"} を送り {"success", "text"|"error", "model_id"} を受け取る"""
+    """AgentCore Runtime に {"task", "input"} を送り {"success", "text"|"result"|"error", "model_id"} を受け取る"""
 
     def __init__(
         self,
@@ -60,11 +60,41 @@ class BrainClient:
 
     def invoke(self, task: str, task_input: Dict[str, Any]) -> str:
         """
-        タスクを頭脳に依頼し、生成テキストを返す
+        文字列を返すタスク（reply_response）を頭脳に依頼し、生成テキストを返す
 
         Raises:
             BrainError: 呼び出し失敗、Runtime が success=false を返した、レスポンスが解釈不能
         """
+        body = self._call(task, task_input)
+        text = body.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise BrainError(f"brain returned empty text for task={task}")
+
+        logger.info(
+            f"Brain task={task} model={body.get('model_id')} chars={len(text)} session={self._session_id}"
+        )
+        return text
+
+    def invoke_json(self, task: str, task_input: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        JSON 提案を返すタスク（react）を頭脳に依頼し、提案オブジェクト（result）を返す
+
+        Raises:
+            BrainError: 呼び出し失敗、Runtime が success=false を返した、result がオブジェクトでない
+        """
+        body = self._call(task, task_input)
+        result = body.get("result")
+        if not isinstance(result, dict):
+            raise BrainError(f"brain returned no result object for task={task}")
+
+        logger.info(
+            f"Brain task={task} model={body.get('model_id')} action={result.get('action')} "
+            f"chars={len(result.get('text') or '')} session={self._session_id}"
+        )
+        return result
+
+    def _call(self, task: str, task_input: Dict[str, Any]) -> Dict[str, Any]:
+        """Runtime を invoke し、success=true のレスポンスボディを dict で返す"""
         payload = json.dumps({"task": task, "input": task_input}, ensure_ascii=False).encode("utf-8")
         try:
             response = self._client.invoke_agent_runtime(
@@ -87,15 +117,7 @@ class BrainClient:
         if not isinstance(body, dict) or not body.get("success"):
             error = body.get("error") if isinstance(body, dict) else body
             raise BrainError(f"brain returned failure for task={task}: {error}")
-
-        text = body.get("text")
-        if not isinstance(text, str) or not text.strip():
-            raise BrainError(f"brain returned empty text for task={task}")
-
-        logger.info(
-            f"Brain task={task} model={body.get('model_id')} chars={len(text)} session={self._session_id}"
-        )
-        return text
+        return body
 
 
 def _read_response_body(response: Dict[str, Any]) -> str:

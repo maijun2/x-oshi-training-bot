@@ -19,6 +19,7 @@ from src.hokuhoku_imomaru_bot.lambda_handler import (
     _check_engagement_safe,
 )
 from src.hokuhoku_imomaru_bot.models import BotState
+from src.hokuhoku_imomaru_bot.services.ai_generator import Reaction
 from src.hokuhoku_imomaru_bot.services import (
     StateStore,
     TimelineMonitor,
@@ -130,7 +131,7 @@ class TestProcessBotLogic:
         level_manager.check_level_up.return_value = (False, 1)
         
         ai_generator = MagicMock(spec=AIGenerator)
-        ai_generator.generate_response.return_value = "応答テキスト"
+        ai_generator.generate_reaction.return_value = Reaction(action="post", text="応答テキスト", emotion_key=None)
         
         image_compositor = MagicMock(spec=ImageCompositor)
         profile_updater = MagicMock(spec=ProfileUpdater)
@@ -225,7 +226,7 @@ class TestProcessBotLogic:
         assert state.latest_oshi_tweet_id == "123456790"
         # 引用側は一切動かない
         assert result["quotes_posted"] == 0
-        ai_generator.generate_response.assert_not_called()
+        ai_generator.generate_reaction.assert_not_called()
         draft_notifier.send_draft_email.assert_not_called()
         state_store.acquire_tweet_lock.assert_called_once_with("123456790", "quote_oshi")
 
@@ -252,7 +253,7 @@ class TestProcessBotLogic:
         level_manager.check_level_up.return_value = (False, 1)
         
         ai_generator = MagicMock(spec=AIGenerator)
-        ai_generator.generate_response.return_value = "応答テキスト"
+        ai_generator.generate_reaction.return_value = Reaction(action="post", text="応答テキスト", emotion_key=None)
         
         image_compositor = MagicMock(spec=ImageCompositor)
         profile_updater = MagicMock(spec=ProfileUpdater)
@@ -290,7 +291,7 @@ class TestProcessBotLogic:
         x_api_client.post_tweet.assert_not_called()
         
         # AI_Generatorが呼び出されないことを確認
-        ai_generator.generate_response.assert_not_called()
+        ai_generator.generate_reaction.assert_not_called()
 
     def test_group_post_detected_logs_xp_only(self):
         """グループオリジナル投稿検出時にXPのみ処理のログが出力されることを確認"""
@@ -488,7 +489,7 @@ class TestProcessBotLogic:
         level_manager.check_level_up.return_value = (False, 1)
         
         ai_generator = MagicMock(spec=AIGenerator)
-        ai_generator.generate_response.return_value = "応答"
+        ai_generator.generate_reaction.return_value = Reaction(action="post", text="応答", emotion_key=None)
         
         image_compositor = MagicMock(spec=ImageCompositor)
         profile_updater = MagicMock(spec=ProfileUpdater)
@@ -552,7 +553,7 @@ class TestPostQuoteSafe:
 
         tweet = Tweet(id="123", text="元の投稿", author_id="user")
         ai_generator = MagicMock(spec=AIGenerator)
-        ai_generator.generate_response.return_value = "応答テキスト"
+        ai_generator.generate_reaction.return_value = Reaction(action="post", text="応答テキスト", emotion_key=None)
         x_api_client = MagicMock()
         state_store = MagicMock(spec=StateStore)
         draft_notifier = MagicMock(spec=DraftNotifier)
@@ -564,10 +565,14 @@ class TestPostQuoteSafe:
         )
 
         assert result is True
-        ai_generator.generate_response.assert_called_once_with(
-            post_content="元の投稿",
-            post_type="oshi",
-        )
+        kwargs = ai_generator.generate_reaction.call_args.kwargs
+        assert kwargs["post_content"] == "元の投稿"
+        assert kwargs["post_type"] == "oshi"
+        # Buffer 連携なし: 公開予定は不明、感情分類も不要
+        assert kwargs["publish_at"] is None
+        assert kwargs["classify"] is False
+        # created_at なしなら投稿時刻は現在時刻で代用
+        assert kwargs["posted_at"] == kwargs["now"]
         # X API は呼ばれない（課金なし）
         x_api_client.post_tweet.assert_not_called()
         # メール送信が呼ばれる（Buffer 連携なし = disabled）
@@ -580,13 +585,14 @@ class TestPostQuoteSafe:
             buffer_status="disabled",
             buffer_due_at=None,
             buffer_run_cap=None,
+            skip_reason=None,
         )
 
     def test_returns_false_when_no_draft_notifier(self):
         """draft_notifier が None の場合は False を返す"""
         tweet = Tweet(id="123", text="元の投稿", author_id="user")
         ai_generator = MagicMock(spec=AIGenerator)
-        ai_generator.generate_response.return_value = "応答テキスト"
+        ai_generator.generate_reaction.return_value = Reaction(action="post", text="応答テキスト", emotion_key=None)
         x_api_client = MagicMock()
         state_store = MagicMock(spec=StateStore)
 
@@ -602,7 +608,7 @@ class TestPostQuoteSafe:
         """AI 生成エラー時に False を返す"""
         tweet = Tweet(id="123", text="元の投稿", author_id="user")
         ai_generator = MagicMock(spec=AIGenerator)
-        ai_generator.generate_response.side_effect = Exception("Bedrock error")
+        ai_generator.generate_reaction.side_effect = Exception("Bedrock error")
         x_api_client = MagicMock()
         state_store = MagicMock(spec=StateStore)
 
@@ -616,7 +622,7 @@ class TestPostQuoteSafe:
 
         tweet = Tweet(id="123", text="元の投稿", author_id="user")
         ai_generator = MagicMock(spec=AIGenerator)
-        ai_generator.generate_response.return_value = "応答テキスト"
+        ai_generator.generate_reaction.return_value = Reaction(action="post", text="応答テキスト", emotion_key=None)
         x_api_client = MagicMock()
         state_store = MagicMock(spec=StateStore)
         draft_notifier = MagicMock(spec=DraftNotifier)
@@ -821,7 +827,7 @@ class TestRetweetProcessing:
         # 引用ポストはされない
         assert result["quotes_posted"] == 0
         x_api_client.post_tweet.assert_not_called()
-        ai_generator.generate_response.assert_not_called()
+        ai_generator.generate_reaction.assert_not_called()
         ai_generator.generate_retweet_response.assert_not_called()
     
     def test_group_retweet_xp_only_no_quote(self):
@@ -967,7 +973,7 @@ class TestMultiplePostsDetection:
         level_manager.check_level_up.return_value = (False, 1)
         
         ai_generator = MagicMock(spec=AIGenerator)
-        ai_generator.generate_response.return_value = "応答"
+        ai_generator.generate_reaction.return_value = Reaction(action="post", text="応答", emotion_key=None)
         
         image_compositor = MagicMock(spec=ImageCompositor)
         profile_updater = MagicMock(spec=ProfileUpdater)
@@ -1157,6 +1163,32 @@ class TestDraftNotifier:
         assert "Buffer 予約" not in html
         assert "Buffer 予約" not in text
 
+    def test_buffer_skipped_section_shows_reason(self):
+        """skipped: 頭脳の見送り理由が載り、Buffer には入れていないことと手動投稿の非常口を案内する"""
+        html, text = self._send(buffer_status="skipped", skip_reason="URL のみで内容が読めない")
+        for body in (html, text):
+            assert "いも丸は反応を見送りました（URL のみで内容が読めない）" in body
+            assert "Buffer には入れていません" in body
+            assert "手動" in body
+        assert "https://x.com/intent/tweet?text=" in html
+
+    def test_skipped_without_draft_text_still_sends(self):
+        """素案が空（skip）でも元投稿 URL だけの Intent リンクで送れる"""
+        from src.hokuhoku_imomaru_bot.services import DraftNotifier
+
+        ses_client = MagicMock()
+        notifier = DraftNotifier(ses_client=ses_client, from_email="f@example.com", to_email="t@example.com")
+        assert notifier.send_draft_email(
+            original_tweet_text="https://t.co/x",
+            original_tweet_id="123456",
+            oshi_username="juri_bigangel",
+            draft_text="",
+            buffer_status="skipped",
+            skip_reason="読めない",
+        )
+        body = ses_client.send_email.call_args[1]["Message"]["Body"]
+        assert "https://x.com/intent/tweet?text=https%3A//x.com/juri_bigangel/status/123456" in body["Html"]["Data"]
+
 
 class TestPostQuoteSafeWithEmotionImage:
     """_post_quote_safe の感情分類 ＋ Buffer 投入パスのテスト（半人力）"""
@@ -1170,19 +1202,21 @@ class TestPostQuoteSafeWithEmotionImage:
             state.daily_buffer_count < cap and not state.daily_image_posted
         )
         scheduler.schedule_quote.return_value = scheduled
+        scheduler.next_slot_at.return_value = self.NEXT_SLOT
         return scheduler
+
+    NEXT_SLOT = datetime(2026, 9, 16, 5, 15, tzinfo=timezone.utc)  # 09-16 14:15 JST
 
     def test_schedules_to_buffer_with_emotion_image(self):
         """推し投稿で感情分類 → Buffer に画像付きで投入 → メールに予約状況が載る"""
         from src.hokuhoku_imomaru_bot.services import DraftNotifier, ScheduledPost
 
-        tweet = Tweet(id="123", text="元の投稿", author_id="user")
+        tweet = Tweet(id="123", text="元の投稿", author_id="user", created_at="2026-09-15T16:42:00.000Z")
         state = BotState(daily_image_posted=False)
         due_at = datetime(2026, 9, 13, 23, 21, tzinfo=timezone.utc)
 
         ai_generator = MagicMock(spec=AIGenerator)
-        ai_generator.generate_response.return_value = "嬉しいｲﾓ🍠"
-        ai_generator.classify_emotion.return_value = "joy"
+        ai_generator.generate_reaction.return_value = Reaction(action="post", text="嬉しいｲﾓ🍠", emotion_key="joy")
 
         x_api_client = MagicMock()
         state_store = MagicMock(spec=StateStore)
@@ -1207,6 +1241,12 @@ class TestPostQuoteSafeWithEmotionImage:
         )
 
         assert result is True
+        # 頭脳には投稿時刻・現在時刻・公開予定（次の Buffer 枠）を渡し、画像付き投入できるので分類も依頼する
+        kwargs = ai_generator.generate_reaction.call_args.kwargs
+        assert kwargs["posted_at"] == datetime(2026, 9, 15, 16, 42, tzinfo=timezone.utc)
+        assert kwargs["publish_at"] == self.NEXT_SLOT
+        assert kwargs["classify"] is True
+        scheduler.next_slot_at.assert_called_once_with(kwargs["now"])
         scheduler.schedule_quote.assert_called_once_with(
             state=state, tweet_id="123", draft_text="嬉しいｲﾓ🍠", emotion_key="joy"
         )
@@ -1219,6 +1259,7 @@ class TestPostQuoteSafeWithEmotionImage:
             buffer_status="scheduled",
             buffer_due_at=due_at,
             buffer_run_cap=3,
+            skip_reason=None,
         )
         # X API は呼ばれない（課金なし）
         x_api_client.post_tweet.assert_not_called()
@@ -1231,7 +1272,7 @@ class TestPostQuoteSafeWithEmotionImage:
         state = BotState(daily_image_posted=False)
 
         ai_generator = MagicMock(spec=AIGenerator)
-        ai_generator.generate_response.return_value = "応答"
+        ai_generator.generate_reaction.return_value = Reaction(action="post", text="応答", emotion_key=None)
         draft_notifier = MagicMock(spec=DraftNotifier)
         draft_notifier.send_draft_email.return_value = True
 
@@ -1250,7 +1291,7 @@ class TestPostQuoteSafeWithEmotionImage:
         )
 
         assert result is True
-        ai_generator.classify_emotion.assert_not_called()
+        assert ai_generator.generate_reaction.call_args.kwargs["classify"] is False
         assert state.daily_image_posted is False
 
     def test_no_emotion_key_when_already_posted_today(self):
@@ -1261,7 +1302,8 @@ class TestPostQuoteSafeWithEmotionImage:
         state = BotState(daily_image_posted=True)
 
         ai_generator = MagicMock(spec=AIGenerator)
-        ai_generator.generate_response.return_value = "応答"
+        # 頭脳は emotion_key を返すが、本日は画像添付済みなので使わない
+        ai_generator.generate_reaction.return_value = Reaction(action="post", text="応答", emotion_key="joy")
         draft_notifier = MagicMock(spec=DraftNotifier)
         draft_notifier.send_draft_email.return_value = True
         scheduler = self._make_scheduler(
@@ -1283,7 +1325,7 @@ class TestPostQuoteSafeWithEmotionImage:
         )
 
         assert result is True
-        ai_generator.classify_emotion.assert_not_called()
+        assert ai_generator.generate_reaction.call_args.kwargs["classify"] is False
         scheduler.schedule_quote.assert_called_once_with(
             state=state, tweet_id="123", draft_text="応答", emotion_key=None
         )
@@ -1298,7 +1340,7 @@ class TestPostQuoteSafeWithEmotionImage:
         state = BotState(daily_buffer_count=3)
 
         ai_generator = MagicMock(spec=AIGenerator)
-        ai_generator.generate_response.return_value = "応答"
+        ai_generator.generate_reaction.return_value = Reaction(action="post", text="応答", emotion_key=None)
         draft_notifier = MagicMock(spec=DraftNotifier)
         draft_notifier.send_draft_email.return_value = True
         scheduler = self._make_scheduler(state, scheduled=None, cap=3)
@@ -1316,7 +1358,7 @@ class TestPostQuoteSafeWithEmotionImage:
         )
 
         assert result is True
-        ai_generator.classify_emotion.assert_not_called()
+        assert ai_generator.generate_reaction.call_args.kwargs["classify"] is False
         kwargs = draft_notifier.send_draft_email.call_args.kwargs
         assert kwargs["buffer_status"] == "cap"
         assert kwargs["buffer_run_cap"] == 3
@@ -1330,8 +1372,7 @@ class TestPostQuoteSafeWithEmotionImage:
         state = BotState()
 
         ai_generator = MagicMock(spec=AIGenerator)
-        ai_generator.generate_response.return_value = "応答"
-        ai_generator.classify_emotion.return_value = "joy"
+        ai_generator.generate_reaction.return_value = Reaction(action="post", text="応答", emotion_key="joy")
         draft_notifier = MagicMock(spec=DraftNotifier)
         draft_notifier.send_draft_email.return_value = True
         scheduler = self._make_scheduler(state)
@@ -1356,6 +1397,42 @@ class TestPostQuoteSafeWithEmotionImage:
         assert kwargs["emotion_key"] is None
         assert state.daily_image_posted is False
 
+    def test_skip_sends_email_without_buffer(self):
+        """頭脳が skip を返したら Buffer に入れず、メールに理由（skipped）を載せる。画像フラグも動かさない"""
+        from src.hokuhoku_imomaru_bot.services import DraftNotifier
+
+        tweet = Tweet(id="123", text="https://t.co/x", author_id="user")
+        state = BotState(daily_image_posted=False)
+
+        ai_generator = MagicMock(spec=AIGenerator)
+        ai_generator.generate_reaction.return_value = Reaction(
+            action="skip", text="", emotion_key="joy", reason="URL のみで内容が読めない"
+        )
+        draft_notifier = MagicMock(spec=DraftNotifier)
+        draft_notifier.send_draft_email.return_value = True
+        scheduler = self._make_scheduler(state)
+
+        result = _post_quote_safe(
+            tweet=tweet,
+            post_type="oshi",
+            ai_generator=ai_generator,
+            x_api_client=MagicMock(),
+            state_store=MagicMock(spec=StateStore),
+            state=state,
+            oshi_username="juri_bigangel",
+            draft_notifier=draft_notifier,
+            buffer_scheduler=scheduler,
+        )
+
+        assert result is True
+        scheduler.schedule_quote.assert_not_called()
+        kwargs = draft_notifier.send_draft_email.call_args.kwargs
+        assert kwargs["buffer_status"] == "skipped"
+        assert kwargs["skip_reason"] == "URL のみで内容が読めない"
+        assert kwargs["draft_text"] == ""
+        assert kwargs["emotion_key"] is None
+        assert state.daily_image_posted is False
+        assert state.daily_buffer_count == 0
 
 
 class TestCheckEngagementSafe:
@@ -1704,7 +1781,7 @@ class TestCoreTimeMode:
         level_manager.check_level_up.return_value = (False, 1)
 
         ai_generator = MagicMock(spec=AIGenerator)
-        ai_generator.generate_response.return_value = "応答ｲﾓ🍠"
+        ai_generator.generate_reaction.return_value = Reaction(action="post", text="応答ｲﾓ🍠", emotion_key=None)
 
         daily_reporter = MagicMock(spec=DailyReporter)
 
@@ -2269,7 +2346,7 @@ class TestOshiMemoryWrite:
         level_manager = MagicMock(spec=LevelManager)
         level_manager.check_level_up.return_value = (False, 1)
         ai_generator = MagicMock(spec=AIGenerator)
-        ai_generator.generate_response.return_value = "応答テキスト"
+        ai_generator.generate_reaction.return_value = Reaction(action="post", text="応答テキスト", emotion_key=None)
         daily_reporter = MagicMock(spec=DailyReporter)
         daily_reporter.should_post_daily_report.return_value = False
         reply_monitor, allowed_users_service, reply_processor = _make_reply_mocks()

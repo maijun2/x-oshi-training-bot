@@ -8,16 +8,38 @@ NG なら Buffer 側で削除する。予約時刻は Buffer のスロット設�
 import logging
 import urllib.parse
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Optional
+from datetime import datetime, time, timedelta
+from typing import Optional, Sequence, Tuple
 
 from ..clients.buffer_client import BufferClient
 from ..models.bot_state import BotState
+from .daily_reporter import JST
 from .state_store import StateStore
 
 logger = logging.getLogger(__name__)
 
 EMOTION_IMAGE_ALT_TEXT = "ほくほくいも丸くんのスタンプ"
+
+# Buffer UI のスロット設定（全曜日共通、JST）の写し。公開予定時刻の見込みにだけ使い、
+# 実際の予約時刻は Buffer が決める。UI で枠を変えたら env BUFFER_SLOT_TIMES_JST も合わせる
+DEFAULT_SLOT_TIMES_JST: Tuple[str, ...] = (
+    "08:00", "11:15", "12:15", "14:15", "15:15", "19:15", "20:15", "21:15",
+)
+
+
+def parse_slot_times(value: str) -> Tuple[time, ...]:
+    """"HH:MM,HH:MM,..." を JST の time のタプル（昇順）にする。空や不正な要素は無視"""
+    slots = []
+    for item in value.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            hour, minute = item.split(":")
+            slots.append(time(int(hour), int(minute), tzinfo=JST))
+        except ValueError:
+            logger.warning(f"Ignoring invalid Buffer slot time: {item!r}")
+    return tuple(sorted(slots))
 
 
 @dataclass
@@ -48,6 +70,7 @@ class BufferScheduler:
         oshi_username: str,
         daily_cap: int = 7,
         run_cap: int = 1,
+        slot_times_jst: Sequence[str] = DEFAULT_SLOT_TIMES_JST,
     ):
         """
         Args:
@@ -58,6 +81,7 @@ class BufferScheduler:
             oshi_username: 推しの X ユーザー名（元ツイート URL 用）
             daily_cap: 1日の Buffer 投入件数の上限（安全弁）
             run_cap: Lambda 1 回の実行あたりの Buffer 投入件数の上限（主キャップ）
+            slot_times_jst: Buffer のスロット時刻（"HH:MM"、JST）。next_slot_at の見込み計算に使う
         """
         self._buffer_client = buffer_client
         self._state_store = state_store
@@ -66,6 +90,7 @@ class BufferScheduler:
         self._daily_cap = daily_cap
         self._run_cap = run_cap
         self._run_count = 0
+        self._slot_times = parse_slot_times(",".join(slot_times_jst))
 
     @property
     def daily_cap(self) -> int:
@@ -74,6 +99,20 @@ class BufferScheduler:
     @property
     def run_cap(self) -> int:
         return self._run_cap
+
+    def next_slot_at(self, now: datetime) -> Optional[datetime]:
+        """
+        now より後の最初のスロット時刻（見込みの公開時刻）を返す。今日に残り枠がなければ翌日の先頭枠。
+        頭脳に「応答が読まれる時刻」として渡す。スロット設定が空なら None
+        """
+        if not self._slot_times:
+            return None
+        now_jst = now.astimezone(JST)
+        for slot in self._slot_times:
+            candidate = datetime.combine(now_jst.date(), slot)
+            if candidate > now_jst:
+                return candidate
+        return datetime.combine(now_jst.date() + timedelta(days=1), self._slot_times[0])
 
     def can_schedule(self, state: BotState) -> bool:
         """この実行のキャップにも本日のキャップにも達していなければ True"""

@@ -33,18 +33,18 @@ class TestInvoke:
             {"success": True, "text": "嬉しいｲﾓ🍠", "model_id": "moonshotai.kimi-k2.5"}
         )
 
-        assert client.invoke("oshi_response", {"post_content": "x", "post_type": "oshi"}) == "嬉しいｲﾓ🍠"
+        assert client.invoke("reply_response", {"post_content": "x", "post_type": "oshi"}) == "嬉しいｲﾓ🍠"
 
         kwargs = boto.invoke_agent_runtime.call_args.kwargs
         assert kwargs["agentRuntimeArn"] == ARN
         assert kwargs["qualifier"] == "DEFAULT"
-        assert json.loads(kwargs["payload"]) == {"task": "oshi_response", "input": {"post_content": "x", "post_type": "oshi"}}
+        assert json.loads(kwargs["payload"]) == {"task": "reply_response", "input": {"post_content": "x", "post_type": "oshi"}}
 
     def test_session_id_is_reused_and_long_enough(self, client, boto):
         boto.invoke_agent_runtime.return_value = _response({"success": True, "text": "a"})
-        client.invoke("oshi_response", {})
+        client.invoke("reply_response", {})
         boto.invoke_agent_runtime.return_value = _response({"success": True, "text": "b"})
-        client.invoke("classify_emotion", {})
+        client.invoke("reply_response", {})
 
         sids = {c.kwargs["runtimeSessionId"] for c in boto.invoke_agent_runtime.call_args_list}
         assert len(sids) == 1
@@ -56,7 +56,7 @@ class TestInvoke:
 
     def test_multibyte_split_across_chunks(self, client, boto):
         boto.invoke_agent_runtime.return_value = _response({"success": True, "text": "甘木ジュリさん最高ｲﾓ🍠"})
-        assert client.invoke("oshi_response", {}) == "甘木ジュリさん最高ｲﾓ🍠"
+        assert client.invoke("reply_response", {}) == "甘木ジュリさん最高ｲﾓ🍠"
 
     def test_brain_failure_raises(self, client, boto):
         boto.invoke_agent_runtime.return_value = _response({"success": False, "error": "unknown task"})
@@ -66,21 +66,51 @@ class TestInvoke:
     def test_empty_text_raises(self, client, boto):
         boto.invoke_agent_runtime.return_value = _response({"success": True, "text": "   "})
         with pytest.raises(BrainError, match="empty text"):
-            client.invoke("oshi_response", {})
+            client.invoke("reply_response", {})
 
     def test_non_json_raises(self, client, boto):
         boto.invoke_agent_runtime.return_value = _response("<html>oops</html>")
         with pytest.raises(BrainError, match="non-JSON"):
-            client.invoke("oshi_response", {})
+            client.invoke("reply_response", {})
 
     def test_transport_exception_wrapped(self, client, boto):
         boto.invoke_agent_runtime.side_effect = RuntimeError("timeout")
         with pytest.raises(BrainError, match="RuntimeError: timeout"):
-            client.invoke("oshi_response", {})
+            client.invoke("reply_response", {})
 
     def test_requires_arn(self, boto):
         with pytest.raises(ValueError):
             BrainClient("", client=boto)
+
+
+class TestInvokeJson:
+    REACTION = {"action": "post", "text": "嬉しいｲﾓ🍠", "emotion_key": "joy", "reason": "r"}
+
+    def test_success_returns_result_object(self, client, boto):
+        boto.invoke_agent_runtime.return_value = _response(
+            {"success": True, "result": self.REACTION, "model_id": "moonshotai.kimi-k2.5"}
+        )
+
+        assert client.invoke_json("react", {"post_content": "x"}) == self.REACTION
+
+        kwargs = boto.invoke_agent_runtime.call_args.kwargs
+        assert kwargs["runtimeSessionId"] == client.session_id
+        assert json.loads(kwargs["payload"]) == {"task": "react", "input": {"post_content": "x"}}
+
+    def test_missing_result_raises(self, client, boto):
+        boto.invoke_agent_runtime.return_value = _response({"success": True, "text": "not a result"})
+        with pytest.raises(BrainError, match="no result object"):
+            client.invoke_json("react", {})
+
+    def test_brain_failure_raises(self, client, boto):
+        boto.invoke_agent_runtime.return_value = _response({"success": False, "error": "ReactFormatError: x"})
+        with pytest.raises(BrainError, match="ReactFormatError"):
+            client.invoke_json("react", {})
+
+    def test_text_task_does_not_accept_result(self, client, boto):
+        boto.invoke_agent_runtime.return_value = _response({"success": True, "result": self.REACTION})
+        with pytest.raises(BrainError, match="empty text"):
+            client.invoke("reply_response", {})
 
 
 class TestReadResponseBody:

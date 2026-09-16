@@ -33,6 +33,7 @@ class DraftNotifier:
     BUFFER_STATUS_SCHEDULED = "scheduled"  # 予約投入済み（NG なら Buffer で削除）
     BUFFER_STATUS_CAP = "cap"              # この実行/本日のキャップ到達（メールのみ）
     BUFFER_STATUS_FAILED = "failed"        # 投入失敗（メールのみ）
+    BUFFER_STATUS_SKIPPED = "skipped"      # 頭脳が反応を見送った（メールのみ。理由を載せる）
 
     def __init__(
         self,
@@ -62,6 +63,7 @@ class DraftNotifier:
         buffer_status: str = BUFFER_STATUS_DISABLED,
         buffer_due_at: Optional[datetime] = None,
         buffer_run_cap: Optional[int] = None,
+        skip_reason: Optional[str] = None,
     ) -> bool:
         """
         投稿素案をメールで送信
@@ -75,6 +77,7 @@ class DraftNotifier:
             buffer_status: Buffer 投入状況（BUFFER_STATUS_*）
             buffer_due_at: Buffer の予約時刻（scheduled のとき）
             buffer_run_cap: 1回の実行あたりの投入キャップ（cap のときの表示用）
+            skip_reason: 頭脳が反応を見送った理由（skipped のときの表示用）
 
         Returns:
             送信成功の可否
@@ -82,7 +85,7 @@ class DraftNotifier:
         try:
             original_url = f"https://x.com/{oshi_username}/status/{original_tweet_id}"
             intent_url = self._build_intent_url(draft_text, original_url)
-            buffer_note = self._build_buffer_note(buffer_status, buffer_due_at, buffer_run_cap)
+            buffer_note = self._build_buffer_note(buffer_status, buffer_due_at, buffer_run_cap, skip_reason)
 
             html_body = self._build_html(
                 original_tweet_text=original_tweet_text,
@@ -132,7 +135,7 @@ class DraftNotifier:
 
         Web UI 経由のポストは X API 課金対象外。
         """
-        full_text = f"{draft_text}\n\n{original_url}"
+        full_text = f"{draft_text}\n\n{original_url}" if draft_text else original_url
         return "https://x.com/intent/tweet?text=" + urllib.parse.quote(full_text)
 
     @classmethod
@@ -141,10 +144,17 @@ class DraftNotifier:
         buffer_status: str,
         buffer_due_at: Optional[datetime],
         buffer_run_cap: Optional[int],
+        skip_reason: Optional[str] = None,
     ) -> Optional[str]:
         """
         Buffer 投入状況の説明文（HTML / テキスト共通）。disabled のときは None
         """
+        if buffer_status == cls.BUFFER_STATUS_SKIPPED:
+            reason = f"（{skip_reason}）" if skip_reason else ""
+            return (
+                f"いも丸は反応を見送りました{reason}。Buffer には入れていません。"
+                f"それでも投稿する場合は下の X リンクから手動でどうぞ。"
+            )
         if buffer_status == cls.BUFFER_STATUS_SCHEDULED:
             if buffer_due_at is not None:
                 jst = buffer_due_at.astimezone(JST)
@@ -185,7 +195,7 @@ class DraftNotifier:
                     .replace(">", "&gt;")
             )
 
-        post_text = f"{draft_text}\n\n{original_url}"
+        post_text = f"{draft_text}\n\n{original_url}" if draft_text else original_url
         escaped_post_text = _escape(post_text)
         escaped_original = _escape(original_tweet_text)
 
