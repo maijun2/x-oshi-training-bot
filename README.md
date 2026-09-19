@@ -165,11 +165,20 @@ GROUP_USER_ID=9876543210987654321
 
 # ボット自身のXアカウントユーザーID
 BOT_USER_ID=1111111111111111111
+
+# 素案メールの宛先（SES で検証済みのアドレス）
+NOTIFICATION_EMAIL=you@example.com
+
+# 素案メールの送信ドメインと送信元（任意。設定手順は「デプロイ後の設定 1-c」）
+SES_SENDER_DOMAIN=example.net
+FROM_EMAIL=imomaru@example.net
 ```
 
 **注意**: 
 - これらはXのユーザーIDです。ユーザー名（@xxx）ではありません。
 - `BOT_USER_ID` はボット自身の投稿へのエンゲージメント（いいね・リポスト）を追跡するために使用します。
+- `FROM_EMAIL` が空なら `NOTIFICATION_EMAIL` から送ります（宛先＝送信元）。宛先が Gmail だと
+  「自分のアカウントからの送信に見えるが確認できない」警告が出るため、独自ドメインからの送信を推奨します。
 - `.env`ファイルは`.gitignore`で除外されているため、リポジトリにはコミットされません。
 
 ### 2. CDKブートストラップ（初回のみ）
@@ -328,6 +337,7 @@ rm /tmp/buffer-secret.json
 |------|--------|------|
 | `BUFFER_RUN_CAP` | `1` | **主キャップ**。Lambda 1 回の実行で Buffer へ予約投入する上限件数。超えた分はメール素案のみ（X Intent リンクから手動投稿可）。各実行の検知分が均等に Buffer に載るよう「1日合計」ではなく「実行ごと」で数える |
 | `BUFFER_DAILY_CAP` | `7` | **安全弁**。1日の投入上限。スロット数/日（8）より小さくしてキューが必ず毎日減るようにし、Buffer 無料枠（キュー 10 件）を溢れさせない。`BUFFER_RUN_CAP` を上げるときはこの値とスロット数も見直す |
+| `FROM_EMAIL` | `NOTIFICATION_EMAIL` と同じ | 素案メールの送信元。独自ドメインの認証後に `.env` で設定する（「デプロイ後の設定 1-c」） |
 | `BUFFER_SLOT_TIMES_JST` | `08:00,11:15,12:15,14:15,15:15,19:15,20:15,22:00` | Buffer UI のスロット時刻（JST）の**名目値**。頭脳に渡す「公開予定時刻」（現在時刻の次の枠）の見込み計算にだけ使い、実際の予約時刻は Buffer が決める。実スロットは曜日ごとに名目値から ±数分ずらしてある（最大 12 分差）ので完全一致はしない。UI で枠の時間帯そのものを変えたら合わせる |
 | `PUBLIC_ASSETS_BUCKET_NAME` | CDK が設定 | 感情画像の公開バケット（`imomaru-bot-public-assets-<account>`）。Buffer は**投稿公開時**に画像 URL を取りに来るため、署名付き URL ではなく公開 URL が必要 |
 
@@ -388,6 +398,41 @@ uv run python scripts/test_buffer_post.py --text "テストｲﾓ🍠" --tweet-i
 # 後片付け
 uv run python scripts/test_buffer_post.py --delete <post_id>
 ```
+
+### 1-c. SES 送信ドメインの認証（素案メールを独自ドメインから送る）
+
+素案メールの From を `NOTIFICATION_EMAIL`（＝宛先）のままにすると、Gmail は「自分のアカウントから送信されたように
+見えるが確認できない」警告を出します。gmail.com として SES を認証する手段はないので、保有ドメインを SES に登録し、
+Easy DKIM とカスタム MAIL FROM で DMARC 整合させてから From を切り替えます。
+DNS が Route53 外（例: mixhost）でも、既存ゾーンにレコードを **追加するだけ** で済みます（既存の SPF / DKIM / DMARC / MX は触らない）。
+
+**手順は 2 段階**。ドメインの DMARC が `p=quarantine` 以上だと、認証が通る前に From を切り替えた時点でスパム行きになるため、順序を守ること。
+
+1. `.env` に `SES_SENDER_DOMAIN=<domain>` を設定（`FROM_EMAIL` はまだ空のまま）して `cdk deploy`。
+   Outputs に DNS 登録用の 5 レコードが出ます:
+
+   | Output | 種別 | 名前 | 値 |
+   |---|---|---|---|
+   | `SesDkimCname1〜3` | CNAME | `<token>._domainkey.<domain>` | `<token>.dkim.amazonses.com` |
+   | `SesMailFromMx` | MX | `ses.<domain>` | `10 feedback-smtp.ap-northeast-1.amazonses.com` |
+   | `SesMailFromSpf` | TXT | `ses.<domain>` | `v=spf1 include:amazonses.com ~all` |
+
+   MAIL FROM を `ses.<domain>` サブドメインにするのは、root の SPF に `include:amazonses.com` を足して
+   lookup 数（上限 10）を消費しないため。DMARC が relaxed alignment（`aspf=r`、既定）ならサブドメインで整合します
+2. 5 レコードを DNS に追加し、検証が通るのを待つ（数分〜1 時間）:
+
+   ```bash
+   aws sesv2 get-email-identity --email-identity <domain> --region ap-northeast-1 \
+     --query '{dkim:DkimAttributes.Status,mailFrom:MailFromAttributes.MailFromDomainStatus,verified:VerifiedForSendingStatus}'
+   # dkim: SUCCESS / mailFrom: SUCCESS / verified: true になるまで次へ進まない
+   ```
+3. `.env` に `FROM_EMAIL=<local-part>@<domain>` を設定して `cdk deploy`（Lambda 環境変数だけ変わる）。
+   送信元アドレスの受信箱は不要（ドメイン Identity なのでアドレス個別の検証も不要）
+4. 次のメールで Gmail の警告が消えていること、「メッセージのソースを表示」で SPF / DKIM / DMARC が PASS であることを確認
+
+ロールバックは `.env` の `FROM_EMAIL` を空にして `cdk deploy`（Identity は残してよい）。
+参考: [Easy DKIM](https://docs.aws.amazon.com/ses/latest/dg/send-email-authentication-dkim-easy.html) /
+[カスタム MAIL FROM](https://docs.aws.amazon.com/ses/latest/dg/mail-from.html)
 
 ### 2. S3へのベース画像アップロード
 
