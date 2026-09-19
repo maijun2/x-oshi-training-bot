@@ -20,8 +20,8 @@ logger = logging.getLogger(__name__)
 
 EMOTION_IMAGE_ALT_TEXT = "ほくほくいも丸くんのスタンプ"
 
-# Buffer UI のスロット設定（全曜日共通、JST）の写し。公開予定時刻の見込みにだけ使い、
-# 実際の予約時刻は Buffer が決める。UI で枠を変えたら env BUFFER_SLOT_TIMES_JST も合わせる
+# Buffer UI のスロット設定（JST）の名目値。公開予定時刻の見込みにだけ使い、実際の予約時刻は Buffer が決める。
+# 実スロットは曜日ごとに名目値から ±数分ずらしてある（README 参照）。UI で枠の時間帯を変えたら env BUFFER_SLOT_TIMES_JST も合わせる
 DEFAULT_SLOT_TIMES_JST: Tuple[str, ...] = (
     "08:00", "11:15", "12:15", "14:15", "15:15", "19:15", "20:15", "22:00",
 )
