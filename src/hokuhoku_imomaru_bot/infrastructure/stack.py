@@ -22,6 +22,7 @@ from aws_cdk import (
     aws_cloudwatch as cloudwatch,
     aws_logs as logs,
     aws_sns as sns,
+    aws_ses as ses,
     aws_cloudwatch_actions as cw_actions,
     aws_s3_assets as s3_assets,
     aws_bedrockagentcore as agentcore,
@@ -72,6 +73,10 @@ class ImomaruBotStack(Stack):
         group_user_id = os.getenv("GROUP_USER_ID", "")
         bot_user_id = os.getenv("BOT_USER_ID", "")
         notification_email = os.getenv("NOTIFICATION_EMAIL", "")
+        # SES 送信元。独自ドメインを設定するとドメイン Identity（Easy DKIM + カスタム MAIL FROM）を作る。
+        # FROM_EMAIL は DKIM/MAIL FROM の検証が SUCCESS になってから設定する（DMARC quarantine のため）
+        sender_domain = os.getenv("SES_SENDER_DOMAIN", "")
+        from_email = os.getenv("FROM_EMAIL", "") or notification_email
 
         # DynamoDB テーブル: BotState
         # ボットの状態（累積XP、現在レベル、最新Tweet ID、活動カウント）を保存
@@ -281,6 +286,30 @@ class ImomaruBotStack(Stack):
             )
         )
 
+        # SES 送信ドメイン Identity（DNS は Route53 外なので、Outputs のレコードを手動で登録する）
+        self.sender_identity = None
+        if sender_domain:
+            mail_from_domain = f"ses.{sender_domain}"  # SPF 整合用サブドメイン。root の SPF は触らない
+            self.sender_identity = ses.EmailIdentity(
+                self,
+                "SenderDomainIdentity",
+                identity=ses.Identity.domain(sender_domain),
+                mail_from_domain=mail_from_domain,
+            )
+            self.sender_identity.grant_send_email(self.lambda_role)
+            for i, record in enumerate(self.sender_identity.dkim_records, 1):
+                CfnOutput(self, f"SesDkimCname{i}", value=f"{record.name} CNAME {record.value}")
+            CfnOutput(
+                self,
+                "SesMailFromMx",
+                value=f"{mail_from_domain} MX 10 feedback-smtp.{self.region}.amazonses.com",
+            )
+            CfnOutput(
+                self,
+                "SesMailFromSpf",
+                value=f'{mail_from_domain} TXT "v=spf1 include:amazonses.com ~all"',
+            )
+
         # 頭脳: AgentCore Runtime（direct code deploy）
         self.brain_runtime = self._create_brain_runtime()
         brain_runtime_arn = self.brain_runtime.attr_agent_runtime_arn
@@ -336,7 +365,7 @@ class ImomaruBotStack(Stack):
                 "GROUP_USER_ID": group_user_id,
                 "BOT_USER_ID": bot_user_id,
                 "NOTIFICATION_EMAIL": notification_email,
-                "FROM_EMAIL": notification_email,
+                "FROM_EMAIL": from_email,
             },
             description="Imomaru Bot - Main Handler",
         )

@@ -1124,3 +1124,71 @@ def test_oshi_memory_created():
             ])
         }
     })
+
+
+def test_ses_sender_domain_identity_created(monkeypatch):
+    """
+    SES_SENDER_DOMAIN を設定すると、Easy DKIM + カスタム MAIL FROM 付きのドメイン Identity が作られ、
+    Lambda に送信権限が付き、DNS 登録用のレコードが Outputs に出ることを確認
+    """
+    monkeypatch.setenv("SES_SENDER_DOMAIN", "example.com")
+    monkeypatch.setenv("FROM_EMAIL", "bot@example.com")
+    app = cdk.App()
+    stack = ImomaruBotStack(app, "test-stack")
+    template = assertions.Template.from_stack(stack)
+
+    template.resource_count_is("AWS::SES::EmailIdentity", 1)
+    template.has_resource_properties("AWS::SES::EmailIdentity", {
+        "EmailIdentity": "example.com",
+        # DkimAttributes は既定（Easy DKIM、署名有効）なので CDK はテンプレートに出さない
+        "MailFromAttributes": assertions.Match.object_like({
+            "MailFromDomain": "ses.example.com",
+        }),
+    })
+    template.has_resource_properties("AWS::Lambda::Function", {
+        "Environment": {
+            "Variables": assertions.Match.object_like({
+                "FROM_EMAIL": "bot@example.com",
+            })
+        }
+    })
+    template.has_resource_properties("AWS::IAM::Policy", {
+        "PolicyDocument": {
+            "Statement": assertions.Match.array_with([
+                assertions.Match.object_like({
+                    "Action": ["ses:SendEmail", "ses:SendRawEmail"],
+                    "Effect": "Allow",
+                    "Resource": {
+                        "Fn::Join": ["", assertions.Match.array_with([
+                            ":identity/",
+                            {"Ref": assertions.Match.string_like_regexp("^SenderDomainIdentity")},
+                        ])]
+                    },
+                })
+            ])
+        }
+    })
+    outputs = template.find_outputs("*")
+    assert {"SesDkimCname1", "SesDkimCname2", "SesDkimCname3", "SesMailFromMx", "SesMailFromSpf"} <= set(outputs)
+    assert outputs["SesMailFromSpf"]["Value"] == 'ses.example.com TXT "v=spf1 include:amazonses.com ~all"'
+
+
+def test_ses_sender_domain_absent_falls_back_to_notification_email(monkeypatch):
+    """
+    SES_SENDER_DOMAIN / FROM_EMAIL が未設定なら Identity は作られず、FROM_EMAIL は NOTIFICATION_EMAIL のまま
+    """
+    monkeypatch.delenv("SES_SENDER_DOMAIN", raising=False)
+    monkeypatch.delenv("FROM_EMAIL", raising=False)
+    monkeypatch.setenv("NOTIFICATION_EMAIL", "me@example.com")
+    app = cdk.App()
+    stack = ImomaruBotStack(app, "test-stack")
+    template = assertions.Template.from_stack(stack)
+
+    template.resource_count_is("AWS::SES::EmailIdentity", 0)
+    template.has_resource_properties("AWS::Lambda::Function", {
+        "Environment": {
+            "Variables": assertions.Match.object_like({
+                "FROM_EMAIL": "me@example.com",
+            })
+        }
+    })
