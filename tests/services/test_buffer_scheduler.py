@@ -75,6 +75,9 @@ class TestNextSlotAt:
         (datetime(2026, 9, 16, 14, 15, tzinfo=JST), datetime(2026, 9, 16, 15, 15, tzinfo=JST)),
         # 日付の境界（JST 00:30 → 当日 08:00）
         (datetime(2026, 9, 16, 0, 30, tzinfo=JST), datetime(2026, 9, 16, 8, 0, tzinfo=JST)),
+        # 夜の実行（21:00 ＋ 5 分ウィンドウ）→ 当日 22:00 枠。22:00 ちょうどは翌 08:00
+        (datetime(2026, 9, 19, 21, 5, tzinfo=JST), datetime(2026, 9, 19, 22, 0, tzinfo=JST)),
+        (datetime(2026, 9, 19, 22, 0, tzinfo=JST), datetime(2026, 9, 20, 8, 0, tzinfo=JST)),
     ])
     def test_default_slots(self, scheduler, now_utc, expected_jst):
         assert scheduler.next_slot_at(now_utc) == expected_jst

@@ -83,6 +83,25 @@ class TestFormatPostText:
     def test_empty_text_returns_hashtags_only(self):
         assert format_post_text("") == HASHTAGS
 
+    def test_fullwidth_imo_is_normalized_to_halfwidth(self):
+        # 2026-09-18 10:07 回で頭脳が全角「イモ🍠」を返した（プロンプトは半角指定）。半角に揃え、文の分割も効かせる
+        text = "ジュリさんおはようイモ🍠 徹夜で作業かな？イモ🍠✨ 無理しないでねイモ🍠 #さつまいもの民 #びっくえんじぇる"
+
+        assert format_post_text(text) == (
+            "ジュリさんおはようｲﾓ🍠\n"
+            "徹夜で作業かな？ｲﾓ🍠✨\n"
+            "無理しないでねｲﾓ🍠\n"
+            "\n"
+            "#さつまいもの民 #びっくえんじぇる"
+        )
+
+    def test_mixed_width_imo_is_idempotent(self):
+        text = "嬉しいイモ🍠\n最高ｲﾓ🍠 #さつまいもの民 #びっくえんじぇる"
+        once = format_post_text(text)
+
+        assert once == "嬉しいｲﾓ🍠\n最高ｲﾓ🍠\n\n#さつまいもの民 #びっくえんじぇる"
+        assert format_post_text(once) == once
+
 
 class TestAIGenerator:
     """AIGeneratorクラスのテスト"""

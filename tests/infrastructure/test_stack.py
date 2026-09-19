@@ -290,7 +290,7 @@ def test_buffer_api_secret_created():
                 "BUFFER_SECRET_NAME": assertions.Match.any_value(),
                 "BUFFER_RUN_CAP": "1",
                 "BUFFER_DAILY_CAP": "7",
-                "BUFFER_SLOT_TIMES_JST": "08:00,11:15,12:15,14:15,15:15,19:15,20:15,21:15",
+                "BUFFER_SLOT_TIMES_JST": "08:00,11:15,12:15,14:15,15:15,19:15,20:15,22:00",
                 "PUBLIC_ASSETS_BUCKET_NAME": assertions.Match.any_value(),
             })
         }
@@ -483,13 +483,13 @@ def test_eventbridge_schedules_created():
     要件 9.4: EventBridge Schedulerが正しく作成されることを確認
 
     検証項目:
-    - Core Time × 3 + Daily Report × 1 = 4つのScheduleが作成される
+    - Core Time × 4 + Daily Report × 1 = 5つのScheduleが作成される
     """
     app = cdk.App()
     stack = ImomaruBotStack(app, "test-stack")
     template = assertions.Template.from_stack(stack)
 
-    template.resource_count_is("AWS::Scheduler::Schedule", 4)
+    template.resource_count_is("AWS::Scheduler::Schedule", 5)
 
 
 def test_core_time_morning_schedule_configuration():
@@ -544,6 +544,37 @@ def test_core_time_evening_schedule_configuration():
             "MaximumWindowInMinutes": 3,
         },
     })
+
+
+def test_core_time_night_schedule_configuration():
+    """
+    夜21時（JST）のコアタイムスケジュール: 5 分ウィンドウ（22:00 の Buffer 枠まで猶予 55 分）、
+    EventBridge 入力に autonomous_allowed=true を付ける（3b-1 の自律投稿用。日中の実行には付けない）
+    """
+    app = cdk.App()
+    stack = ImomaruBotStack(app, "test-stack")
+    template = assertions.Template.from_stack(stack)
+
+    template.has_resource_properties("AWS::Scheduler::Schedule", {
+        "ScheduleExpression": "cron(0 21 * * ? *)",
+        "ScheduleExpressionTimezone": "Asia/Tokyo",
+        "FlexibleTimeWindow": {
+            "Mode": "FLEXIBLE",
+            "MaximumWindowInMinutes": 5,
+        },
+        "Target": assertions.Match.object_like({
+            "Input": assertions.Match.serialized_json({"execution_mode": "core_time", "autonomous_allowed": True}),
+        }),
+    })
+
+    # 日中のコアタイムには autonomous_allowed を付けない
+    for hour in (10, 13, 18):
+        template.has_resource_properties("AWS::Scheduler::Schedule", {
+            "ScheduleExpression": f"cron(0 {hour} * * ? *)",
+            "Target": assertions.Match.object_like({
+                "Input": assertions.Match.serialized_json({"execution_mode": "core_time"}),
+            }),
+        })
 
 
 def test_daily_report_schedule_configuration():
@@ -613,7 +644,7 @@ def test_flexible_time_window_values():
     """
     要件 1.3, 1.4: FlexibleTimeWindowの設定値が正しいことを確認
 
-    - Morning: 15分, Afternoon: 23分, Evening: 3分, DailyReport: 1分
+    - Morning: 15分, Afternoon: 23分, Evening: 3分, Night: 5分, DailyReport: 1分
     """
     app = cdk.App()
     stack = ImomaruBotStack(app, "test-stack")
@@ -627,7 +658,7 @@ def test_flexible_time_window_values():
     })
 
     # 各ウィンドウ値が存在することを確認
-    for window_min in [15, 23, 3, 1]:
+    for window_min in [15, 23, 3, 5, 1]:
         template.has_resource_properties("AWS::Scheduler::Schedule", {
             "FlexibleTimeWindow": {
                 "Mode": "FLEXIBLE",
@@ -650,7 +681,7 @@ def test_cdk_stack_all_resources():
     - S3バケット: 1つ
     - Secrets Managerシークレット: 1つ
     - Lambda関数: 1つ
-    - EventBridge Scheduler: 4つ
+    - EventBridge Scheduler: 5つ
     - IAMロール: 1つ以上
     """
     app = cdk.App()
@@ -662,7 +693,7 @@ def test_cdk_stack_all_resources():
     template.resource_count_is("AWS::S3::Bucket", 2)
     template.resource_count_is("AWS::SecretsManager::Secret", 2)
     template.resource_count_is("AWS::Lambda::Function", 1)
-    template.resource_count_is("AWS::Scheduler::Schedule", 4)
+    template.resource_count_is("AWS::Scheduler::Schedule", 5)
 
 
 def test_cdk_stack_lambda_timeout():
@@ -960,12 +991,12 @@ class TestProperty1AllSchedulesHaveExecutionMode:
             inputs.append((logical_id, parsed))
         return inputs
 
-    @given(schedule_index=st.integers(min_value=0, max_value=3))
+    @given(schedule_index=st.integers(min_value=0, max_value=4))
     @settings(max_examples=100)
     def test_all_schedules_have_valid_execution_mode(self, schedule_index):
         """全スケジュールのターゲット入力に有効なexecution_modeが含まれる"""
         all_inputs = self._get_all_schedule_inputs()
-        assert len(all_inputs) == 4, f"Expected 4 schedules, got {len(all_inputs)}"
+        assert len(all_inputs) == 5, f"Expected 5 schedules, got {len(all_inputs)}"
 
         logical_id, parsed_input = all_inputs[schedule_index]
         assert "execution_mode" in parsed_input, (

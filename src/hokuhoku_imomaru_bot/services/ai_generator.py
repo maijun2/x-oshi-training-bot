@@ -68,8 +68,9 @@ def format_post_text(text: str) -> str:
 
     モデルが改行を出さずに 1 行で返してきた場合の保険。プロンプトの指示どおり改行済みなら
     文の分割はせず、ハッシュタグの位置だけ正規化する。冪等。
+    語尾が全角「イモ🍠」で返ってきたら半角「ｲﾓ🍠」に揃える（2026-09-18 に 1 回発生。文の分割も半角前提）。
     """
-    body = text.replace(HASHTAGS, "").strip()
+    body = text.replace("イモ🍠", "ｲﾓ🍠").replace(HASHTAGS, "").strip()
     if "\n" not in body:
         body = _SENTENCE_BOUNDARY.sub(r"\1\n", body)
     body = re.sub(r"[ \t]+\n", "\n", body)

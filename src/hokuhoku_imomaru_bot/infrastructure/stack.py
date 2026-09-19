@@ -55,7 +55,7 @@ class ImomaruBotStack(Stack):
     - S3 バケット（画像アセット）
     - Secrets Manager シークレット（X API認証情報）
     - Lambda 関数（メインロジック）
-    - EventBridge Scheduler（1日2回のトリガー）
+    - EventBridge Scheduler（1日5回のトリガー: コアタイム 4 回 ＋ 日報）
     - IAM ロール（最小権限）
     """
 
@@ -326,7 +326,7 @@ class ImomaruBotStack(Stack):
                 "BUFFER_RUN_CAP": "1",  # 1回の実行あたりの Buffer 予約投入件数の上限（主キャップ）
                 "BUFFER_DAILY_CAP": "7",  # 1日の上限（安全弁。スロット 8 枠/日より小さくして無料枠10件を溢れさせない）
                 # Buffer UI のスロット時刻（JST）の写し。頭脳に渡す「公開予定時刻」の見込みにだけ使う。UI で枠を変えたら合わせる
-                "BUFFER_SLOT_TIMES_JST": "08:00,11:15,12:15,14:15,15:15,19:15,20:15,21:15",
+                "BUFFER_SLOT_TIMES_JST": "08:00,11:15,12:15,14:15,15:15,19:15,20:15,22:00",
                 "PUBLIC_ASSETS_BUCKET_NAME": self.public_assets_bucket.bucket_name,
                 "BRAIN_RUNTIME_ARN": brain_runtime_arn,  # 頭脳。空なら Bedrock 直呼びのみ
                 "OSHI_MEMORY_ID": self.oshi_memory.attr_memory_id,  # 推しの記憶。空なら書き込みなし
@@ -349,13 +349,15 @@ class ImomaruBotStack(Stack):
         )
         self.bot_lambda.grant_invoke(self.scheduler_role)
 
-        # Core Time Schedules（3つ）: 推しタイムライン監視に集中
+        # Core Time Schedules（4つ）: 推しタイムライン監視に集中
+        # 夜 21:00 は EventBridge 入力に autonomous_allowed を付ける（3b-1 の自律投稿を許可する印。Lambda は現時点では無視）
         core_time_configs = [
-            ("Morning", 10, 15),    # 10:00 JST, 15分ウィンドウ
-            ("Afternoon", 13, 23),  # 13:00 JST, 23分ウィンドウ
-            ("Evening", 18, 3),     # 18:00 JST, 3分ウィンドウ
+            ("Morning", 10, 15, {}),    # 10:00 JST, 15分ウィンドウ
+            ("Afternoon", 13, 23, {}),  # 13:00 JST, 23分ウィンドウ
+            ("Evening", 18, 3, {}),     # 18:00 JST, 3分ウィンドウ
+            ("Night", 21, 5, {"autonomous_allowed": True}),  # 21:00 JST, 5分ウィンドウ（22:00 枠まで猶予 55 分）
         ]
-        for name, hour_jst, window_min in core_time_configs:
+        for name, hour_jst, window_min, extra_input in core_time_configs:
             scheduler.CfnSchedule(
                 self,
                 f"CoreTime{name}Schedule",
@@ -368,7 +370,7 @@ class ImomaruBotStack(Stack):
                 target=scheduler.CfnSchedule.TargetProperty(
                     arn=self.bot_lambda.function_arn,
                     role_arn=self.scheduler_role.role_arn,
-                    input=json.dumps({"execution_mode": "core_time"}),
+                    input=json.dumps({"execution_mode": "core_time", **extra_input}),
                 ),
                 description=f"ほくほくいも丸くん - コアタイム{name}（{hour_jst}:00 JST ±{window_min}分）",
             )
