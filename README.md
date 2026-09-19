@@ -71,11 +71,14 @@ EventBridge Scheduler → Lambda → X API (日報・レベルアップ・リプ
 
 ```bash
 # 直近の実行で頭脳が使われたか（推し投稿が 0 件の回は頭脳を呼ばない）
+# 正常: `Brain task=react model=… action=post|skip chars=…`。異常: `[ERROR] Brain failed …`（Haiku フォールバック、アラーム）
 LS=$(aws logs describe-log-streams --log-group-name /aws/lambda/imomaru-bot-handler \
   --order-by LastEventTime --descending --limit 1 --query 'logStreams[0].logStreamName' --output text)
 aws logs get-log-events --log-group-name /aws/lambda/imomaru-bot-handler --log-stream-name "$LS" \
-  --query 'events[].message' --output text | grep -E "brain|Brain"
+  --query 'events[].message' --output text | grep -E "brain|Brain|Buffer post queued|ERROR"
 ```
+
+ログストリームは実行ごとに 1 本（10:0x / 13:1x / 18:0x / 21:0x / 23:58 の 5 本/日）。
 
 ### アラーム通知の設定
 
@@ -228,14 +231,15 @@ uv run python scripts/test_brain_invoke.py
 uv run python scripts/test_brain_invoke.py --task react --runs 5
 ```
 
-**クレジット相殺の確認**（モデルカードに Marketplace 文言がない ＝ AWS 販売 ＝ クレジット対象の見込み。最終確認は実請求）:
+**クレジット相殺の確認**（モデルカードに Marketplace 文言がない ＝ AWS 販売 ＝ クレジット対象。**Kimi K2.5 は 2026-09-19 に実請求で確認済み**:
+09-12〜18 の `APN1-moonshotai.kimi-k2.5-{input,output}-tokens` は Usage $0.064 に対し Credit −$0.064 で全額相殺）:
 
 ```bash
+# Kimi の USAGE_TYPE を Usage / Credit に分けて見る（Credit が Usage と同額の負数なら相殺されている）
 aws ce get-cost-and-usage --region us-east-1 \
-  --time-period Start=2026-09-12,End=2026-09-15 --granularity DAILY --metrics UnblendedCost \
-  --filter '{"Dimensions":{"Key":"SERVICE","Values":["Amazon Bedrock"]}}' \
-  --group-by Type=DIMENSION,Key=USAGE_TYPE
-# Kimi の USAGE_TYPE が計上されていることを確認し、月次請求書の Credit 行で相殺を確認する
+  --time-period Start=2026-09-12,End=2026-09-19 --granularity MONTHLY --metrics UnblendedCost \
+  --filter '{"Dimensions":{"Key":"USAGE_TYPE","Values":["APN1-moonshotai.kimi-k2.5-input-tokens","APN1-moonshotai.kimi-k2.5-output-tokens"]}}' \
+  --group-by Type=DIMENSION,Key=RECORD_TYPE
 ```
 
 ### 5. 推しの記憶（AgentCore Memory）
@@ -271,6 +275,7 @@ done
 - **イベント本文の見出しは「本人の投稿」と書く**。`[推し @xxx の投稿]` のように書くと抽出器が USER ＝ 推しについて語るファンと解釈し、facts が「ユーザーの推し @xxx は…」、preferences が「ユーザーは @xxx を推している」のようにファン側の記憶として残る。現在の形式は `[@juri_bigangel（甘木ジュリ）本人の投稿 YYYY-MM-DD HH:MM JST]`
 - **Episodic は会話タスク向けの抽出器**。推しの投稿だけを USER ロールで入れると「ユーザーが指示なしに投稿を貼り付けた」というエージェント視点の reflection になる。推しの記憶として読むのは facts / preferences を主にする
 - 長期記憶戦略は Memory 作成時に全部入れておく。後から追加した戦略は追加前のイベントを処理しない
+- **ファン視点のレコードが混ざる**（2026-09-14〜18 の実績）。本文がリンク主体の投稿（TikTok 共有）が入るたびに facts の「ユーザーは @juri_bigangel … を運営しており」が統合・更新され、preferences にも「ユーザーは … 閲覧・引用・転載」形式が出る。本人視点の facts（「甘木ジュリ（@juri_bigangel）は…」）は安定して抽出される。読み出し（3a-read）では「ユーザーは」で始まり「閲覧」「転載」「運営」を含むレコードを除外する前提
 
 ## デプロイ後の設定
 
@@ -349,9 +354,12 @@ rm /tmp/buffer-secret.json
   日報とレベルアップ告知は X API 直投稿で Buffer を通りません。Buffer に載るのは推し投稿への引用だけです
 - スロット数/日（8）> `BUFFER_DAILY_CAP`（7）にしておくとキューが滞留しません（この不等式は崩さないこと）
 - 実測（2026-08-13〜09-12 の 30 日）: 推しのオリジナル投稿は平均 6.6 件/日。実行別の平均は 10:00 → 2.3、13:00 → 1.0、
-  18:00 → 0.7、23:58 → 2.7 件。`BUFFER_RUN_CAP=1` で実効 3 件/日程度。増やすなら `BUFFER_RUN_CAP=2` ＋ 09:00 枠追加が次の段階
+  18:00 → 0.7、23:58 → 2.7 件。`BUFFER_RUN_CAP=1` で実効 3 件/日程度。夜の実行 21:00 は 2026-09-19 に追加済み（18:00→23:58 の検知空白を埋める）。増やすなら `BUFFER_RUN_CAP=2` が次の段階（当日中に残り枠 ≥ キャップ、8 枠 > 日次キャップの不等式は維持）
 - スロットは Buffer の公開 API では変更できません（GraphQL は `Channel.postingSchedule` の読み取りのみ。
-  旧 REST API は Public API トークンを拒否）。変更は Buffer の Web UI で行い、API で読み直して検証します
+  旧 REST API は Public API トークンを拒否）。変更は Buffer の Web UI で行い、API で読み直して検証します。
+  読み出しは `BufferClient._graphql` に次のクエリを投げる（`channel_id` はシークレットの値）:
+  スロット `channel(input:{id}){postingSchedule{day times paused}}`（`times` は `"HH:MM"` の配列）、
+  投稿の状態 `post(input:{id}){id status dueAt sentAt text}`（`status` は `sent` / `scheduled` 等。id はログの `Buffer post queued: id=…`）
 - 動作確認済み（2026-09-12）: Buffer 経由の投稿で感情画像が添付され、末尾の x.com URL は X 側で引用ポストとして展開される
 
 **動作確認**
@@ -420,7 +428,7 @@ table.put_item(Item={
 │   └── dq3_xp_table.json          # DQ3経験値テーブルデータ
 ├── agent/                          # 頭脳（AgentCore Runtime）のコード
 │   ├── main.py                    # エントリポイント（BedrockAgentCoreApp）
-│   ├── brain.py                   # Strands Agent による 3 タスク
+│   ├── brain.py                   # Strands Agent による 2 タスク（react / reply_response）
 │   ├── prompts.py                 # → src/hokuhoku_imomaru_bot/prompts.py へのシンボリックリンク
 │   └── requirements.txt           # Runtime の依存（strands-agents / bedrock-agentcore）
 ├── scripts/
@@ -428,7 +436,8 @@ table.put_item(Item={
 │   ├── init_emotion_images.py     # 感情画像マスタ初期化スクリプト
 │   ├── build_agent_package.sh     # 頭脳のデプロイパッケージ（dist/brain.zip）作成
 │   ├── sync_lambda_package.sh     # Lambda パッケージ同期スクリプト
-│   └── test_brain_invoke.py       # 頭脳の本番疎通確認
+│   ├── test_brain_invoke.py       # 頭脳の本番疎通確認
+│   └── test_buffer_post.py        # Buffer キューへの投入・削除の動作確認
 ├── src/
 │   └── hokuhoku_imomaru_bot/
 │       ├── __init__.py
