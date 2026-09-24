@@ -1,5 +1,5 @@
 """
-いも丸の頭脳（フェーズ2b-2-1）
+いも丸の頭脳（フェーズ2b-2-1、3a-read）
 
 Strands Agent ＋ Bedrock（既定: moonshotai.kimi-k2.5。BRAIN_MODEL_ID で差し替え可）で、Lambda から依頼された 2 タスクを処理する。
 - react:          推し／グループの投稿への反応を JSON の「提案」で返す
@@ -9,19 +9,22 @@ Strands Agent ＋ Bedrock（既定: moonshotai.kimi-k2.5。BRAIN_MODEL_ID で差
 方針:
 - Agent はリクエストごとに生成する（Runtime のセッションを Lambda 1 回分で使い回すため、
   会話履歴が投稿間で混ざらないようにする）
-- キャラクター定義は system prompt、反応対象（投稿本文・時刻情報）は user message に分ける（設計書 §10-8）。
-  フェーズ3 では推しの記憶（Memory の retrieve 結果）を user 側に足す
+- キャラクター定義は system prompt、反応対象（投稿本文・時刻情報・推しの記憶）は user message に分ける（設計書 §10-8）
+- 推しの記憶（3a-read）: react のたびに投稿本文をクエリに AgentCore Memory を retrieve し、user message に注入する
+  （Strands の @tool にはしない。モデル呼び出しは 1 回のまま。maijun 決定 2026-09-25）。
+  取得に失敗しても記憶なしで生成を続け、memory_count=-1 を返す（Lambda が ERROR ログ → アラーム）
 - 頭脳は「考える」だけ。Buffer／メール／X への書き込みとガード（140 字・キャップ・画像 1 日 1 回）は
   Lambda 側（AIGenerator / BufferScheduler）が従来どおり行う（設計書 §10-11）
 - JSON はプロンプト指示で出させ、ここで寛容にパースして形を検証する。形が崩れていれば success=False を返し、
-  Lambda は Haiku 直呼びにフォールバックする
+  Lambda は反応を skip する
 """
 import json
 import logging
 import os
 import re
-from typing import Any, Callable, Dict, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
+import boto3
 from strands import Agent
 from strands.models import BedrockModel
 
@@ -46,12 +49,106 @@ REACT_ACTIONS = frozenset({"post", "skip"})
 # 環境変数（Runtime の EnvironmentVariables で注入）
 MODEL_ID = os.environ.get("BRAIN_MODEL_ID", DEFAULT_MODEL_ID)
 BEDROCK_REGION = os.environ.get("BEDROCK_REGION", DEFAULT_REGION)
+OSHI_MEMORY_ID = os.environ.get("OSHI_MEMORY_ID", "")  # 推しの記憶（AgentCore Memory）。空なら記憶なし
+OSHI_ACTOR_ID = os.environ.get("OSHI_ACTOR_ID", "")    # Memory の actorId（推しの X ユーザー名）
+
+# retrieve する件数（facts は本人の出来事・事実、preferences は本人の好み）
+FACTS_TOP_K = 3
+PREFERENCES_TOP_K = 2
+NO_MEMORIES = "（なし）"
+
+# ファン視点への誤抽出（「ユーザーは…閲覧・転載…」）は除外する（設計書 §10-11）
+_FAN_VIEW_PREFIX = "ユーザーは"
+_FAN_VIEW_WORDS = ("閲覧", "転載", "運営")
+# 体調・睡眠など生活の細部（設計書 v19 のタイプ E）は渡さない。プロンプトの指示だけでは本文に出た（2026-09-25 のローカル確認）。
+# 出来事と混ざったレコードも丸ごと落とす（取りこぼしより、監視しているような文面を避ける方を優先）
+_PRIVATE_LIFE_WORDS = ("眠", "寝", "睡眠", "起床", "目覚まし", "体調", "風邪", "発熱", "熱が", "病院", "通院", "怪我", "ケガ")
 
 _CODE_FENCE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$")
 
 
 class ReactFormatError(ValueError):
     """react の出力が JSON 提案の形になっていない"""
+
+
+_memory_client = None
+
+
+def _get_memory_client():
+    """AgentCore Memory のデータプレーンクライアント（コンテナ内で使い回す）"""
+    global _memory_client
+    if _memory_client is None:
+        _memory_client = boto3.client("bedrock-agentcore", region_name=BEDROCK_REGION)
+    return _memory_client
+
+
+def _is_private_life(text: str) -> bool:
+    return any(word in text for word in _PRIVATE_LIFE_WORDS)
+
+
+def _is_fan_view(text: str) -> bool:
+    stripped = text.strip()
+    return stripped.startswith(_FAN_VIEW_PREFIX) and any(word in stripped for word in _FAN_VIEW_WORDS)
+
+
+def _preference_text(raw: str) -> Optional[str]:
+    """preferences のレコード（{"context", "preference", ...} の JSON）から本人の好みの 1 文を取り出す"""
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return None if _is_fan_view(raw) else raw.strip()
+    if not isinstance(parsed, dict):
+        return None
+    if _is_fan_view(str(parsed.get("context", ""))):
+        return None
+    preference = parsed.get("preference")
+    if not isinstance(preference, str) or not preference.strip() or _is_private_life(preference):
+        return None
+    return preference.strip()
+
+
+def _retrieve(namespace_kind: str, query: str, top_k: int) -> List[str]:
+    response = _get_memory_client().retrieve_memory_records(
+        memoryId=OSHI_MEMORY_ID,
+        namespace=f"/oshi/{OSHI_ACTOR_ID}/{namespace_kind}/",
+        searchCriteria={"searchQuery": query, "topK": top_k},
+    )
+    return [
+        record.get("content", {}).get("text", "")
+        for record in response.get("memoryRecordSummaries", [])
+    ]
+
+
+def recall_oshi_memory(query: str) -> Tuple[List[str], bool]:
+    """
+    推しの記憶を retrieve して、user message に載せる行のリストを返す
+
+    MemoryClient.retrieve_memories は ClientError を握りつぶして [] を返すので使わず、
+    データプレーン API を直接呼ぶ（失敗を ok=False で呼び出し側に知らせるため）。
+
+    Returns:
+        (行のリスト, ok)。Memory 未設定なら ([], True)、取得失敗なら ([], False)
+    """
+    if not OSHI_MEMORY_ID or not OSHI_ACTOR_ID or not query.strip():
+        return [], True
+    try:
+        facts = [
+            t.strip() for t in _retrieve("facts", query, FACTS_TOP_K)
+            if t.strip() and not _is_fan_view(t) and not _is_private_life(t)
+        ]
+        preferences = [
+            text for text in (_preference_text(t) for t in _retrieve("preferences", query, PREFERENCES_TOP_K))
+            if text
+        ]
+    except Exception:  # noqa: BLE001 — 記憶は補助。取れなくても反応は作る
+        logger.exception("recall_oshi_memory failed")
+        return [], False
+
+    lines: List[str] = []
+    for text in facts + [f"好み: {p}" for p in preferences]:
+        if text not in lines:
+            lines.append(text)
+    return lines, True
 
 
 def _make_agent(
@@ -134,16 +231,23 @@ def react(
         now: 現在時刻（同上）
         publish_at: 公開予定時刻（次の Buffer 予約枠、同上）
         post_type: "oshi" または "group"
+
+    Returns:
+        {action, text, emotion_key, reason, memory_count}。memory_count は注入した記憶の件数（取得失敗は -1）
     """
+    memories, recalled = recall_oshi_memory(post_content)
     agent = _make_agent(REACT_SYSTEM_PROMPT, RESPONSE_TEMPERATURE, RESPONSE_MAX_TOKENS)
     user_message = REACT_USER_TEMPLATE.format(
         now=now,
         posted_at=posted_at,
         publish_at=publish_at,
+        memories="\n".join(f"- {line}" for line in memories) if memories else NO_MEMORIES,
         post_content=post_content,
     )
     output = _run(agent, user_message)
-    return _validate_reaction(_parse_json_object(output))
+    reaction = _validate_reaction(_parse_json_object(output))
+    reaction["memory_count"] = len(memories) if recalled else -1
+    return reaction
 
 
 def reply_response(reply_text: str, reply_username: str, bot_tweet_text: str) -> str:
@@ -184,8 +288,8 @@ def handle(payload: Dict[str, Any]) -> Dict[str, Any]:
         output = func(**task_input)
         if isinstance(output, dict):
             logger.info(
-                "brain task=%s model=%s action=%s chars=%d",
-                task, MODEL_ID, output.get("action"), len(output.get("text", "")),
+                "brain task=%s model=%s action=%s chars=%d memories=%s",
+                task, MODEL_ID, output.get("action"), len(output.get("text", "")), output.get("memory_count"),
             )
             return {"success": True, "result": output, "model_id": MODEL_ID}
         logger.info("brain task=%s model=%s chars=%d", task, MODEL_ID, len(output))

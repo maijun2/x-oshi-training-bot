@@ -97,6 +97,24 @@ class TestFormatPostText:
         assert once == "嬉しいｲﾓ🍠\n最高ｲﾓ🍠\n\n#さつまいもの民 #びっくえんじぇる"
         assert format_post_text(once) == once
 
+    @pytest.mark.parametrize("broken", ["ｲﾐ🍠", "イミ🍠", "ｲモ🍠", "イﾓ🍠"])
+    def test_broken_imo_suffix_is_normalized(self, broken):
+        # 2026-09-23 に「19:15が待ち遠しいｲﾐ🍠」が公開された
+        text = f"待ち遠しい{broken}\n最高ｲﾓ🍠✨ #さつまいもの民 #びっくえんじぇる"
+        once = format_post_text(text)
+
+        assert once == "待ち遠しいｲﾓ🍠\n最高ｲﾓ🍠✨\n\n#さつまいもの民 #びっくえんじぇる"
+        assert format_post_text(once) == once
+
+    def test_broken_imo_in_single_line_is_split_after_normalizing(self):
+        assert format_post_text("楽しみｲﾐ🍠 大好きｲﾓ🍠") == (
+            "楽しみｲﾓ🍠\n大好きｲﾓ🍠\n\n#さつまいもの民 #びっくえんじぇる"
+        )
+
+    def test_doubled_sweet_potato_is_kept(self):
+        # 「ｲﾓ🍠🍠」は強調として許容（数は変えない）
+        assert format_post_text("大好きｲﾓ🍠🍠").startswith("大好きｲﾓ🍠🍠\n")
+
 
 class TestAIGenerator:
     """AIGeneratorクラスのテスト"""
@@ -227,6 +245,23 @@ class TestBrainIntegration:
         assert "...\n\n#" in result
         assert "\n...\n" not in result
 
+    def test_generate_reaction_logs_error_when_memory_recall_failed(self, caplog):
+        brain = self._brain(reaction={"action": "post", "text": "x", "emotion_key": "joy", "memory_count": -1})
+        generator = AIGenerator(brain_client=brain)
+
+        with caplog.at_level(logging.ERROR):
+            reaction = self._react(generator)
+
+        # 記憶は補助なので反応はそのまま使い、アラーム用に ERROR を残す
+        assert reaction.action == "post" and reaction.source == "brain"
+        assert any(r.levelno == logging.ERROR and "memory recall failed" in r.getMessage() for r in caplog.records)
+
+    def test_generate_reaction_with_memories_logs_no_error(self, caplog):
+        brain = self._brain(reaction={"action": "post", "text": "x", "emotion_key": "joy", "memory_count": 3})
+        with caplog.at_level(logging.ERROR):
+            self._react(AIGenerator(brain_client=brain))
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
     def test_generate_reaction_unknown_emotion_key_is_none(self):
         brain = self._brain(reaction={"action": "post", "text": "x", "emotion_key": "banana"})
         generator = AIGenerator(brain_client=brain)
@@ -274,7 +309,8 @@ class TestBrainIntegration:
             reply_text="かわいい", reply_username="fan_taro", bot_tweet_text="元投稿"
         )
 
-        assert result.startswith("fan_taroさん")
+        # リプライも反応と同じ整形（改行・ハッシュタグ最終行・語尾の正規化）を通す
+        assert result == "fan_taroさんありがとうｲﾓ🍠\n\n#さつまいもの民 #びっくえんじぇる"
         brain.invoke.assert_called_once_with(
             "reply_response",
             {"reply_text": "かわいい", "reply_username": "fan_taro", "bot_tweet_text": "元投稿"},

@@ -53,6 +53,10 @@ def format_jst(moment: datetime) -> str:
 # 文末「ｲﾓ🍠」＋後続の絵文字・記号のあとに次の文が続いていれば、その境界（ハッシュタグ・空白は除く）
 # 絵文字・記号は possessive（*+、Python 3.11+）で全部食わせ、末尾の絵文字の手前で切らないようにする。
 # 開き括弧類は次の文の先頭なので記号に含めない
+# 語尾「ｲﾓ🍠」の崩れ: 「ｲﾐ🍠」（2026-09-23 に公開済み）・全角／全半角混じり。
+# 「ｲﾓ🍠🍠」は強調として許容している（TestFormatPostText の実例）ので 🍠 の数は触らない
+_BROKEN_IMO = re.compile(r"[ｲイ][ﾐミﾓモ]🍠")
+
 _SENTENCE_BOUNDARY = re.compile(r"(ｲﾓ🍠[^\w\s#「『（(【\[〈《“‘]*+)[ \t]*(?=[^\s#])")
 
 
@@ -62,9 +66,10 @@ def format_post_text(text: str) -> str:
 
     モデルが改行を出さずに 1 行で返してきた場合の保険。プロンプトの指示どおり改行済みなら
     文の分割はせず、ハッシュタグの位置だけ正規化する。冪等。
-    語尾が全角「イモ🍠」で返ってきたら半角「ｲﾓ🍠」に揃える（2026-09-18 に 1 回発生。文の分割も半角前提）。
+    語尾の崩れ（全角「イモ🍠」・「ｲﾐ🍠」など）は半角「ｲﾓ🍠」に揃える
+    （全角は 2026-09-18、ｲﾐ は 09-23 に発生。文の分割も半角前提）。
     """
-    body = text.replace("イモ🍠", "ｲﾓ🍠").replace(HASHTAGS, "").strip()
+    body = _BROKEN_IMO.sub("ｲﾓ🍠", text).replace(HASHTAGS, "").strip()
     if "\n" not in body:
         body = _SENTENCE_BOUNDARY.sub(r"\1\n", body)
     body = re.sub(r"[ \t]+\n", "\n", body)
@@ -191,6 +196,10 @@ class AIGenerator:
                 logger.error(f"Brain returned unknown action={action!r}; treating as post")
                 action = REACTION_POST
             text = self._finalize_post_text(raw_text) if raw_text.strip() else ""
+            memory_count = proposal.get("memory_count")
+            if memory_count == -1:
+                # 記憶は補助なので反応はそのまま使う。取れていないことに気づけるよう ERROR（アラーム）で残す
+                logger.error("Brain memory recall failed for task=react; reaction generated without memories")
             if action == REACTION_POST and not text:
                 logger.error("Brain returned action=post without text; skipping reaction")
             else:
@@ -239,7 +248,7 @@ class AIGenerator:
             {"reply_text": reply_text, "reply_username": reply_username, "bot_tweet_text": bot_tweet_text},
         )
         if brain_text is not None:
-            truncated_text = self.truncate_text(brain_text)
+            truncated_text = self._finalize_post_text(brain_text)
             logger.info(f"Generated reply response using brain: {len(truncated_text)} chars")
             return truncated_text
 
