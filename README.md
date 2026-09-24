@@ -216,6 +216,7 @@ uv run npx cdk deploy
 
 「考える頭脳・実行する Lambda」（設計書 §10-11）: 頭脳は提案を返すだけで、140 字整形・感情キー検証・Buffer／メール・キャップは Lambda が決定論で行います。
 時刻情報は Buffer 予約制で「検知 → 公開」に数時間のラグがあるため、公開時刻に合った挨拶・時制（「昨夜の〜」）にするためのものです。
+`react` では推しの記憶（AgentCore Memory の retrieve 結果）も user message に入ります（下の「5. 推しの記憶」）。
 
 | 項目 | 内容 |
 |------|------|
@@ -225,7 +226,8 @@ uv run npx cdk deploy
 | 失敗時 | 頭脳の呼び出しに失敗（JSON 提案の形が崩れた場合、`post` なのに本文が空の場合も含む）すると `[ERROR] Brain failed …` を出して（アラーム発火）、推し投稿への反応は skip 扱い（Buffer に入れず、素案メールに「頭脳の呼び出しに失敗したため素案なし」）、リプライは固定文「@user ありがとうｲﾓ🍠✨」。`BRAIN_RUNTIME_ARN` が空でも同じ（`Brain not configured`）。Bedrock Haiku 4.5 直呼びのフォールバックは 2026-09-25 に撤去（フェーズ2b-3） |
 | 公開予定時刻 | Lambda env `BUFFER_SLOT_TIMES_JST`（Buffer UI のスロット時刻の写し、既定 `08:00,11:15,12:15,14:15,15:15,19:15,20:15,22:00`）から現在時刻の次の枠を算出して頭脳に渡す。Buffer UI で枠を変えたらこの値も合わせる |
 | プロンプト | `src/hokuhoku_imomaru_bot/prompts.py` が単一ソース（`agent/prompts.py` はそのシンボリックリンク）。キャラクター定義は system prompt、反応対象は user message |
-| 本文の体裁 | 1 文 1 行 ＋ 空行 ＋ ハッシュタグ（最終行）。プロンプトで指示しつつ、Lambda 側 `AIGenerator.format_post_text` が文末「ｲﾓ🍠」を境に機械的に整える（モデルが 1 行で返しても保証）。整形後に改行込みで 140 字に切り詰める（2026-09-15） |
+| 本文の体裁 | 1 文 1 行 ＋ 空行 ＋ ハッシュタグ（最終行）。プロンプトで指示しつつ、Lambda 側 `AIGenerator.format_post_text` が文末「ｲﾓ🍠」を境に機械的に整える（モデルが 1 行で返しても保証）。整形後に改行込みで 140 字に切り詰める（2026-09-15）。語尾の崩れ（全角「イモ🍠」・「ｲﾐ🍠」など）も半角「ｲﾓ🍠」に揃える（2026-09-25。「ｲﾓ🍠🍠」は強調として残す）。リプライも同じ整形を通す |
+| 時刻の扱い | 公開予定時刻は挨拶の選択だけに使い、本文に時刻を書かない。投稿の出来事は投稿時刻基準で書き、翌日以降の公開なら「昨日の」で補う。投稿に書かれていないこと（「見せたい」→「公開された」等）は書かない（2026-09-25、時制の逆ぶれ 3 回・「19:15」の漏れへの対処） |
 | ログ | `/aws/bedrock-agentcore/runtimes/imomaru_brain-*` |
 
 ```bash
@@ -262,6 +264,8 @@ aws ce get-cost-and-usage --region us-east-1 \
 | 戦略 | Semantic `/oshi/{actorId}/facts/`（事実）／ User Preference `/oshi/{actorId}/preferences/`（好み・口調）／ Episodic `/oshi/{actorId}/episodes/`（1 日 1 セッションのエピソード＋reflection） |
 | 書き込み | `services/oshi_memory_writer.py`。actorId = 推しの X ユーザー名、sessionId = `oshi-YYYY-MM-DD`（JST）、role = USER、`clientToken` = tweet_id（冪等）。対象は `filter_original_posts` 後の推し投稿（引用ポスト含む） |
 | 失敗時 | `[ERROR]` ログ（`imomaru-bot-app-errors` で検知）を出して握りつぶし、XP・Buffer・日報は続行。`OSHI_MEMORY_ID` が空なら書き込みなし |
+| 読み出し（3a-read、2026-09-25） | 頭脳が `react` のたびに投稿本文をクエリに retrieve し（facts 上位 3 件 ＋ preferences 上位 2 件の `preference`）、user message の「推しの記憶」に入れる（`agent/brain.py:recall_oshi_memory`。Strands の `@tool` ではなく毎回決定論で注入）。「ユーザーは」で始まり「閲覧／転載／運営」を含むファン視点の誤抽出は除外。睡眠・体調など生活の細部（眠・寝・体調・病院 等を含むレコード。設計書 v19 のタイプ E）も除外。Runtime の環境変数 `OSHI_MEMORY_ID` / `OSHI_ACTOR_ID`、ロールは `RetrieveMemoryRecords` のみ |
+| 読み出し失敗時 | 記憶なしで反応を作り `memory_count=-1` を返す → Lambda が `[ERROR] Brain memory recall failed …`（アラーム）。反応自体は通常どおり Buffer に入る。Lambda ログの `Brain task=react … memories=N` で件数を確認できる |
 
 ```bash
 MEM=$(aws cloudformation describe-stacks --stack-name ImomaruBotStack \

@@ -89,7 +89,7 @@ class BrainClient:
 
         logger.info(
             f"Brain task={task} model={body.get('model_id')} action={result.get('action')} "
-            f"chars={len(result.get('text') or '')} session={self._session_id}"
+            f"chars={len(result.get('text') or '')} memories={result.get('memory_count')} session={self._session_id}"
         )
         return result
 

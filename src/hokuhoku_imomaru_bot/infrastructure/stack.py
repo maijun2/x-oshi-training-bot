@@ -294,24 +294,24 @@ class ImomaruBotStack(Stack):
                 value=f'{mail_from_domain} TXT "v=spf1 include:amazonses.com ~all"',
             )
 
-        # 頭脳: AgentCore Runtime（direct code deploy）
-        self.brain_runtime = self._create_brain_runtime()
-        brain_runtime_arn = self.brain_runtime.attr_agent_runtime_arn
-        self.lambda_role.add_to_policy(
-            iam.PolicyStatement(
-                effect=iam.Effect.ALLOW,
-                actions=["bedrock-agentcore:InvokeAgentRuntime"],
-                resources=[brain_runtime_arn, f"{brain_runtime_arn}/runtime-endpoint/*"],
-            )
-        )
-
-        # 推しの記憶: AgentCore Memory（書き込みは Lambda 直、読み出しは頭脳が 3a-read で行う）
+        # 推しの記憶: AgentCore Memory（書き込みは Lambda 直、読み出しは頭脳が react のたびに retrieve = 3a-read）
         self.oshi_memory = self._create_oshi_memory()
         self.lambda_role.add_to_policy(
             iam.PolicyStatement(
                 effect=iam.Effect.ALLOW,
                 actions=["bedrock-agentcore:CreateEvent"],
                 resources=[self.oshi_memory.attr_memory_arn],
+            )
+        )
+
+        # 頭脳: AgentCore Runtime（direct code deploy）
+        self.brain_runtime = self._create_brain_runtime(self.oshi_memory, oshi_username)
+        brain_runtime_arn = self.brain_runtime.attr_agent_runtime_arn
+        self.lambda_role.add_to_policy(
+            iam.PolicyStatement(
+                effect=iam.Effect.ALLOW,
+                actions=["bedrock-agentcore:InvokeAgentRuntime"],
+                resources=[brain_runtime_arn, f"{brain_runtime_arn}/runtime-endpoint/*"],
             )
         )
 
@@ -665,7 +665,7 @@ class ImomaruBotStack(Stack):
         CfnOutput(self, "OshiMemoryId", value=memory.attr_memory_id)
         return memory
 
-    def _create_brain_runtime(self) -> agentcore.CfnRuntime:
+    def _create_brain_runtime(self, oshi_memory: agentcore.CfnMemory, oshi_username: str) -> agentcore.CfnRuntime:
         """
         頭脳: AgentCore Runtime を direct code deploy（zip）で構築する
 
@@ -750,6 +750,11 @@ class ImomaruBotStack(Stack):
                             ],
                         ),
                         iam.PolicyStatement(
+                            sid="RecallOshiMemory",  # 3a-read: 推しの記憶の読み出しのみ（書き込みは Lambda）
+                            actions=["bedrock-agentcore:RetrieveMemoryRecords"],
+                            resources=[oshi_memory.attr_memory_arn],
+                        ),
+                        iam.PolicyStatement(
                             sid="ReadDeploymentPackage",
                             actions=["s3:GetObject", "s3:GetObjectVersion"],
                             resources=[f"arn:aws:s3:::{brain_code.s3_bucket_name}/{brain_code.s3_object_key}"],
@@ -763,7 +768,7 @@ class ImomaruBotStack(Stack):
             self,
             "BrainRuntime",
             agent_runtime_name=BRAIN_RUNTIME_NAME,
-            description="Imomaru brain: Strands agent generating responses (phase 2a)",
+            description="Imomaru brain: Strands agent generating responses with oshi memory (phase 3a)",
             role_arn=brain_role.role_arn,
             agent_runtime_artifact=agentcore.CfnRuntime.AgentRuntimeArtifactProperty(
                 code_configuration=agentcore.CfnRuntime.CodeConfigurationProperty(
@@ -786,6 +791,8 @@ class ImomaruBotStack(Stack):
             environment_variables={
                 "BRAIN_MODEL_ID": BRAIN_MODEL_ID,
                 "BEDROCK_REGION": self.region,
+                "OSHI_MEMORY_ID": oshi_memory.attr_memory_id,  # 推しの記憶（3a-read）
+                "OSHI_ACTOR_ID": oshi_username,               # Memory の actorId（Lambda の書き込みと同じ）
             },
         )
         runtime.node.add_dependency(brain_role)

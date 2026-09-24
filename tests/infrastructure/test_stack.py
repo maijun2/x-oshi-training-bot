@@ -1035,6 +1035,9 @@ def test_brain_runtime_created():
         "EnvironmentVariables": {
             "BRAIN_MODEL_ID": "moonshotai.kimi-k2.5",
             "BEDROCK_REGION": assertions.Match.any_value(),
+            # 3a-read: 推しの記憶を retrieve する Memory と actorId（Lambda の書き込みと同じ）
+            "OSHI_MEMORY_ID": assertions.Match.any_value(),
+            "OSHI_ACTOR_ID": assertions.Match.any_value(),
         },
     })
 
@@ -1054,6 +1057,10 @@ def test_brain_runtime_created():
                     assertions.Match.object_like({
                         "Sid": "BedrockModelInvocation",
                         "Action": ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
+                    }),
+                    assertions.Match.object_like({
+                        "Sid": "RecallOshiMemory",
+                        "Action": "bedrock-agentcore:RetrieveMemoryRecords",
                     }),
                     assertions.Match.object_like({"Sid": "ReadDeploymentPackage"}),
                 ])
