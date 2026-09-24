@@ -85,7 +85,7 @@ def main() -> int:
                     actions[result["action"]] += 1
                     print(
                         f"✅ {task} ({time.time() - started:.1f}s) action={result['action']} "
-                        f"emotion={result['emotion_key']} reason={result['reason']}\n"
+                        f"emotion={result['emotion_key']} memories={result.get('memory_count')} reason={result['reason']}\n"
                         + "\n".join(f"   {line}" for line in result["text"].splitlines()) + "\n"
                     )
                 else:

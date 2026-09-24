@@ -9,8 +9,8 @@ X（旧Twitter）育成ボット - AWSサーバーレスアーキテクチャ
 - 🔍 **タイムライン監視**: コアタイム4回（10:00/13:00/18:00/21:00 JST ±ゆらぎ）で推し投稿を監視、日報時（23:58 JST）に全処理実行
 - 🤖 **AI応答生成**: AgentCore Runtime「頭脳」（Strands ＋ Bedrock Kimi K2.5）でキャラクターに合った応答を生成。頭脳が落ちたら反応は見送り（素案メールのみ）、リプライは固定文
 - 📮 **推し投稿への反応（半人力）**: AI応答をSESメールで素案通知しつつ、Buffer のキューに予約投入。Buffer のスロット時刻に自動投稿され、NG なら人間が Buffer から削除（X API 課金 $0）
-- 🧠 **推しの記憶（書き込み）**: 検知した推しのオリジナル投稿（引用ポスト含む。RT・リプライ除外）を Amazon Bedrock AgentCore Memory `imomaru_oshi_memory` に Lambda から直接書き込む。事実・好み・エピソードへの長期記憶抽出は Memory 側が非同期に行う（頭脳からの読み出しは次フェーズ）
-- 🎨 **感情別画像添付**: Buffer 予約投入時、AI応答の感情を分類してLINEスタンプ画像を添付（1日1回限定）
+- 🧠 **推しの記憶**: 検知した推しのオリジナル投稿（引用ポスト含む。RT・リプライ除外）を Amazon Bedrock AgentCore Memory `imomaru_oshi_memory` に Lambda から直接書き込む。事実・好み・エピソードへの長期記憶抽出は Memory 側が非同期に行う。頭脳は反応を作るたびに関連する記憶（事実・好み）を読み出して判断材料にする（2026-09-25〜）
+- 🎨 **感情別画像添付**: Buffer 予約投入時、頭脳が反応と一緒に返す感情キーに対応するLINEスタンプ画像を添付（1日1回限定）
 - ⭐ **XP獲得**: 活動に応じてXPを獲得（推し投稿: 5.0 XP、グループ投稿: 2.0 XP、いいね: 0.1 XP、リポスト: 0.5 XP）
 - 📈 **レベルアップ**: DQ3勇者の経験値テーブルに基づいてレベルアップ
 - 🖼️ **プロフィール更新**: レベルアップ時にプロフィール画像と名前を自動更新、レベルアップ投稿に画像添付
@@ -27,10 +27,10 @@ EventBridge Scheduler → Lambda → X API (日報・レベルアップ・リプ
                           ↓
                     DynamoDB (状態管理・許可ユーザー・処理済みリプライ)
                           ↓
-                    AgentCore Runtime「頭脳」(Strands + Bedrock Kimi K2.5: 応答生成・感情分類)
+                    AgentCore Runtime「頭脳」(Strands + Bedrock Kimi K2.5: 反応の提案〔本文・感情キー・post/skip〕・リプライ応答)
                           └→ 失敗時は反応を見送り（Buffer に入れず素案メールのみ）、アラーム
                           ↓
-                    AgentCore Memory「推しの記憶」(推し投稿を Lambda 直で書き込み。Semantic/UserPreference/Episodic で抽出)
+                    AgentCore Memory「推しの記憶」(推し投稿を Lambda 直で書き込み。Semantic/UserPreference/Episodic で抽出。頭脳が react ごとに retrieve)
                           ↓
                     S3 (画像アセット)
                           ↓
@@ -67,11 +67,12 @@ EventBridge Scheduler → Lambda → X API (日報・レベルアップ・リプ
 |------|-------------|
 | Lambda | `/aws/lambda/imomaru-bot-handler` |
 | 頭脳（AgentCore Runtime） | `/aws/bedrock-agentcore/runtimes/imomaru_brain-<id>-DEFAULT`（`brain task=… model=…` の 1 行と例外のスタックトレース） |
-| 推しの記憶（AgentCore Memory） | Lambda のログに `Oshi memory event recorded: <tweet_id>`。失敗は `[ERROR] … oshi_memory_write`（アラーム対象） |
+| 推しの記憶（AgentCore Memory） | 書き込みは Lambda のログに `Oshi memory event recorded: <tweet_id>`（失敗は `[ERROR] … oshi_memory_write`）。読み出しは `Brain task=react … memories=N`（N = 頭脳に渡した記憶の件数。失敗は `memories=-1` と `[ERROR] Brain memory recall failed …`）。どちらもアラーム対象 |
 
 ```bash
 # 直近の実行で頭脳が使われたか（推し投稿が 0 件の回は頭脳を呼ばない）
-# 正常: `Brain task=react model=… action=post|skip chars=…`。異常: `[ERROR] Brain failed …`（反応は skip・素案メールのみ、アラーム）
+# 正常: `Brain task=react model=… action=post|skip chars=… memories=N`。
+# 異常: `[ERROR] Brain failed …`（反応は skip・素案メールのみ、アラーム）／`[ERROR] Brain memory recall failed …`（記憶なしで反応は続行、アラーム）
 LS=$(aws logs describe-log-streams --log-group-name /aws/lambda/imomaru-bot-handler \
   --order-by LastEventTime --descending --limit 1 --query 'logStreams[0].logStreamName' --output text)
 aws logs get-log-events --log-group-name /aws/lambda/imomaru-bot-handler --log-stream-name "$LS" \
@@ -231,12 +232,12 @@ uv run npx cdk deploy
 | ログ | `/aws/bedrock-agentcore/runtimes/imomaru_brain-*` |
 
 ```bash
-# ローカルで頭脳を起動して確認（Bedrock を実際に呼びます）
-uv run python agent/main.py
+# ローカルで頭脳を起動して確認（Bedrock を実際に呼びます）。推しの記憶も使うなら環境変数を付ける（未設定なら記憶なし）
+OSHI_MEMORY_ID=<OshiMemoryId> OSHI_ACTOR_ID=juri_bigangel uv run python agent/main.py
 curl -X POST localhost:8080/invocations -H 'Content-Type: application/json' \
   -d '{"task":"react","input":{"post_content":"今日はライブでした！","post_type":"oshi","posted_at":"2026-09-16(水) 01:42 JST","now":"2026-09-16(水) 10:07 JST","publish_at":"2026-09-16(水) 11:15 JST"}}'
 
-# deploy 後の本番疎通確認（2 タスクを 1 回ずつ invoke）
+# deploy 後の本番疎通確認（2 タスクを 1 回ずつ invoke。react は注入した記憶の件数 memories=N も表示）
 uv run python scripts/test_brain_invoke.py
 # react の JSON 提案の安定性（パース成功率・action の分布）
 uv run python scripts/test_brain_invoke.py --task react --runs 5
@@ -255,7 +256,8 @@ aws ce get-cost-and-usage --region us-east-1 \
 
 ### 5. 推しの記憶（AgentCore Memory）
 
-検知した推しの投稿を Amazon Bedrock AgentCore Memory `imomaru_oshi_memory` に書き込みます（フェーズ3a-write、2026-09-13）。
+検知した推しの投稿を Amazon Bedrock AgentCore Memory `imomaru_oshi_memory` に書き込み（フェーズ3a-write、2026-09-13）、
+頭脳が反応を作るときに読み出します（フェーズ3a-read、2026-09-25）。
 いも丸が「推しのことを覚える」ための記憶で、いも丸自身の人格（システムプロンプト）とは分離しています。
 
 | 項目 | 内容 |
@@ -288,7 +290,8 @@ done
 - **イベント本文の見出しは「本人の投稿」と書く**。`[推し @xxx の投稿]` のように書くと抽出器が USER ＝ 推しについて語るファンと解釈し、facts が「ユーザーの推し @xxx は…」、preferences が「ユーザーは @xxx を推している」のようにファン側の記憶として残る。現在の形式は `[@juri_bigangel（甘木ジュリ）本人の投稿 YYYY-MM-DD HH:MM JST]`
 - **Episodic は会話タスク向けの抽出器**。推しの投稿だけを USER ロールで入れると「ユーザーが指示なしに投稿を貼り付けた」というエージェント視点の reflection になる。推しの記憶として読むのは facts / preferences を主にする
 - 長期記憶戦略は Memory 作成時に全部入れておく。後から追加した戦略は追加前のイベントを処理しない
-- **ファン視点のレコードが混ざる**（2026-09-14〜18 の実績）。本文がリンク主体の投稿（TikTok 共有）が入るたびに facts の「ユーザーは @juri_bigangel … を運営しており」が統合・更新され、preferences にも「ユーザーは … 閲覧・引用・転載」形式が出る。本人視点の facts（「甘木ジュリ（@juri_bigangel）は…」）は安定して抽出される。読み出し（3a-read）では「ユーザーは」で始まり「閲覧」「転載」「運営」を含むレコードを除外する前提
+- **ファン視点のレコードが混ざる**（2026-09-14〜18 の実績）。本文がリンク主体の投稿（TikTok 共有）が入るたびに facts の「ユーザーは @juri_bigangel … を運営しており」が統合・更新され、preferences にも「ユーザーは … 閲覧・引用・転載」形式が出る。本人視点の facts（「甘木ジュリ（@juri_bigangel）は…」）は安定して抽出される。読み出し（3a-read）では「ユーザーは」で始まり「閲覧」「転載」「運営」を含むレコードを除外している（`agent/brain.py:_is_fan_view`）
+- **睡眠・体調の記憶はプロンプトの指示だけでは本文に出る**（2026-09-25 のローカル確認で「朝の『よく眠れた』も嘘みたい」）。読み出し時にキーワードで除外している（`agent/brain.py:_PRIVATE_LIFE_WORDS`）。出来事と混ざったレコードも丸ごと落とす
 
 ## デプロイ後の設定
 
@@ -495,7 +498,7 @@ table.put_item(Item={
 │   └── dq3_xp_table.json          # DQ3経験値テーブルデータ
 ├── agent/                          # 頭脳（AgentCore Runtime）のコード
 │   ├── main.py                    # エントリポイント（BedrockAgentCoreApp）
-│   ├── brain.py                   # Strands Agent による 2 タスク（react / reply_response）
+│   ├── brain.py                   # Strands Agent による 2 タスク（react / reply_response）＋ 推しの記憶の retrieve
 │   ├── prompts.py                 # → src/hokuhoku_imomaru_bot/prompts.py へのシンボリックリンク
 │   └── requirements.txt           # Runtime の依存（strands-agents / bedrock-agentcore）
 ├── scripts/
