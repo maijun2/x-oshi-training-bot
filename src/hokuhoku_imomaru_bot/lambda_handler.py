@@ -66,7 +66,7 @@ BUFFER_DAILY_CAP = int(os.environ.get("BUFFER_DAILY_CAP", "7"))  # 1日の上限
 BUFFER_RUN_CAP = int(os.environ.get("BUFFER_RUN_CAP", "1"))  # 1回の実行あたりの上限（主キャップ）
 # Buffer UI のスロット時刻（JST、カンマ区切り）。頭脳に渡す「公開予定時刻」の見込み計算にだけ使う
 BUFFER_SLOT_TIMES_JST = os.environ.get("BUFFER_SLOT_TIMES_JST", ",".join(DEFAULT_SLOT_TIMES_JST)).split(",")
-BRAIN_RUNTIME_ARN = os.environ.get("BRAIN_RUNTIME_ARN", "")  # 頭脳（AgentCore Runtime）。空なら Bedrock 直呼びのみ
+BRAIN_RUNTIME_ARN = os.environ.get("BRAIN_RUNTIME_ARN", "")  # 頭脳（AgentCore Runtime）。空なら反応は skip・リプライは固定文（ERROR ログ）
 OSHI_MEMORY_ID = os.environ.get("OSHI_MEMORY_ID", "")  # 推しの記憶（AgentCore Memory）。空なら書き込みなし
 # 感情画像の公開バケット（Buffer が投稿公開時に取りに来る）
 PUBLIC_ASSETS_BUCKET_NAME = os.environ.get("PUBLIC_ASSETS_BUCKET_NAME", "imomaru-bot-public-assets")
@@ -101,7 +101,6 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         dynamodb_client = boto3.client("dynamodb")
         s3_client = boto3.client("s3")
         secrets_client = boto3.client("secretsmanager")
-        bedrock_client = boto3.client("bedrock-runtime")
         ses_client = boto3.client("ses")
         
         # サービスの初期化
@@ -128,7 +127,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         
         # 頭脳（AgentCore Runtime）。invocation ごとに BrainClient を作り、1 セッションを使い回す
         brain_client = BrainClient(runtime_arn=BRAIN_RUNTIME_ARN) if BRAIN_RUNTIME_ARN else None
-        ai_generator = AIGenerator(bedrock_client=bedrock_client, brain_client=brain_client)
+        ai_generator = AIGenerator(brain_client=brain_client)
         
         image_compositor = ImageCompositor(
             s3_client=s3_client,
@@ -707,7 +706,6 @@ def _post_quote_safe(
             now=now,
             publish_at=publish_at,
             post_type=post_type,
-            classify=can_attach_image,
         )
         response_text = reaction.text
 
