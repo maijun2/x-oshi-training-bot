@@ -406,26 +406,30 @@ def test_lambda_role_has_secrets_manager_permissions():
     })
 
 
-def test_lambda_role_has_bedrock_permissions():
+def test_lambda_role_has_no_direct_bedrock_permissions():
     """
-    要件 9.3: Lambda実行ロールがBedrock呼び出し権限を持つことを確認
+    2b-3: Haiku 直呼びを撤去したので、Lambda 実行ロールに bedrock:InvokeModel は付けない
+    （モデル呼び出しは頭脳 Runtime のロールが持つ）
     """
     app = cdk.App()
     stack = ImomaruBotStack(app, "test-stack")
     template = assertions.Template.from_stack(stack)
-    
-    # Bedrock呼び出し権限のポリシーが存在することを確認
-    template.has_resource_properties("AWS::IAM::Policy", {
-        "PolicyDocument": {
-            "Statement": assertions.Match.array_with([
-                assertions.Match.object_like({
-                    "Action": "bedrock:InvokeModel",
-                    "Effect": "Allow",
-                    "Resource": assertions.Match.any_value()
-                })
-            ])
-        }
-    })
+
+    lambda_role_ids = {
+        rid for rid, res in template.find_resources("AWS::IAM::Role").items()
+        if any(
+            st.get("Principal", {}).get("Service") == "lambda.amazonaws.com"
+            for st in res["Properties"]["AssumeRolePolicyDocument"]["Statement"]
+        )
+    }
+    assert lambda_role_ids
+    for policy in template.find_resources("AWS::IAM::Policy").values():
+        roles = {r.get("Ref") for r in policy["Properties"].get("Roles", [])}
+        if not roles & lambda_role_ids:
+            continue
+        for st in policy["Properties"]["PolicyDocument"]["Statement"]:
+            actions = st["Action"] if isinstance(st["Action"], list) else [st["Action"]]
+            assert not any(a.startswith("bedrock:") for a in actions), st
 
 
 def test_lambda_function_created():

@@ -3,15 +3,13 @@ AIGeneratorクラス
 
 キャラクターに合った応答テキストを生成します。
 
-生成元は 2 段構え（フェーズ2b-2-1）:
-1. 頭脳（AgentCore Runtime、BrainClient 経由）— 設定されていればまずこちら
-   - 推し投稿への反応: `react` 1 回で JSON 提案 {action, text, emotion_key, reason} を受け取る（generate_reaction）
-   - リプライ応答: `reply_response`（generate_reply_response）
-2. Bedrock Haiku 直呼び — 頭脳が未設定、または頭脳の呼び出しに失敗したときのフォールバック
-   （失敗は logger.error で記録し、imomaru-bot-app-errors アラームを鳴らす）。
-   generate_response / classify_emotion はこの直呼び経路そのもの（頭脳は呼ばない）
+生成元は頭脳（AgentCore Runtime、BrainClient 経由）のみ（フェーズ2b-3 で Haiku 直呼びを撤去）:
+- 推し投稿への反応: `react` 1 回で JSON 提案 {action, text, emotion_key, reason} を受け取る（generate_reaction）
+- リプライ応答: `reply_response`（generate_reply_response）
+
+頭脳が未設定・失敗したときは logger.error で記録して imomaru-bot-app-errors アラームを鳴らし、
+反応は skip（Buffer に入れずメールのみ）、リプライは固定文にする。
 """
-import json
 import logging
 import re
 from dataclasses import dataclass
@@ -19,16 +17,9 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 
 from ..prompts import (  # noqa: F401  (re-export: 既存の import 経路を維持)
-    DEFAULT_RESPONSE_OSHI,
-    DEFAULT_RESPONSE_GROUP,
-    DEFAULT_RESPONSE_OSHI_RETWEET,
-    DEFAULT_RESPONSE_GROUP_RETWEET,
     DEFAULT_REPLY_RESPONSE_TEMPLATE,
     HASHTAGS,
     MAX_TEXT_LENGTH,
-    PROMPT_TEMPLATE,
-    REPLY_PROMPT_TEMPLATE,
-    EMOTION_CLASSIFICATION_PROMPT,
     VALID_EMOTION_KEYS,
 )
 from ..utils.brain_client import BrainClient, BrainError
@@ -40,6 +31,9 @@ logger = logging.getLogger(__name__)
 REACTION_POST = "post"
 REACTION_SKIP = "skip"
 
+# 頭脳が未設定・失敗したときの skip 理由（素案メールに表示）
+BRAIN_FAILED_REASON = "頭脳の呼び出しに失敗したため素案なし"
+
 
 @dataclass
 class Reaction:
@@ -48,7 +42,7 @@ class Reaction:
     text: str                        # 投稿本文（整形・140 字済み。skip のときは空のことがある）
     emotion_key: Optional[str]       # VALID_EMOTION_KEYS のいずれか。該当なし・不正は None
     reason: str = ""                 # 判断理由（メール表示用）
-    source: str = "brain"            # "brain" | "bedrock"（フォールバック）| "fallback"（固定文）
+    source: str = "brain"            # "brain" | "error"（頭脳が未設定・失敗。action は skip）
 
 
 def format_jst(moment: datetime) -> str:
@@ -80,56 +74,21 @@ def format_post_text(text: str) -> str:
 
 class AIGenerator:
     """
-    Amazon Bedrockを使用してキャラクターに合った応答テキストを生成するクラス
-    
+    頭脳（AgentCore Runtime）に依頼してキャラクターに合った応答テキストを生成するクラス
+
     Attributes:
-        bedrock_client: boto3 Bedrock Runtimeクライアント
-        model_id: 使用するモデルID
+        brain_client: 頭脳（AgentCore Runtime）クライアント
     """
-    
-    # Bedrock設定
-    # Claude Haiku 4.5はInference Profile経由でのみ呼び出し可能
-    # また、temperatureとtop_pは同時に指定できない
-    DEFAULT_MODEL_ID = "jp.anthropic.claude-haiku-4-5-20251001-v1:0"
-    DEFAULT_MAX_TOKENS = 200
-    DEFAULT_TEMPERATURE = 0.7
-    
-    def __init__(
-        self,
-        bedrock_client,
-        model_id: str = DEFAULT_MODEL_ID,
-        max_tokens: int = DEFAULT_MAX_TOKENS,
-        temperature: float = DEFAULT_TEMPERATURE,
-        brain_client: Optional[BrainClient] = None,
-    ):
+
+    def __init__(self, brain_client: Optional[BrainClient]):
         """
         AIGeneratorを初期化
-        
+
         Args:
-            bedrock_client: boto3 Bedrock Runtimeクライアント（フォールバック用）
-            model_id: 使用するモデルID（フォールバック用）
-            max_tokens: 最大トークン数
-            temperature: 温度パラメータ
-            brain_client: 頭脳（AgentCore Runtime）クライアント。None なら Bedrock 直呼びのみ
+            brain_client: 頭脳（AgentCore Runtime）クライアント。None なら頭脳の失敗と同じ扱い
         """
-        self.bedrock_client = bedrock_client
-        self.model_id = model_id
-        self.max_tokens = max_tokens
         self.brain_client = brain_client
-        self.temperature = temperature
-    
-    def build_prompt(self, post_content: str) -> str:
-        """
-        プロンプトを構築
-        
-        Args:
-            post_content: 元の投稿内容
-        
-        Returns:
-            構築されたプロンプト
-        """
-        return PROMPT_TEMPLATE.format(post_content=post_content)
-    
+
     def truncate_text(self, text: str, max_length: int = MAX_TEXT_LENGTH) -> str:
         """
         テキストを指定文字数以内に切り詰め
@@ -171,25 +130,26 @@ class AIGenerator:
 
     def _ask_brain(self, task: str, task_input: Dict[str, Any]) -> Optional[str]:
         """
-        頭脳にタスクを依頼する。未設定なら None、失敗したら ERROR ログを出して None
-        （呼び出し側は None のとき Bedrock 直呼びにフォールバックする）
+        頭脳にタスクを依頼する。未設定・失敗なら ERROR ログ（アラーム）を出して None
         """
         if self.brain_client is None:
+            logger.error(f"Brain not configured for task={task}")
             return None
         try:
             return self.brain_client.invoke(task, task_input)
         except BrainError as e:
-            logger.error(f"Brain failed for task={task}; falling back to direct Bedrock: {e}")
+            logger.error(f"Brain failed for task={task}: {e}")
             return None
 
     def _ask_brain_json(self, task: str, task_input: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """_ask_brain の JSON 提案版（react）。未設定なら None、失敗したら ERROR ログを出して None"""
+        """_ask_brain の JSON 提案版（react）。未設定・失敗なら ERROR ログ（アラーム）を出して None"""
         if self.brain_client is None:
+            logger.error(f"Brain not configured for task={task}")
             return None
         try:
             return self.brain_client.invoke_json(task, task_input)
         except BrainError as e:
-            logger.error(f"Brain failed for task={task}; falling back to direct Bedrock: {e}")
+            logger.error(f"Brain failed for task={task}: {e}")
             return None
 
     def generate_reaction(
@@ -199,10 +159,9 @@ class AIGenerator:
         now: datetime,
         publish_at: Optional[datetime],
         post_type: str = "oshi",
-        classify: bool = True,
     ) -> Reaction:
         """
-        推し投稿への反応を提案として生成する（頭脳 `react` → 失敗時は Haiku 直呼び 2 段）
+        推し投稿への反応を提案として生成する（頭脳 `react`。未設定・失敗時は skip）
 
         Args:
             post_content: 元の投稿内容
@@ -210,10 +169,10 @@ class AIGenerator:
             now: 現在時刻（aware datetime）
             publish_at: 公開予定時刻（次の Buffer 予約枠）。不明なら None
             post_type: "oshi" または "group"
-            classify: フォールバック時に感情分類まで行うか（頭脳経路では常に emotion_key が返る）
 
         Returns:
-            Reaction。text は整形・140 字済み、emotion_key は検証済み（不正は None）
+            Reaction。text は整形・140 字済み、emotion_key は検証済み（不正は None）。
+            頭脳が未設定・失敗・post なのに本文なしのときは action=skip、reason=BRAIN_FAILED_REASON
         """
         proposal = self._ask_brain_json(
             "react",
@@ -233,7 +192,7 @@ class AIGenerator:
                 action = REACTION_POST
             text = self._finalize_post_text(raw_text) if raw_text.strip() else ""
             if action == REACTION_POST and not text:
-                logger.error("Brain returned action=post without text; falling back to direct Bedrock")
+                logger.error("Brain returned action=post without text; skipping reaction")
             else:
                 emotion_key = self._validate_emotion_key(proposal.get("emotion_key"))
                 reason = str(proposal.get("reason") or "")
@@ -243,9 +202,7 @@ class AIGenerator:
                 )
                 return Reaction(action=action, text=text, emotion_key=emotion_key, reason=reason, source="brain")
 
-        text = self.generate_response(post_content=post_content, post_type=post_type)
-        emotion_key = self.classify_emotion(text) if classify else None
-        return Reaction(action=REACTION_POST, text=text, emotion_key=emotion_key, reason="", source="bedrock")
+        return Reaction(action=REACTION_SKIP, text="", emotion_key=None, reason=BRAIN_FAILED_REASON, source="error")
 
     @staticmethod
     def _validate_emotion_key(value: Any) -> Optional[str]:
@@ -259,136 +216,6 @@ class AIGenerator:
             logger.warning(f"Unknown emotion key returned: {emotion_key}")
         return None
 
-    def generate_response(
-        self,
-        post_content: str,
-        post_type: str = "oshi",
-    ) -> str:
-        """
-        投稿内容に基づいて応答テキストを Bedrock Haiku 直呼びで生成（頭脳のフォールバック経路）
-        
-        Args:
-            post_content: 元の投稿内容
-            post_type: "oshi" または "group"
-        
-        Returns:
-            生成された応答テキスト（140文字以内）
-        """
-        try:
-            prompt = self.build_prompt(post_content)
-            
-            # Bedrock API呼び出し（Claude形式）
-            # Claude Haiku 4.5ではtemperatureとtop_pを同時に指定できない
-            request_body = {
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": self.max_tokens,
-                "temperature": self.temperature,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": prompt,
-                    }
-                ],
-            }
-            
-            response = self.bedrock_client.invoke_model(
-                modelId=self.model_id,
-                body=json.dumps(request_body),
-                contentType="application/json",
-                accept="application/json",
-            )
-            
-            # レスポンスをパース
-            response_body = json.loads(response["body"].read())
-            generated_text = response_body["content"][0]["text"].strip()
-            
-            formatted_text = self._finalize_post_text(generated_text)
-            
-            logger.info(f"Generated response using model={self.model_id} for {post_type} post: {len(formatted_text)} chars")
-            return formatted_text
-            
-        except Exception as e:
-            logger.error(f"Failed to generate response: {e}")
-            # フォールバック応答を返す
-            return format_post_text(self._get_fallback_response(post_type))
-    
-    def _get_fallback_response(self, post_type: str) -> str:
-        """
-        フォールバック応答を取得
-        
-        Args:
-            post_type: "oshi", "group", "oshi_retweet", "group_retweet"
-        
-        Returns:
-            フォールバック応答テキスト
-        """
-        if post_type == "oshi":
-            return DEFAULT_RESPONSE_OSHI
-        elif post_type == "oshi_retweet":
-            return DEFAULT_RESPONSE_OSHI_RETWEET
-        elif post_type == "group_retweet":
-            return DEFAULT_RESPONSE_GROUP_RETWEET
-        return DEFAULT_RESPONSE_GROUP
-    
-    def generate_retweet_response(self, post_type: str = "oshi") -> str:
-        """
-        リツイート（リポスト）用の固定応答を生成
-        
-        Args:
-            post_type: "oshi" または "group"
-        
-        Returns:
-            リツイート用応答テキスト
-        """
-        if post_type == "oshi":
-            return DEFAULT_RESPONSE_OSHI_RETWEET
-        return DEFAULT_RESPONSE_GROUP_RETWEET
-    
-    def classify_emotion(self, response_text: str) -> Optional[str]:
-        """
-        応答テキストの感情を Bedrock Haiku 直呼びで分類（頭脳のフォールバック経路）
-        
-        Args:
-            response_text: 分類する応答テキスト
-        
-        Returns:
-            感情キー（emotion_key）、分類失敗時はNone
-        """
-        try:
-            prompt = EMOTION_CLASSIFICATION_PROMPT.format(response_text=response_text)
-
-            request_body = {
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 50,
-                "temperature": 0.0,  # 決定的な応答を得るため
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": prompt,
-                    }
-                ],
-            }
-
-            response = self.bedrock_client.invoke_model(
-                modelId=self.model_id,
-                body=json.dumps(request_body),
-                contentType="application/json",
-                accept="application/json",
-            )
-
-            response_body = json.loads(response["body"].read())
-            emotion_key = response_body["content"][0]["text"].strip().lower()
-
-            validated = self._validate_emotion_key(emotion_key)
-            if validated:
-                logger.info(f"Classified emotion: {validated}")
-            elif emotion_key == "none":
-                logger.info("Emotion classification returned 'none'")
-            return validated
-
-        except Exception as e:
-            logger.error(f"Failed to classify emotion: {e}")
-            return None
     def generate_reply_response(
         self,
         reply_text: str,
@@ -404,7 +231,8 @@ class AIGenerator:
             bot_tweet_text: ボットが投稿した元のツイート本文
 
         Returns:
-            生成された応答テキスト（140文字以内）
+            生成された応答テキスト（140文字以内）。頭脳が未設定・失敗なら固定文
+            （latest_reply_check_id は先に進むので再試行されない。黙って落とさず固定文で返す）
         """
         brain_text = self._ask_brain(
             "reply_response",
@@ -415,41 +243,4 @@ class AIGenerator:
             logger.info(f"Generated reply response using brain: {len(truncated_text)} chars")
             return truncated_text
 
-        try:
-            prompt = REPLY_PROMPT_TEMPLATE.format(
-                username=reply_username,
-                bot_tweet_text=bot_tweet_text,
-                reply_text=reply_text,
-            )
-
-            request_body = {
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": self.max_tokens,
-                "temperature": self.temperature,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": prompt,
-                    }
-                ],
-            }
-
-            response = self.bedrock_client.invoke_model(
-                modelId=self.model_id,
-                body=json.dumps(request_body),
-                contentType="application/json",
-                accept="application/json",
-            )
-
-            response_body = json.loads(response["body"].read())
-            generated_text = response_body["content"][0]["text"].strip()
-
-            truncated_text = self.truncate_text(generated_text)
-
-            logger.info(f"Generated reply response: {len(truncated_text)} chars")
-            return truncated_text
-
-        except Exception as e:
-            logger.warning(f"Failed to generate reply response: {e}")
-            return DEFAULT_REPLY_RESPONSE_TEMPLATE.format(username=reply_username)
-
+        return DEFAULT_REPLY_RESPONSE_TEMPLATE.format(username=reply_username)

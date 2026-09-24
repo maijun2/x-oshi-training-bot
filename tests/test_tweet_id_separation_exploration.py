@@ -91,7 +91,6 @@ def _make_mocks(oshi_tweets, group_tweets):
     level_manager.check_level_up.return_value = (False, 1)
 
     ai_generator = MagicMock(spec=AIGenerator)
-    ai_generator.generate_response.return_value = "応答テキスト"
 
     image_compositor = MagicMock(spec=ImageCompositor)
     profile_updater = MagicMock(spec=ProfileUpdater)

@@ -7,7 +7,7 @@ X（旧Twitter）育成ボット - AWSサーバーレスアーキテクチャ
 ## 機能
 
 - 🔍 **タイムライン監視**: コアタイム4回（10:00/13:00/18:00/21:00 JST ±ゆらぎ）で推し投稿を監視、日報時（23:58 JST）に全処理実行
-- 🤖 **AI応答生成**: AgentCore Runtime「頭脳」（Strands ＋ Bedrock Kimi K2.5）でキャラクターに合った応答を生成。頭脳が落ちたら Bedrock Claude Haiku 4.5 直呼びにフォールバック
+- 🤖 **AI応答生成**: AgentCore Runtime「頭脳」（Strands ＋ Bedrock Kimi K2.5）でキャラクターに合った応答を生成。頭脳が落ちたら反応は見送り（素案メールのみ）、リプライは固定文
 - 📮 **推し投稿への反応（半人力）**: AI応答をSESメールで素案通知しつつ、Buffer のキューに予約投入。Buffer のスロット時刻に自動投稿され、NG なら人間が Buffer から削除（X API 課金 $0）
 - 🧠 **推しの記憶（書き込み）**: 検知した推しのオリジナル投稿（引用ポスト含む。RT・リプライ除外）を Amazon Bedrock AgentCore Memory `imomaru_oshi_memory` に Lambda から直接書き込む。事実・好み・エピソードへの長期記憶抽出は Memory 側が非同期に行う（頭脳からの読み出しは次フェーズ）
 - 🎨 **感情別画像添付**: Buffer 予約投入時、AI応答の感情を分類してLINEスタンプ画像を添付（1日1回限定）
@@ -28,7 +28,7 @@ EventBridge Scheduler → Lambda → X API (日報・レベルアップ・リプ
                     DynamoDB (状態管理・許可ユーザー・処理済みリプライ)
                           ↓
                     AgentCore Runtime「頭脳」(Strands + Bedrock Kimi K2.5: 応答生成・感情分類)
-                          └→ 失敗時は Lambda が Bedrock Haiku を直接呼ぶ（フォールバック）
+                          └→ 失敗時は反応を見送り（Buffer に入れず素案メールのみ）、アラーム
                           ↓
                     AgentCore Memory「推しの記憶」(推し投稿を Lambda 直で書き込み。Semantic/UserPreference/Episodic で抽出)
                           ↓
@@ -59,7 +59,7 @@ EventBridge Scheduler → Lambda → X API (日報・レベルアップ・リプ
 |-----------|------|------|
 | `imomaru-bot-lambda-errors` | エラー数 ≥ 1（5分間） | Lambda関数でエラーが発生 |
 | `imomaru-bot-lambda-duration` | 実行時間 ≥ 150秒（5分間） | 実行時間が長すぎる（タイムアウト警告） |
-| `imomaru-bot-app-errors` | `[ERROR]`/`[CRITICAL]` ログ ≥ 1（5分間） | try/except で捕捉されたアプリ内エラー（Lambda Errors メトリクスに乗らないもの）。頭脳の呼び出し失敗（`Brain failed …` → Haiku フォールバック）もここで検知 |
+| `imomaru-bot-app-errors` | `[ERROR]`/`[CRITICAL]` ログ ≥ 1（5分間） | try/except で捕捉されたアプリ内エラー（Lambda Errors メトリクスに乗らないもの）。頭脳の呼び出し失敗（`Brain failed …` / `Brain not configured …`）もここで検知 |
 
 ### ログの場所
 
@@ -71,7 +71,7 @@ EventBridge Scheduler → Lambda → X API (日報・レベルアップ・リプ
 
 ```bash
 # 直近の実行で頭脳が使われたか（推し投稿が 0 件の回は頭脳を呼ばない）
-# 正常: `Brain task=react model=… action=post|skip chars=…`。異常: `[ERROR] Brain failed …`（Haiku フォールバック、アラーム）
+# 正常: `Brain task=react model=… action=post|skip chars=…`。異常: `[ERROR] Brain failed …`（反応は skip・素案メールのみ、アラーム）
 LS=$(aws logs describe-log-streams --log-group-name /aws/lambda/imomaru-bot-handler \
   --order-by LastEventTime --descending --limit 1 --query 'logStreams[0].logStreamName' --output text)
 aws logs get-log-events --log-group-name /aws/lambda/imomaru-bot-handler --log-stream-name "$LS" \
@@ -222,7 +222,7 @@ uv run npx cdk deploy
 | デプロイ方式 | direct code deploy（`dist/brain.zip`、`PYTHON_3_12`、arm64）。`agent/` 配下のコードと `agent/requirements.txt` を `scripts/build_agent_package.sh` が zip 化し、CDK が S3 アセットとして配置 |
 | モデル | Runtime の環境変数 `BRAIN_MODEL_ID`（`stack.py` の `BRAIN_MODEL_ID`）。既定 `moonshotai.kimi-k2.5`（東京 In-Region）。差し替えは値を変えて `cdk deploy` するだけ。Grok 4.6 はこのアカウントでは提供制限（`AccessDeniedException … not available for this account`）のため未使用 |
 | 呼び出し | Lambda の `AIGenerator` → `utils/brain_client.py`（`bedrock-agentcore:InvokeAgentRuntime`）。Lambda 1 回の実行で 1 セッションを使い回す。Runtime 側の Agent はリクエストごとに使い捨て |
-| フォールバック | 頭脳の呼び出しに失敗（JSON 提案の形が崩れた場合も含む）すると `[ERROR] Brain failed …` を出して（アラーム発火）Bedrock Haiku 4.5 直呼び（応答生成 → 感情分類の 2 段）に切り替える。`BRAIN_RUNTIME_ARN` が空なら直呼びのみ |
+| 失敗時 | 頭脳の呼び出しに失敗（JSON 提案の形が崩れた場合、`post` なのに本文が空の場合も含む）すると `[ERROR] Brain failed …` を出して（アラーム発火）、推し投稿への反応は skip 扱い（Buffer に入れず、素案メールに「頭脳の呼び出しに失敗したため素案なし」）、リプライは固定文「@user ありがとうｲﾓ🍠✨」。`BRAIN_RUNTIME_ARN` が空でも同じ（`Brain not configured`）。Bedrock Haiku 4.5 直呼びのフォールバックは 2026-09-25 に撤去（フェーズ2b-3） |
 | 公開予定時刻 | Lambda env `BUFFER_SLOT_TIMES_JST`（Buffer UI のスロット時刻の写し、既定 `08:00,11:15,12:15,14:15,15:15,19:15,20:15,22:00`）から現在時刻の次の枠を算出して頭脳に渡す。Buffer UI で枠を変えたらこの値も合わせる |
 | プロンプト | `src/hokuhoku_imomaru_bot/prompts.py` が単一ソース（`agent/prompts.py` はそのシンボリックリンク）。キャラクター定義は system prompt、反応対象は user message |
 | 本文の体裁 | 1 文 1 行 ＋ 空行 ＋ ハッシュタグ（最終行）。プロンプトで指示しつつ、Lambda 側 `AIGenerator.format_post_text` が文末「ｲﾓ🍠」を境に機械的に整える（モデルが 1 行で返しても保証）。整形後に改行込みで 140 字に切り詰める（2026-09-15） |

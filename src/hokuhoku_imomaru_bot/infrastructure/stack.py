@@ -259,22 +259,6 @@ class ImomaruBotStack(Stack):
         self.x_api_secret.grant_read(self.lambda_role)
         self.buffer_api_secret.grant_read(self.lambda_role)
 
-        # Bedrock呼び出し権限を付与
-        # Claude Haiku 4.5はInference Profile経由でのみ呼び出し可能
-        self.lambda_role.add_to_policy(
-            iam.PolicyStatement(
-                effect=iam.Effect.ALLOW,
-                actions=[
-                    "bedrock:InvokeModel",
-                ],
-                resources=[
-                    f"arn:aws:bedrock:{self.region}:{self.account}:inference-profile/jp.anthropic.claude-haiku-4-5-20251001-v1:0",
-                    f"arn:aws:bedrock:{self.region}::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0",
-                    f"arn:aws:bedrock:ap-northeast-3::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0",
-                ],
-            )
-        )
-
         # SES 送信権限を付与（検証済みメールアドレスへの送信のみ許可）
         self.lambda_role.add_to_policy(
             iam.PolicyStatement(
@@ -358,7 +342,7 @@ class ImomaruBotStack(Stack):
                 # 実スロットは曜日ごとに ±数分ずらしてある（README 参照）。UI で枠の時間帯を変えたら合わせる
                 "BUFFER_SLOT_TIMES_JST": "08:00,11:15,12:15,14:15,15:15,19:15,20:15,22:00",
                 "PUBLIC_ASSETS_BUCKET_NAME": self.public_assets_bucket.bucket_name,
-                "BRAIN_RUNTIME_ARN": brain_runtime_arn,  # 頭脳。空なら Bedrock 直呼びのみ
+                "BRAIN_RUNTIME_ARN": brain_runtime_arn,  # 頭脳。空なら反応は skip・リプライは固定文
                 "OSHI_MEMORY_ID": self.oshi_memory.attr_memory_id,  # 推しの記憶。空なら書き込みなし
                 "OSHI_USER_ID": oshi_user_id,
                 "OSHI_USERNAME": oshi_username,

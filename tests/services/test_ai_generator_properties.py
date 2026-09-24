@@ -1,69 +1,26 @@
 """
 AIGeneratorクラスのプロパティベーステスト
 
-Property 4: プロンプトへの投稿内容の包含
 Property 5: テキストの140文字制限
+（Property 4「プロンプトへの投稿内容の包含」は Haiku 直呼びのプロンプト用。2b-3 で直呼びを撤去し、
+プロンプトは頭脳側 agent/brain.py が組み立てる）
 """
-import json
-import pytest
-from unittest.mock import Mock, MagicMock
-from hypothesis import given, settings, assume
+from datetime import datetime, timezone
+from unittest.mock import MagicMock
+
+from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from src.hokuhoku_imomaru_bot.services.ai_generator import (
     AIGenerator,
     MAX_TEXT_LENGTH,
 )
+from src.hokuhoku_imomaru_bot.utils.brain_client import BrainClient
 
 
-def create_generator():
+def create_generator(brain_client=None):
     """AIGeneratorインスタンスを作成"""
-    return AIGenerator(bedrock_client=Mock())
-
-
-class TestPromptContentProperty:
-    """
-    Property 4: プロンプトへの投稿内容の包含
-    
-    任意の投稿内容に対して、生成されたプロンプトはその投稿内容を含むべきである
-    
-    **Validates: Requirements 2.2**
-    """
-    
-    @settings(max_examples=100)
-    @given(
-        post_content=st.text(min_size=1, max_size=280),
-    )
-    def test_prompt_contains_post_content(self, post_content):
-        """
-        Feature: hokuhoku-imomaru-bot, Property 4: プロンプトへの投稿内容の包含
-        
-        任意の投稿内容に対して、生成されたプロンプトはその投稿内容を含むべきである
-        """
-        generator = create_generator()
-        
-        prompt = generator.build_prompt(post_content)
-        
-        assert post_content in prompt
-    
-    @settings(max_examples=100)
-    @given(
-        post_content=st.text(min_size=1, max_size=280),
-    )
-    def test_prompt_contains_character_definition(self, post_content):
-        """
-        Feature: hokuhoku-imomaru-bot, Property 4: プロンプトへの投稿内容の包含
-        
-        任意の投稿内容に対して、プロンプトにはキャラクター定義が含まれるべきである
-        """
-        generator = create_generator()
-        
-        prompt = generator.build_prompt(post_content)
-        
-        # キャラクター定義が含まれていることを確認
-        assert "ほくほくいも丸くん🍠" in prompt
-        assert "甘木ジュリさん" in prompt
-        assert "◯◯ｲﾓ🍠" in prompt
+    return AIGenerator(brain_client=brain_client)
 
 
 class TestTextTruncationProperty:
@@ -128,53 +85,34 @@ class TestTextTruncationProperty:
         assert hashtags in truncated
 
 
-class TestGenerateResponseProperty:
+class TestGenerateReactionProperty:
     """
-    生成されたレスポンスのプロパティテスト
+    頭脳の提案を整形したあとの本文のプロパティテスト
     """
-    
+
+    NOW = datetime(2026, 9, 16, 4, 18, tzinfo=timezone.utc)
+
     @settings(max_examples=50)
     @given(
         post_content=st.text(min_size=1, max_size=280),
         post_type=st.sampled_from(["oshi", "group"]),
     )
-    def test_generated_response_within_limit(self, post_content, post_type):
+    def test_reaction_text_within_limit(self, post_content, post_type):
         """
         Feature: hokuhoku-imomaru-bot, Property 5: テキストの140文字制限
-        
-        生成されたレスポンスは常に140文字以内であるべきである
+
+        頭脳が長い本文を返しても、反応の本文は常に140文字以内であるべきである
         """
-        mock_bedrock_client = Mock()
-        
-        # 長いレスポンスを返すモック
-        long_response = "あ" * 200 + "ｲﾓ🍠 #さつまいもの民 #びっくえんじぇる"
-        mock_response = {"content": [{"text": long_response}]}
-        mock_body = MagicMock()
-        mock_body.read.return_value = json.dumps(mock_response).encode()
-        mock_bedrock_client.invoke_model.return_value = {"body": mock_body}
-        
-        generator = AIGenerator(bedrock_client=mock_bedrock_client)
-        
-        result = generator.generate_response(post_content, post_type)
-        
-        assert len(result) <= MAX_TEXT_LENGTH
-    
-    @settings(max_examples=50)
-    @given(
-        post_content=st.text(min_size=1, max_size=280),
-        post_type=st.sampled_from(["oshi", "group"]),
-    )
-    def test_fallback_response_within_limit(self, post_content, post_type):
-        """
-        Feature: hokuhoku-imomaru-bot, Property 5: テキストの140文字制限
-        
-        フォールバックレスポンスは常に140文字以内であるべきである
-        """
-        mock_bedrock_client = Mock()
-        mock_bedrock_client.invoke_model.side_effect = Exception("API Error")
-        
-        generator = AIGenerator(bedrock_client=mock_bedrock_client)
-        
-        result = generator.generate_response(post_content, post_type)
-        
-        assert len(result) <= MAX_TEXT_LENGTH
+        brain = MagicMock(spec=BrainClient)
+        brain.invoke_json.return_value = {
+            "action": "post",
+            "text": "あ" * 200 + "ｲﾓ🍠 #さつまいもの民 #びっくえんじぇる",
+            "emotion_key": "joy",
+        }
+        generator = create_generator(brain)
+
+        reaction = generator.generate_reaction(
+            post_content=post_content, posted_at=self.NOW, now=self.NOW, publish_at=None, post_type=post_type
+        )
+
+        assert len(reaction.text) <= MAX_TEXT_LENGTH

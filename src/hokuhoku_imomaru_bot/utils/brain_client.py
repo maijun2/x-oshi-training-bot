@@ -7,7 +7,7 @@ Runtime 側の Agent はリクエストごとに使い捨てなので、セッ�
 会話履歴は混ざらない（agent/brain.py 参照）。
 
 失敗時の扱い:
-- ここでは例外を投げる（BrainError）。フォールバック（Haiku 直呼び）は AIGenerator 側の責務
+- ここでは例外を投げる（BrainError）。失敗時の扱い（反応は skip・リプライは固定文）は AIGenerator 側の責務
 - boto3 の自動リトライは無効。同じ生成を二重に走らせないため
 """
 import json

@@ -568,9 +568,8 @@ class TestPostQuoteSafe:
         kwargs = ai_generator.generate_reaction.call_args.kwargs
         assert kwargs["post_content"] == "元の投稿"
         assert kwargs["post_type"] == "oshi"
-        # Buffer 連携なし: 公開予定は不明、感情分類も不要
+        # Buffer 連携なし: 公開予定は不明
         assert kwargs["publish_at"] is None
-        assert kwargs["classify"] is False
         # created_at なしなら投稿時刻は現在時刻で代用
         assert kwargs["posted_at"] == kwargs["now"]
         # X API は呼ばれない（課金なし）
@@ -608,7 +607,7 @@ class TestPostQuoteSafe:
         """AI 生成エラー時に False を返す"""
         tweet = Tweet(id="123", text="元の投稿", author_id="user")
         ai_generator = MagicMock(spec=AIGenerator)
-        ai_generator.generate_reaction.side_effect = Exception("Bedrock error")
+        ai_generator.generate_reaction.side_effect = Exception("unexpected error")
         x_api_client = MagicMock()
         state_store = MagicMock(spec=StateStore)
 
@@ -739,7 +738,6 @@ class TestLambdaHandler:
             "dynamodb": mock_dynamodb,
             "s3": MagicMock(),
             "secretsmanager": MagicMock(),
-            "bedrock-runtime": MagicMock(),
         }.get(service, MagicMock())
         
         event = {"source": "aws.events"}
@@ -828,7 +826,6 @@ class TestRetweetProcessing:
         assert result["quotes_posted"] == 0
         x_api_client.post_tweet.assert_not_called()
         ai_generator.generate_reaction.assert_not_called()
-        ai_generator.generate_retweet_response.assert_not_called()
     
     def test_group_retweet_xp_only_no_quote(self):
         """グループのリツイート検知時はXP加算のみで引用ポストしない"""
@@ -1241,11 +1238,10 @@ class TestPostQuoteSafeWithEmotionImage:
         )
 
         assert result is True
-        # 頭脳には投稿時刻・現在時刻・公開予定（次の Buffer 枠）を渡し、画像付き投入できるので分類も依頼する
+        # 頭脳には投稿時刻・現在時刻・公開予定（次の Buffer 枠）を渡す
         kwargs = ai_generator.generate_reaction.call_args.kwargs
         assert kwargs["posted_at"] == datetime(2026, 9, 15, 16, 42, tzinfo=timezone.utc)
         assert kwargs["publish_at"] == self.NEXT_SLOT
-        assert kwargs["classify"] is True
         scheduler.next_slot_at.assert_called_once_with(kwargs["now"])
         scheduler.schedule_quote.assert_called_once_with(
             state=state, tweet_id="123", draft_text="嬉しいｲﾓ🍠", emotion_key="joy"
@@ -1291,7 +1287,6 @@ class TestPostQuoteSafeWithEmotionImage:
         )
 
         assert result is True
-        assert ai_generator.generate_reaction.call_args.kwargs["classify"] is False
         assert state.daily_image_posted is False
 
     def test_no_emotion_key_when_already_posted_today(self):
@@ -1325,7 +1320,6 @@ class TestPostQuoteSafeWithEmotionImage:
         )
 
         assert result is True
-        assert ai_generator.generate_reaction.call_args.kwargs["classify"] is False
         scheduler.schedule_quote.assert_called_once_with(
             state=state, tweet_id="123", draft_text="応答", emotion_key=None
         )
@@ -1358,7 +1352,6 @@ class TestPostQuoteSafeWithEmotionImage:
         )
 
         assert result is True
-        assert ai_generator.generate_reaction.call_args.kwargs["classify"] is False
         kwargs = draft_notifier.send_draft_email.call_args.kwargs
         assert kwargs["buffer_status"] == "cap"
         assert kwargs["buffer_run_cap"] == 3
