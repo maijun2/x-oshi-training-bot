@@ -336,11 +336,11 @@ class ImomaruBotStack(Stack):
                 "ASSETS_BUCKET_NAME": self.assets_bucket.bucket_name,
                 "SECRET_NAME": self.x_api_secret.secret_name,
                 "BUFFER_SECRET_NAME": self.buffer_api_secret.secret_name,
-                "BUFFER_RUN_CAP": "1",  # 1回の実行あたりの Buffer 予約投入件数の上限（主キャップ）
+                "BUFFER_RUN_CAP": "2",  # 1回の実行あたりの Buffer 予約投入件数の上限（主キャップ）
                 "BUFFER_DAILY_CAP": "7",  # 1日の上限（安全弁。スロット 8 枠/日より小さくして無料枠10件を溢れさせない）
                 # Buffer UI のスロット時刻（JST）の名目値。頭脳に渡す「公開予定時刻」の見込みにだけ使う。
                 # 実スロットは曜日ごとに ±数分ずらしてある（README 参照）。UI で枠の時間帯を変えたら合わせる
-                "BUFFER_SLOT_TIMES_JST": "08:00,11:15,12:15,14:15,15:15,19:15,20:15,22:00",
+                "BUFFER_SLOT_TIMES_JST": "02:00,08:00,11:15,12:15,14:15,15:15,19:15,20:15,22:00",
                 "PUBLIC_ASSETS_BUCKET_NAME": self.public_assets_bucket.bucket_name,
                 "BRAIN_RUNTIME_ARN": brain_runtime_arn,  # 頭脳。空なら反応は skip・リプライは固定文
                 "OSHI_MEMORY_ID": self.oshi_memory.attr_memory_id,  # 推しの記憶。空なら書き込みなし

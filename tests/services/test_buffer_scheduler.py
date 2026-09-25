@@ -67,17 +67,18 @@ class TestNextSlotAt:
     """頭脳に渡す「公開予定時刻」＝現在時刻より後の最初の Buffer 枠（JST）"""
 
     @pytest.mark.parametrize("now_utc, expected_jst", [
-        # 実測: 13:18 JST 検知 → 14:15 枠、23:58 JST 検知 → 翌 08:00 枠、10:07 JST 検知 → 11:15 枠
+        # 実測: 13:18 JST 検知 → 14:15 枠、23:58 JST 検知 → 翌 02:00 枠、10:07 JST 検知 → 11:15 枠
         (datetime(2026, 9, 16, 4, 18, tzinfo=timezone.utc), datetime(2026, 9, 16, 14, 15, tzinfo=JST)),
-        (datetime(2026, 9, 15, 14, 58, tzinfo=timezone.utc), datetime(2026, 9, 16, 8, 0, tzinfo=JST)),
+        (datetime(2026, 9, 15, 14, 58, tzinfo=timezone.utc), datetime(2026, 9, 16, 2, 0, tzinfo=JST)),
         (datetime(2026, 9, 16, 1, 7, tzinfo=timezone.utc), datetime(2026, 9, 16, 11, 15, tzinfo=JST)),
         # 枠の時刻ちょうどは「過ぎた」扱いで次の枠
         (datetime(2026, 9, 16, 14, 15, tzinfo=JST), datetime(2026, 9, 16, 15, 15, tzinfo=JST)),
-        # 日付の境界（JST 00:30 → 当日 08:00）
-        (datetime(2026, 9, 16, 0, 30, tzinfo=JST), datetime(2026, 9, 16, 8, 0, tzinfo=JST)),
-        # 夜の実行（21:00 ＋ 5 分ウィンドウ）→ 当日 22:00 枠。22:00 ちょうどは翌 08:00
+        # 日付の境界（JST 00:30 → 当日 02:00、02:00 ちょうど → 当日 08:00）
+        (datetime(2026, 9, 16, 0, 30, tzinfo=JST), datetime(2026, 9, 16, 2, 0, tzinfo=JST)),
+        (datetime(2026, 9, 16, 2, 0, tzinfo=JST), datetime(2026, 9, 16, 8, 0, tzinfo=JST)),
+        # 夜の実行（21:00 ＋ 5 分ウィンドウ）→ 当日 22:00 枠。22:00 ちょうどは翌 02:00
         (datetime(2026, 9, 19, 21, 5, tzinfo=JST), datetime(2026, 9, 19, 22, 0, tzinfo=JST)),
-        (datetime(2026, 9, 19, 22, 0, tzinfo=JST), datetime(2026, 9, 20, 8, 0, tzinfo=JST)),
+        (datetime(2026, 9, 19, 22, 0, tzinfo=JST), datetime(2026, 9, 20, 2, 0, tzinfo=JST)),
     ])
     def test_default_slots(self, scheduler, now_utc, expected_jst):
         assert scheduler.next_slot_at(now_utc) == expected_jst
@@ -102,7 +103,51 @@ class TestNextSlotAt:
     def test_parse_slot_times_ignores_invalid(self):
         slots = parse_slot_times("08:00,bogus,,25:99,11:15")
         assert [f"{t:%H:%M}" for t in slots] == ["08:00", "11:15"]
-        assert len(parse_slot_times(",".join(DEFAULT_SLOT_TIMES_JST))) == 8
+        assert len(parse_slot_times(",".join(DEFAULT_SLOT_TIMES_JST))) == 9
+
+
+class TestNextSlotAtAfterScheduling:
+    """同じ実行の 2 件目以降は、投入済みの予約時刻（実スロット）より後の枠を公開予定として渡す"""
+
+    def _schedule(self, scheduler, buffer_client, due_at):
+        buffer_client.add_to_queue.return_value = BufferPost(id="p", due_at=due_at, asset_urls=[])
+        assert scheduler.schedule_quote(BotState(), tweet_id="1", draft_text="t") is not None
+
+    @pytest.mark.parametrize("now_jst, due_jst, expected_jst", [
+        # 23:58 回: 1 件目 → 02:03（実スロット）、2 件目は 08:00 と伝える
+        (datetime(2026, 9, 25, 23, 58, tzinfo=JST), datetime(2026, 9, 26, 2, 3, tzinfo=JST),
+         datetime(2026, 9, 26, 8, 0, tzinfo=JST)),
+        # 実スロットが名目より早い（名目 15:15 → 実 15:03）でも同じ名目枠を返さない
+        (datetime(2026, 9, 26, 13, 23, tzinfo=JST), datetime(2026, 9, 26, 15, 3, tzinfo=JST),
+         datetime(2026, 9, 26, 19, 15, tzinfo=JST)),
+        # 21:00 回: 1 件目 → 22:04、2 件目は翌 02:00
+        (datetime(2026, 9, 25, 21, 1, tzinfo=JST), datetime(2026, 9, 25, 22, 4, tzinfo=JST),
+         datetime(2026, 9, 26, 2, 0, tzinfo=JST)),
+        # 10:07 回: 1 件目 → 11:12（名目より早い）、2 件目は 12:15
+        (datetime(2026, 9, 25, 10, 7, tzinfo=JST), datetime(2026, 9, 25, 11, 12, tzinfo=JST),
+         datetime(2026, 9, 25, 12, 15, tzinfo=JST)),
+    ])
+    def test_second_post_gets_following_slot(self, buffer_client, state_store, now_jst, due_jst, expected_jst):
+        scheduler = _make_scheduler(buffer_client, state_store, run_cap=2, daily_cap=7)
+        assert scheduler.next_slot_at(now_jst) < expected_jst
+        self._schedule(scheduler, buffer_client, due_jst)
+        assert scheduler.next_slot_at(now_jst) == expected_jst
+
+    def test_missing_due_at_falls_back_to_estimated_slot(self, buffer_client, state_store):
+        scheduler = _make_scheduler(buffer_client, state_store, run_cap=2, daily_cap=7)
+        now = datetime.now(timezone.utc)
+        first = scheduler.next_slot_at(now)
+        self._schedule(scheduler, buffer_client, None)
+        assert scheduler.next_slot_at(now) > first
+
+    def test_run_cap_2_schedules_two_then_email_only(self, buffer_client, state_store):
+        scheduler = _make_scheduler(buffer_client, state_store, run_cap=2, daily_cap=7)
+        state = BotState()
+        assert scheduler.schedule_quote(state, tweet_id="1", draft_text="a") is not None
+        assert scheduler.schedule_quote(state, tweet_id="2", draft_text="b") is not None
+        assert scheduler.schedule_quote(state, tweet_id="3", draft_text="c") is None
+        assert state.daily_buffer_count == 2
+        assert buffer_client.add_to_queue.call_count == 2
 
 
 class TestCapAndGates:

@@ -8,7 +8,7 @@ NG なら Buffer 側で削除する。予約時刻は Buffer のスロット設�
 import logging
 import urllib.parse
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone
 from typing import Optional, Sequence, Tuple
 
 from ..clients.buffer_client import BufferClient
@@ -23,8 +23,12 @@ EMOTION_IMAGE_ALT_TEXT = "ほくほくいも丸くんのスタンプ"
 # Buffer UI のスロット設定（JST）の名目値。公開予定時刻の見込みにだけ使い、実際の予約時刻は Buffer が決める。
 # 実スロットは曜日ごとに名目値から ±数分ずらしてある（README 参照）。UI で枠の時間帯を変えたら env BUFFER_SLOT_TIMES_JST も合わせる
 DEFAULT_SLOT_TIMES_JST: Tuple[str, ...] = (
-    "08:00", "11:15", "12:15", "14:15", "15:15", "19:15", "20:15", "22:00",
+    "02:00", "08:00", "11:15", "12:15", "14:15", "15:15", "19:15", "20:15", "22:00",
 )
+
+# 同じ実行で投入済みの予約時刻（実スロット）の次の名目枠を探すときの余白。
+# 実スロットのずれ（最大 12 分）より大きく、名目枠の最小間隔（60 分）より小さくする
+LAST_DUE_MARGIN = timedelta(minutes=30)
 
 
 def parse_slot_times(value: str) -> Tuple[time, ...]:
@@ -90,6 +94,7 @@ class BufferScheduler:
         self._daily_cap = daily_cap
         self._run_cap = run_cap
         self._run_count = 0
+        self._last_due_at: Optional[datetime] = None  # この実行で最後に投入した投稿の予約時刻
         self._slot_times = parse_slot_times(",".join(slot_times_jst))
 
     @property
@@ -104,9 +109,13 @@ class BufferScheduler:
         """
         now より後の最初のスロット時刻（見込みの公開時刻）を返す。今日に残り枠がなければ翌日の先頭枠。
         頭脳に「応答が読まれる時刻」として渡す。スロット設定が空なら None
+        この実行で投入済みなら、その予約時刻（＋余白）より後の枠を返す（2 件目以降は後ろの枠に入るため）。
+        前の実行で埋まった枠は考慮しない
         """
         if not self._slot_times:
             return None
+        if self._last_due_at is not None:
+            now = max(now, self._last_due_at + LAST_DUE_MARGIN)
         now_jst = now.astimezone(JST)
         for slot in self._slot_times:
             candidate = datetime.combine(now_jst.date(), slot)
@@ -175,6 +184,8 @@ class BufferScheduler:
             alt_text=EMOTION_IMAGE_ALT_TEXT if image_url else None,
         )
 
+        # Buffer が予約時刻を返さなかったときは見込みの枠で代用する
+        self._last_due_at = post.due_at or self.next_slot_at(datetime.now(timezone.utc))
         self._run_count += 1
         state.daily_buffer_count += 1
         image_attached = bool(image_url) and len(post.asset_urls) > 0
