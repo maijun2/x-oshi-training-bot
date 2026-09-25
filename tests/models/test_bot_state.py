@@ -240,3 +240,15 @@ def test_bot_state_daily_buffer_count_round_trip():
     assert state.to_dict()["daily_buffer_count"] == 2
     assert BotState.from_dict(state.to_dict()).daily_buffer_count == 2
     assert BotState.from_dict({}).daily_buffer_count == 0
+
+
+def test_bot_state_autonomous_fields_round_trip():
+    """last_autonomous_date / last_buffer_due_at（3b-1）が to_dict()/from_dict() で保持され、未指定なら None"""
+    state = BotState(last_autonomous_date="2026-09-26", last_buffer_due_at="2026-09-26T13:01:00+00:00")
+
+    restored = BotState.from_dict(state.to_dict())
+
+    assert restored.last_autonomous_date == "2026-09-26"
+    assert restored.last_buffer_due_at == "2026-09-26T13:01:00+00:00"
+    assert BotState.from_dict({}).last_autonomous_date is None
+    assert BotState.from_dict({}).last_buffer_due_at is None

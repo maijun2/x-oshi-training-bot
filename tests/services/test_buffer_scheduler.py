@@ -315,3 +315,65 @@ class TestScheduleQuote:
 
         assert state.daily_buffer_count == 0
         assert state.daily_image_posted is False
+
+
+class TestLastDueAcrossRuns:
+    """前の実行で埋めた枠（BotState.last_buffer_due_at）を公開予定時刻の見込みに反映する（3b-1 と同じ deploy）"""
+
+    def test_schedule_records_due_at_in_state(self, scheduler, buffer_client):
+        state = BotState()
+        scheduler.schedule_quote(state, tweet_id="1", draft_text="t")
+        assert state.last_buffer_due_at == DUE_AT.isoformat()
+
+    def test_restored_due_at_pushes_next_slot(self, buffer_client, state_store):
+        # 21:00 回の 2 件目が 02:02 に入った → 23:58 回の 1 件目は 02:00 ではなく 08:00
+        scheduler = _make_scheduler(buffer_client, state_store, run_cap=2, daily_cap=7)
+        now = datetime(2026, 9, 25, 23, 58, tzinfo=JST)
+        assert scheduler.next_slot_at(now) == datetime(2026, 9, 26, 2, 0, tzinfo=JST)
+
+        scheduler.restore_last_due_at(datetime(2026, 9, 26, 2, 2, tzinfo=JST).isoformat())
+
+        assert scheduler.next_slot_at(now) == datetime(2026, 9, 26, 8, 0, tzinfo=JST)
+
+    def test_past_restored_due_at_is_harmless(self, buffer_client, state_store):
+        scheduler = _make_scheduler(buffer_client, state_store, run_cap=2, daily_cap=7)
+        now = datetime(2026, 9, 26, 10, 7, tzinfo=JST)
+        scheduler.restore_last_due_at(datetime(2026, 9, 26, 8, 3, tzinfo=JST).isoformat())
+        assert scheduler.next_slot_at(now) == datetime(2026, 9, 26, 11, 15, tzinfo=JST)
+
+    @pytest.mark.parametrize("value", [None, "", "not-a-date"])
+    def test_empty_or_invalid_value_is_ignored(self, buffer_client, state_store, value):
+        scheduler = _make_scheduler(buffer_client, state_store, run_cap=2, daily_cap=7)
+        now = datetime(2026, 9, 25, 23, 58, tzinfo=JST)
+        scheduler.restore_last_due_at(value)
+        assert scheduler.next_slot_at(now) == datetime(2026, 9, 26, 2, 0, tzinfo=JST)
+
+
+class TestScheduleAutonomous:
+    """独り言（自律投稿、3b-1）: 元ツイート URL なし。キャップ・画像フラグは schedule_quote と共有"""
+
+    def test_text_has_no_url(self, scheduler, buffer_client):
+        state = BotState()
+        text = "生誕祭まであと2日ｲﾓ🍠\n\n#さつまいもの民 #びっくえんじぇる"
+
+        result = scheduler.schedule_autonomous(state, text)
+
+        assert result.post_id == "p1"
+        assert buffer_client.add_to_queue.call_args.kwargs["text"] == text
+        assert state.daily_buffer_count == 1
+        assert state.last_buffer_due_at == DUE_AT.isoformat()
+
+    def test_shares_run_cap_with_quotes(self, buffer_client, state_store):
+        scheduler = _make_scheduler(buffer_client, state_store, run_cap=1, daily_cap=7)
+        state = BotState()
+        scheduler.schedule_quote(state, tweet_id="1", draft_text="a")
+        assert scheduler.schedule_autonomous(state, "b") is None
+        assert buffer_client.add_to_queue.call_count == 1
+
+    def test_image_attached_once_per_day(self, scheduler, buffer_client):
+        buffer_client.add_to_queue.return_value = BufferPost(id="p1", due_at=DUE_AT, asset_urls=["u"])
+        state = BotState()
+        result = scheduler.schedule_autonomous(state, "t", emotion_key="cheer")
+        assert result.image_attached is True
+        assert state.daily_image_posted is True
+        assert buffer_client.add_to_queue.call_args.kwargs["alt_text"] == EMOTION_IMAGE_ALT_TEXT

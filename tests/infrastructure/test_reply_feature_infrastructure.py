@@ -383,7 +383,7 @@ class TestPropertyTableCount:
     
     def test_total_dynamodb_table_count(self):
         """
-        DynamoDBテーブルの総数が6つであることを確認
+        DynamoDBテーブルの総数が7つであることを確認
         
         **Validates: Requirements 11.1, 11.5**
         """
@@ -391,5 +391,5 @@ class TestPropertyTableCount:
         stack = ImomaruBotStack(app, "test-stack")
         template = assertions.Template.from_stack(stack)
         
-        # DynamoDBテーブルが6つ作成されることを確認
-        template.resource_count_is("AWS::DynamoDB::Table", 6)
+        # DynamoDBテーブルが7つ作成されることを確認
+        template.resource_count_is("AWS::DynamoDB::Table", 7)

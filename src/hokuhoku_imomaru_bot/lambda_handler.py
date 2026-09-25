@@ -5,7 +5,7 @@ EventBridgeからトリガーされ、ボットのメインロジックを実行
 """
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import boto3
 
@@ -31,6 +31,8 @@ from .services import (
     OshiMemoryWriter,
 )
 from .services.ai_generator import REACTION_SKIP
+from .services.autonomous_selector import AutonomousSelection, AutonomousSelector
+from .services.post_history_store import HistoryEntry, PostHistoryStore
 from .services.buffer_scheduler import DEFAULT_SLOT_TIMES_JST
 from .services.daily_reporter import JST
 from .services.oshi_memory_writer import parse_created_at
@@ -67,7 +69,9 @@ BUFFER_RUN_CAP = int(os.environ.get("BUFFER_RUN_CAP", "1"))  # 1回の実行あ�
 # Buffer UI のスロット時刻（JST、カンマ区切り）。頭脳に渡す「公開予定時刻」の見込み計算にだけ使う
 BUFFER_SLOT_TIMES_JST = os.environ.get("BUFFER_SLOT_TIMES_JST", ",".join(DEFAULT_SLOT_TIMES_JST)).split(",")
 BRAIN_RUNTIME_ARN = os.environ.get("BRAIN_RUNTIME_ARN", "")  # 頭脳（AgentCore Runtime）。空なら反応は skip・リプライは固定文（ERROR ログ）
-OSHI_MEMORY_ID = os.environ.get("OSHI_MEMORY_ID", "")  # 推しの記憶（AgentCore Memory）。空なら書き込みなし
+OSHI_MEMORY_ID = os.environ.get("OSHI_MEMORY_ID", "")  # 推しの記憶（AgentCore Memory）。空なら書き込みなし・独り言なし
+# 独り言（自律投稿、3b-1）の投稿履歴
+POST_HISTORY_TABLE_NAME = os.environ.get("POST_HISTORY_TABLE_NAME", "imomaru-bot-post-history")
 # 感情画像の公開バケット（Buffer が投稿公開時に取りに来る）
 PUBLIC_ASSETS_BUCKET_NAME = os.environ.get("PUBLIC_ASSETS_BUCKET_NAME", "imomaru-bot-public-assets")
 PUBLIC_ASSETS_BASE_URL = (
@@ -95,6 +99,10 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     
     # 実行モードを抽出（デフォルト: daily_report）
     execution_mode = event.get("execution_mode", "daily_report")
+    # 独り言（自律投稿、3b-1）を許す実行か（EventBridge の 21:00 回だけが true を渡す）。
+    # autonomous_dry_run は手動確認用: Buffer・冪等ロック・履歴・状態に触れずメールだけ送る
+    autonomous_allowed = event.get("autonomous_allowed") is True
+    autonomous_dry_run = event.get("autonomous_dry_run") is True
     
     try:
         # AWSクライアントの初期化
@@ -183,8 +191,18 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             else None
         )
         
+        # 独り言の材料選び（推しの記憶を一覧）と投稿履歴
+        autonomous_selector = (
+            AutonomousSelector(memory_id=OSHI_MEMORY_ID, actor_id=OSHI_USERNAME)
+            if OSHI_MEMORY_ID and OSHI_USERNAME
+            else None
+        )
+        post_history_store = PostHistoryStore(table_name=POST_HISTORY_TABLE_NAME)
+
         # 状態の読み込み
         state = state_store.load_state()
+        # 前の実行で埋めた Buffer 枠を公開予定時刻の見込みに反映する
+        buffer_scheduler.restore_last_due_at(state.last_buffer_due_at)
         
         # XPテーブルの読み込み
         xp_table = state_store.load_xp_table()
@@ -211,6 +229,11 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             s3_client=s3_client,
             bucket_name=ASSETS_BUCKET_NAME,
             execution_mode=execution_mode,
+            autonomous_allowed=autonomous_allowed,
+            autonomous_dry_run=autonomous_dry_run,
+            autonomous_selector=autonomous_selector,
+            post_history_store=post_history_store,
+            remaining_time_ms=getattr(context, "get_remaining_time_in_millis", None),
         )
         
         log_event(
@@ -253,6 +276,11 @@ def _process_bot_logic(
     s3_client = None,
     bucket_name: str = None,
     execution_mode: str = "daily_report",
+    autonomous_allowed: bool = False,
+    autonomous_dry_run: bool = False,
+    autonomous_selector: Optional[AutonomousSelector] = None,
+    post_history_store: Optional[PostHistoryStore] = None,
+    remaining_time_ms: Optional[Callable[[], int]] = None,
 ) -> Dict[str, Any]:
     """
     ボットのメインロジックを実行
@@ -274,6 +302,11 @@ def _process_bot_logic(
         oshi_memory_writer: OshiMemoryWriterインスタンス（None なら推しの記憶を書き込まない）
         s3_client: boto3 S3クライアント（感情画像取得用）
         bucket_name: S3バケット名
+        autonomous_allowed: 独り言（自律投稿、3b-1）を許す実行か（core_time のときだけ有効）
+        autonomous_dry_run: 独り言を Buffer・ロック・履歴・状態に触れずメールだけで試す
+        autonomous_selector: 独り言の材料選び（None なら独り言なし）
+        post_history_store: 独り言の投稿履歴
+        remaining_time_ms: Lambda の残り時間（ミリ秒）を返す関数
     
     Returns:
         処理結果
@@ -291,6 +324,7 @@ def _process_bot_logic(
         "new_retweets": 0,
         "replies_processed": 0,
         "memory_events_recorded": 0,
+        "react_calls": 0,
     }
     
     is_core_time = (execution_mode == "core_time")
@@ -382,6 +416,7 @@ def _process_bot_logic(
             continue
 
         # AI応答を生成し、メール素案通知 ＋ Buffer 予約投入（半人力）
+        result["react_calls"] += 1
         posted = _post_quote_safe(
             tweet=tweet,
             post_type="oshi",
@@ -597,10 +632,186 @@ def _process_bot_logic(
                 message="Daily report posted",
             )
     
+    # 独り言（自律投稿、3b-1 (i)）: 推し投稿に反応しなかった夜の実行だけ
+    if is_core_time and autonomous_allowed:
+        result["autonomous_status"] = _autonomous_post_safe(
+            state=state,
+            state_store=state_store,
+            ai_generator=ai_generator,
+            draft_notifier=draft_notifier,
+            buffer_scheduler=buffer_scheduler,
+            selector=autonomous_selector,
+            history_store=post_history_store,
+            react_calls=result["react_calls"],
+            dry_run=autonomous_dry_run,
+            remaining_time_ms=remaining_time_ms,
+        )
+
     # 状態を保存
     state_store.save_state(state)
     
     return result
+
+
+# 独り言（自律投稿、3b-1）
+AUTONOMOUS_MIN_REMAINING_MS = 120_000   # 頭脳の read timeout（90 秒）＋ Buffer・SES の余裕
+AUTONOMOUS_HISTORY_DAYS = 7             # 重複キー（B は同じ記憶を 7 日作らない）と直近本文の参照範囲
+AUTONOMOUS_RECENT_TEXTS = 3             # 頭脳に渡す直近の独り言の件数
+AUTONOMOUS_LOCK_PREFIX = "autonomous-"  # processed-tweets の冪等ロック（1 日 1 件。数値のツイート ID と衝突しない）
+
+
+def _autonomous_kind_label(selection: AutonomousSelection) -> str:
+    if selection.kind == "A":
+        countdown = "明日" if selection.days_left == 1 else f"あと {selection.days_left} 日"
+        return f"A. 未来イベント（{selection.event_date:%m/%d} まで{countdown}）"
+    return "B. 直近の出来事の余韻"
+
+
+def _autonomous_skip(reason: str) -> str:
+    log_event(
+        level=LogLevel.INFO,
+        event_type=EventType.POST_DETECTED,
+        data={"autonomous_skip": reason},
+        message=f"autonomous_skip reason={reason}",
+    )
+    return reason
+
+
+def _autonomous_post_safe(**kwargs: Any) -> str:
+    """
+    独り言（自律投稿）を試みる。失敗は握りつぶし ERROR ログ（アラーム）にして、状態の保存を妨げない
+
+    Returns:
+        結果（scheduled / cap / failed / skipped / dry_run / brain_failed / error、または見送り理由）
+    """
+    try:
+        return _autonomous_post(**kwargs)
+    except Exception as e:
+        handle_api_error(e, "autonomous_post")
+        return "error"
+
+
+def _autonomous_post(
+    state: BotState,
+    state_store: StateStore,
+    ai_generator: AIGenerator,
+    draft_notifier: Optional[DraftNotifier],
+    buffer_scheduler: Optional[BufferScheduler],
+    selector: Optional[AutonomousSelector],
+    history_store: Optional[PostHistoryStore],
+    react_calls: int,
+    dry_run: bool = False,
+    remaining_time_ms: Optional[Callable[[], int]] = None,
+    now: Optional[datetime] = None,
+) -> str:
+    """
+    推しの投稿に反応しなかった夜に、推しの記憶から独り言を 1 件作って Buffer に入れる（設計書 §10-11）
+
+    発火条件（決定論）: この実行で react 0 件 ＋ 本日未実施 ＋ 次の枠が今日 ＋ Buffer キャップに空き ＋ 残り時間。
+    候補は AutonomousSelector が選び、頭脳は 1 回だけ呼ぶ。頭脳の skip はメールで理由を知らせる（候補なしはログのみ）
+    """
+    now = now or datetime.now(timezone.utc)
+    today = now.astimezone(JST).date()
+    today_str = today.isoformat()
+
+    if react_calls > 0:
+        return _autonomous_skip("reacted")
+    if state.last_autonomous_date == today_str:
+        return _autonomous_skip("already_done")
+    if None in (buffer_scheduler, selector, history_store, draft_notifier):
+        return _autonomous_skip("not_configured")
+    publish_at = buffer_scheduler.next_slot_at(now)
+    if publish_at is None or publish_at.astimezone(JST).date() != today:
+        return _autonomous_skip("next_slot_tomorrow")
+    if not buffer_scheduler.can_schedule(state):
+        return _autonomous_skip("cap")
+    if remaining_time_ms is not None and remaining_time_ms() < AUTONOMOUS_MIN_REMAINING_MS:
+        return _autonomous_skip("low_time")
+
+    history = history_store.load_recent(today, AUTONOMOUS_HISTORY_DAYS)
+    selection = selector.select(now, history_store.used_keys(history))
+    if selection is None:
+        return _autonomous_skip("no_candidates")
+
+    if not dry_run:
+        # タイムアウト時の自動リトライや EventBridge の重複配信で 2 件入らないように、頭脳を呼ぶ前にロックする
+        try:
+            state_store.acquire_tweet_lock(f"{AUTONOMOUS_LOCK_PREFIX}{today_str}", "autonomous")
+        except TweetAlreadyProcessedError:
+            return _autonomous_skip("locked")
+
+    reaction = ai_generator.generate_autonomous(
+        kind=selection.kind,
+        candidates=[c.to_brain() for c in selection.candidates],
+        now=now,
+        publish_at=publish_at,
+        days_left=selection.days_left,
+        event_date=selection.event_date,
+        recent_texts=[e.text for e in history[:AUTONOMOUS_RECENT_TEXTS]],
+    )
+    if reaction.source == "error":
+        # ERROR ログ（アラーム）は AIGenerator が出している。ロック済みなので今日は再試行しない
+        return "brain_failed"
+
+    kind_label = _autonomous_kind_label(selection)
+    used = [c for c in selection.candidates if c.record_id in reaction.sources] or selection.candidates
+    sources = [(c.record_id, c.text) for c in used]
+
+    if reaction.action == REACTION_SKIP:
+        if not dry_run:
+            state.last_autonomous_date = today_str
+        draft_notifier.send_autonomous_email(
+            kind_label=kind_label,
+            draft_text="",
+            reason=reaction.reason,
+            sources=sources,
+            buffer_status=DraftNotifier.BUFFER_STATUS_SKIPPED,
+        )
+        return "skipped"
+
+    if dry_run:
+        draft_notifier.send_autonomous_email(
+            kind_label=f"{kind_label}［dry run: Buffer には入れていません］",
+            draft_text=reaction.text,
+            reason=reaction.reason,
+            sources=sources,
+            emotion_key=reaction.emotion_key,
+        )
+        return "dry_run"
+
+    scheduled = None
+    try:
+        scheduled = buffer_scheduler.schedule_autonomous(state, reaction.text, reaction.emotion_key)
+        status = DraftNotifier.BUFFER_STATUS_SCHEDULED if scheduled else DraftNotifier.BUFFER_STATUS_CAP
+    except Exception as e:
+        handle_api_error(e, "buffer_schedule_autonomous")
+        status = DraftNotifier.BUFFER_STATUS_FAILED
+    state.last_autonomous_date = today_str
+
+    if scheduled is not None:
+        try:
+            history_store.record(HistoryEntry(
+                posted_date=today_str,
+                kind=selection.kind,
+                text=reaction.text,
+                record_ids=[c.record_id for c in used],
+                dedupe_keys=selection.keys_for(c.record_id for c in used),
+                buffer_post_id=scheduled.post_id,
+            ))
+        except Exception as e:
+            handle_api_error(e, "autonomous_history")
+
+    draft_notifier.send_autonomous_email(
+        kind_label=kind_label,
+        draft_text=reaction.text,
+        reason=reaction.reason,
+        sources=sources,
+        emotion_key=reaction.emotion_key if scheduled and scheduled.image_attached else None,
+        buffer_status=status,
+        buffer_due_at=scheduled.due_at if scheduled else None,
+        buffer_run_cap=buffer_scheduler.run_cap,
+    )
+    return status
 
 
 def _record_oshi_memory_safe(oshi_memory_writer: OshiMemoryWriter, tweet: Tweet) -> bool:

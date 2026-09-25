@@ -109,8 +109,8 @@ class BufferScheduler:
         """
         now より後の最初のスロット時刻（見込みの公開時刻）を返す。今日に残り枠がなければ翌日の先頭枠。
         頭脳に「応答が読まれる時刻」として渡す。スロット設定が空なら None
-        この実行で投入済みなら、その予約時刻（＋余白）より後の枠を返す（2 件目以降は後ろの枠に入るため）。
-        前の実行で埋まった枠は考慮しない
+        投入済みの予約時刻（この実行、または restore_last_due_at で復元した前の実行の分）があれば、
+        その時刻（＋余白）より後の枠を返す（後から入れた投稿は後ろの枠に入るため）
         """
         if not self._slot_times:
             return None
@@ -122,6 +122,20 @@ class BufferScheduler:
             if candidate > now_jst:
                 return candidate
         return datetime.combine(now_jst.date() + timedelta(days=1), self._slot_times[0])
+
+    def restore_last_due_at(self, value: Optional[str]) -> None:
+        """
+        前の実行で最後に投入した投稿の予約時刻（BotState.last_buffer_due_at、ISO 8601）を復元する。
+        この実行でまだ投入していないときだけ反映する。解釈できない値・過去の値は next_slot_at で無害
+        """
+        if not value or self._last_due_at is not None:
+            return
+        try:
+            restored = datetime.fromisoformat(value)
+        except ValueError:
+            logger.warning(f"Ignoring invalid last_buffer_due_at: {value!r}")
+            return
+        self._last_due_at = restored if restored.tzinfo else restored.replace(tzinfo=timezone.utc)
 
     def can_schedule(self, state: BotState) -> bool:
         """この実行のキャップにも本日のキャップにも達していなければ True"""
@@ -161,16 +175,56 @@ class BufferScheduler:
         Raises:
             BufferAPIError 等: 投入に失敗した場合（握りつぶしは呼び出し元の責務）
         """
+        return self._enqueue(
+            state,
+            text=self.build_post_text(draft_text, tweet_id),
+            emotion_key=emotion_key,
+            label=f"tweet {tweet_id}",
+            scheduled_what=f"quote for tweet {tweet_id}",
+        )
+
+    def schedule_autonomous(
+        self,
+        state: BotState,
+        draft_text: str,
+        emotion_key: Optional[str] = None,
+    ) -> Optional[ScheduledPost]:
+        """
+        独り言（自律投稿、3b-1）を Buffer キューに投入する。元ツイート URL は付けない。
+        キャップ・画像 1 日 1 回・公開予定の追跡は schedule_quote と共有する
+
+        Returns:
+            投入結果。キャップ到達時は None
+
+        Raises:
+            BufferAPIError 等: 投入に失敗した場合（握りつぶしは呼び出し元の責務）
+        """
+        return self._enqueue(
+            state,
+            text=draft_text,
+            emotion_key=emotion_key,
+            label="autonomous post",
+            scheduled_what="autonomous post",
+        )
+
+    def _enqueue(
+        self,
+        state: BotState,
+        text: str,
+        emotion_key: Optional[str],
+        label: str,
+        scheduled_what: str,
+    ) -> Optional[ScheduledPost]:
         if self._run_count >= self._run_cap:
             logger.info(
                 f"Buffer run cap reached ({self._run_count}/{self._run_cap}); "
-                f"email only for tweet {tweet_id}"
+                f"email only for {label}"
             )
             return None
         if state.daily_buffer_count >= self._daily_cap:
             logger.info(
                 f"Buffer daily cap reached ({state.daily_buffer_count}/{self._daily_cap}); "
-                f"email only for tweet {tweet_id}"
+                f"email only for {label}"
             )
             return None
 
@@ -179,13 +233,16 @@ class BufferScheduler:
             image_url = self.build_emotion_image_url(emotion_key)
 
         post = self._buffer_client.add_to_queue(
-            text=self.build_post_text(draft_text, tweet_id),
+            text=text,
             image_url=image_url,
             alt_text=EMOTION_IMAGE_ALT_TEXT if image_url else None,
         )
 
         # Buffer が予約時刻を返さなかったときは見込みの枠で代用する
         self._last_due_at = post.due_at or self.next_slot_at(datetime.now(timezone.utc))
+        if self._last_due_at is not None:
+            # 次の実行の next_slot_at でも埋まった枠を避けられるよう状態に残す（save_state は呼び出し元）
+            state.last_buffer_due_at = self._last_due_at.isoformat()
         self._run_count += 1
         state.daily_buffer_count += 1
         image_attached = bool(image_url) and len(post.asset_urls) > 0
@@ -197,7 +254,7 @@ class BufferScheduler:
             )
 
         logger.info(
-            f"Buffer scheduled quote for tweet {tweet_id}: post={post.id} "
+            f"Buffer scheduled {scheduled_what}: post={post.id} "
             f"due_at={post.due_at} image={image_attached} "
             f"count=run {self._run_count}/{self._run_cap}, "
             f"daily {state.daily_buffer_count}/{self._daily_cap}"
