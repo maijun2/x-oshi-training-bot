@@ -101,6 +101,8 @@ class StateStore:
                     daily_buffer_count=int(item.get("daily_buffer_count", {}).get("N", 0)),
                     prev_daily_oshi_count=int(item.get("prev_daily_oshi_count", {}).get("N", 0)),
                     latest_reply_check_id=item.get("latest_reply_check_id", {}).get("S"),
+                    last_autonomous_date=item.get("last_autonomous_date", {}).get("S"),
+                    last_buffer_due_at=item.get("last_buffer_due_at", {}).get("S"),
                 )
             
             logger.info("No existing state found, returning default state")
@@ -172,6 +174,12 @@ class StateStore:
             # last_profile_update_monthがNoneでない場合のみ追加
             if state.last_profile_update_month is not None:
                 item["last_profile_update_month"] = {"S": state.last_profile_update_month}
+
+            # 独り言の最終実施日・最後の Buffer 予約時刻（3b-1）
+            if state.last_autonomous_date is not None:
+                item["last_autonomous_date"] = {"S": state.last_autonomous_date}
+            if state.last_buffer_due_at is not None:
+                item["last_buffer_due_at"] = {"S": state.last_buffer_due_at}
             
             self.dynamodb_client.put_item(
                 TableName=self.state_table_name,

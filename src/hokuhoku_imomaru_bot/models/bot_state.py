@@ -32,6 +32,8 @@ class BotState:
         last_profile_update_month: 最後のプロフィール更新月（YYYY-MM形式）
         total_received_likes: ボット投稿への累積いいね数
         total_received_retweets: ボット投稿への累積リポスト数
+        last_autonomous_date: 独り言（自律投稿）の最終実施日（YYYY-MM-DD形式、JST基準）
+        last_buffer_due_at: 最後に Buffer へ投入した投稿の予約時刻（ISO 8601）
     """
     cumulative_xp: float = 0.0
     current_level: int = 1
@@ -68,6 +70,10 @@ class BotState:
     prev_daily_oshi_count: int = 0
     # リプライチェック用の最新Tweet ID
     latest_reply_check_id: Optional[str] = None
+    # 独り言（自律投稿、3b-1）の最終実施日（YYYY-MM-DD、JST。投稿・頭脳の見送りのどちらでも立てる）
+    last_autonomous_date: Optional[str] = None
+    # 最後に Buffer へ投入した投稿の予約時刻（ISO 8601）。次の実行の公開予定時刻の見込みに使う
+    last_buffer_due_at: Optional[str] = None
 
     def to_dict(self) -> dict:
         """
@@ -102,6 +108,8 @@ class BotState:
             "daily_buffer_count": self.daily_buffer_count,
             "prev_daily_oshi_count": self.prev_daily_oshi_count,
             "latest_reply_check_id": self.latest_reply_check_id,
+            "last_autonomous_date": self.last_autonomous_date,
+            "last_buffer_due_at": self.last_buffer_due_at,
         }
         return result
 
@@ -146,6 +154,8 @@ class BotState:
             daily_buffer_count=int(data.get("daily_buffer_count", 0)),
             prev_daily_oshi_count=int(data.get("prev_daily_oshi_count", 0)),
             latest_reply_check_id=data.get("latest_reply_check_id"),
+            last_autonomous_date=data.get("last_autonomous_date"),
+            last_buffer_due_at=data.get("last_buffer_due_at"),
         )
 
     def get_xp_breakdown(self) -> dict:

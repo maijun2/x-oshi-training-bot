@@ -24,8 +24,8 @@ def test_dynamodb_tables_created():
     stack = ImomaruBotStack(app, "test-stack")
     template = assertions.Template.from_stack(stack)
     
-    # DynamoDBテーブルが6つ作成されることを確認
-    template.resource_count_is("AWS::DynamoDB::Table", 6)
+    # DynamoDBテーブルが7つ作成されることを確認
+    template.resource_count_is("AWS::DynamoDB::Table", 7)
     
     # BotStateテーブルの検証
     template.has_resource_properties("AWS::DynamoDB::Table", {
@@ -693,7 +693,7 @@ def test_cdk_stack_all_resources():
     template = assertions.Template.from_stack(stack)
     
     # リソース数の確認
-    template.resource_count_is("AWS::DynamoDB::Table", 6)
+    template.resource_count_is("AWS::DynamoDB::Table", 7)
     template.resource_count_is("AWS::S3::Bucket", 2)
     template.resource_count_is("AWS::SecretsManager::Secret", 2)
     template.resource_count_is("AWS::Lambda::Function", 1)
@@ -1096,7 +1096,7 @@ def test_oshi_memory_created():
     検証項目:
     - Memory が 1 つ、戦略は Semantic / User Preference / Episodic の 3 つ、削除時は保持
     - Lambda 環境変数 OSHI_MEMORY_ID が設定される
-    - Lambda ロールに bedrock-agentcore:CreateEvent が付与される
+    - Lambda ロールに bedrock-agentcore:CreateEvent と ListMemoryRecords（独り言の材料選び、3b-1）が付与される
     """
     app = cdk.App()
     stack = ImomaruBotStack(app, "test-stack")
@@ -1129,7 +1129,7 @@ def test_oshi_memory_created():
         "PolicyDocument": {
             "Statement": assertions.Match.array_with([
                 assertions.Match.object_like({
-                    "Action": "bedrock-agentcore:CreateEvent",
+                    "Action": ["bedrock-agentcore:CreateEvent", "bedrock-agentcore:ListMemoryRecords"],
                     "Effect": "Allow",
                 })
             ])
@@ -1202,6 +1202,32 @@ def test_ses_sender_domain_absent_falls_back_to_notification_email(monkeypatch):
         "Environment": {
             "Variables": assertions.Match.object_like({
                 "FROM_EMAIL": "me@example.com",
+            })
+        }
+    })
+
+
+def test_post_history_table_created():
+    """
+    3b-1: 独り言の投稿履歴テーブル（PK posted_date、TTL）が作成され、Lambda に渡ることを確認
+    """
+    app = cdk.App()
+    stack = ImomaruBotStack(app, "test-stack")
+    template = assertions.Template.from_stack(stack)
+
+    template.has_resource("AWS::DynamoDB::Table", {
+        "Properties": {
+            "TableName": "imomaru-bot-post-history",
+            "KeySchema": [{"AttributeName": "posted_date", "KeyType": "HASH"}],
+            "BillingMode": "PAY_PER_REQUEST",
+            "TimeToLiveSpecification": {"AttributeName": "ttl", "Enabled": True},
+        },
+        "DeletionPolicy": "Retain",
+    })
+    template.has_resource_properties("AWS::Lambda::Function", {
+        "Environment": {
+            "Variables": assertions.Match.object_like({
+                "POST_HISTORY_TABLE_NAME": assertions.Match.any_value(),
             })
         }
     })

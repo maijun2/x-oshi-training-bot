@@ -493,3 +493,19 @@ def test_acquire_tweet_lock_raises_on_other_client_error():
 
     with pytest.raises(ClientError):
         store.acquire_tweet_lock("tweet_999", "quote_oshi")
+
+
+def test_save_and_load_state_with_autonomous_fields(dynamodb_client):
+    """独り言の最終実施日・最後の Buffer 予約時刻（3b-1）を保存・読み込みでき、未設定なら None"""
+    store = StateStore(dynamodb_client)
+
+    assert store.load_state().last_autonomous_date is None
+    store.save_state(BotState())
+    loaded = store.load_state()
+    assert loaded.last_autonomous_date is None
+    assert loaded.last_buffer_due_at is None
+
+    store.save_state(BotState(last_autonomous_date="2026-09-26", last_buffer_due_at="2026-09-26T13:01:00+00:00"))
+    loaded = store.load_state()
+    assert loaded.last_autonomous_date == "2026-09-26"
+    assert loaded.last_buffer_due_at == "2026-09-26T13:01:00+00:00"

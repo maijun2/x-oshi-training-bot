@@ -5,6 +5,7 @@ AIGeneratorクラス
 
 生成元は頭脳（AgentCore Runtime、BrainClient 経由）のみ（フェーズ2b-3 で Haiku 直呼びを撤去）:
 - 推し投稿への反応: `react` 1 回で JSON 提案 {action, text, emotion_key, reason} を受け取る（generate_reaction）
+- 独り言（3b-1）: `autonomous` 1 回で JSON 提案 ＋ sources を受け取る（generate_autonomous）
 - リプライ応答: `reply_response`（generate_reply_response）
 
 頭脳が未設定・失敗したときは logger.error で記録して imomaru-bot-app-errors アラームを鳴らし、
@@ -12,9 +13,9 @@ AIGeneratorクラス
 """
 import logging
 import re
-from dataclasses import dataclass
-from datetime import datetime
-from typing import Any, Dict, Optional
+from dataclasses import dataclass, field
+from datetime import date, datetime
+from typing import Any, Dict, List, Optional, Sequence
 
 from ..prompts import (  # noqa: F401  (re-export: 既存の import 経路を維持)
     DEFAULT_REPLY_RESPONSE_TEMPLATE,
@@ -43,6 +44,7 @@ class Reaction:
     emotion_key: Optional[str]       # VALID_EMOTION_KEYS のいずれか。該当なし・不正は None
     reason: str = ""                 # 判断理由（メール表示用）
     source: str = "brain"            # "brain" | "error"（頭脳が未設定・失敗。action は skip）
+    sources: List[str] = field(default_factory=list)  # 独り言で使った記憶の id（autonomous のみ）
 
 
 def format_jst(moment: datetime) -> str:
@@ -210,6 +212,74 @@ class AIGenerator:
                     f"emotion={emotion_key} {len(text)} chars"
                 )
                 return Reaction(action=action, text=text, emotion_key=emotion_key, reason=reason, source="brain")
+
+        return Reaction(action=REACTION_SKIP, text="", emotion_key=None, reason=BRAIN_FAILED_REASON, source="error")
+
+    def generate_autonomous(
+        self,
+        kind: str,
+        candidates: Sequence[Dict[str, str]],
+        now: datetime,
+        publish_at: Optional[datetime],
+        days_left: Optional[int] = None,
+        event_date: Optional[date] = None,
+        recent_texts: Sequence[str] = (),
+    ) -> Reaction:
+        """
+        推しの投稿がない夜の独り言を提案として生成する（頭脳 `autonomous`、3b-1。未設定・失敗時は skip）
+
+        Args:
+            kind: 素案タイプ（"A" / "B"）
+            candidates: [{"id", "text", "created_at"}]（AutonomousSelector が選んだ記憶）
+            now: 現在時刻
+            publish_at: 公開予定時刻（次の Buffer 予約枠）
+            days_left: タイプ A のイベントまでの日数
+            event_date: タイプ A のイベント日
+            recent_texts: 直近の独り言の本文
+
+        Returns:
+            Reaction（sources は候補の id に含まれるものだけ）。頭脳が未設定・失敗・post なのに本文なしは
+            action=skip、reason=BRAIN_FAILED_REASON、source="error"
+        """
+        task_input: Dict[str, Any] = {
+            "kind": kind,
+            "candidates": [dict(c) for c in candidates],
+            "now": format_jst(now),
+            "publish_at": format_jst(publish_at) if publish_at else "不明（数時間後）",
+            "recent_texts": list(recent_texts),
+        }
+        if days_left is not None:
+            task_input["days_left"] = days_left
+        if event_date is not None:
+            task_input["event_date"] = f"{event_date:%Y-%m-%d}({WEEKDAYS_JA[event_date.weekday()]})"
+
+        proposal = self._ask_brain_json("autonomous", task_input)
+        if proposal is not None:
+            action = proposal.get("action")
+            raw_text = proposal.get("text") or ""
+            if action not in (REACTION_POST, REACTION_SKIP):
+                logger.error(f"Brain returned unknown action={action!r} for task=autonomous; skipping")
+                action = None
+            text = self._finalize_post_text(raw_text) if raw_text.strip() else ""
+            if action == REACTION_POST and not text:
+                logger.error("Brain returned action=post without text for task=autonomous; skipping")
+            elif action is not None:
+                candidate_ids = [str(c.get("id", "")) for c in candidates]
+                raw_sources = proposal.get("sources")
+                sources = [s for s in candidate_ids if isinstance(raw_sources, list) and s in raw_sources]
+                if action == REACTION_POST and not sources:
+                    # 根拠をメールに出すのが安全弁なので、頭脳が id を返さなければ渡した候補を全部載せる
+                    logger.warning("Brain returned no valid sources for task=autonomous; using all candidates")
+                    sources = candidate_ids
+                emotion_key = self._validate_emotion_key(proposal.get("emotion_key"))
+                logger.info(
+                    f"Generated autonomous post using brain: kind={kind} action={action} "
+                    f"emotion={emotion_key} {len(text)} chars sources={len(sources)}"
+                )
+                return Reaction(
+                    action=action, text=text, emotion_key=emotion_key,
+                    reason=str(proposal.get("reason") or ""), source="brain", sources=sources,
+                )
 
         return Reaction(action=REACTION_SKIP, text="", emotion_key=None, reason=BRAIN_FAILED_REASON, source="error")
 

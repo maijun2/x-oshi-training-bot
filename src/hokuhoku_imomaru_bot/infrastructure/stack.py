@@ -173,6 +173,22 @@ class ImomaruBotStack(Stack):
             time_to_live_attribute="ttl",  # TTL属性を有効化（60日後に自動削除）
         )
 
+        # DynamoDB テーブル: PostHistory（独り言 = 自律投稿の投稿履歴、3b-1）
+        # 同じ記憶から続けて作らないための重複キーと、直近の本文（頭脳に渡す）。1 日 1 件（TTL: 30日）
+        self.post_history_table = dynamodb.Table(
+            self,
+            "PostHistoryTable",
+            table_name="imomaru-bot-post-history",
+            partition_key=dynamodb.Attribute(
+                name="posted_date",
+                type=dynamodb.AttributeType.STRING
+            ),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,  # オンデマンド課金
+            encryption=dynamodb.TableEncryption.AWS_MANAGED,  # 保存時の暗号化
+            removal_policy=RemovalPolicy.RETAIN,  # 本番環境では削除しない
+            time_to_live_attribute="ttl",  # TTL属性を有効化（30日後に自動削除）
+        )
+
         # S3 バケット: 画像アセット
         # プロフィール画像のベース画像とフォントファイルを保存
         self.assets_bucket = s3.Bucket(
@@ -251,6 +267,7 @@ class ImomaruBotStack(Stack):
         self.emotion_images_table.grant_read_data(self.lambda_role)
         self.allowed_users_table.grant_read_data(self.lambda_role)  # 許可ユーザーテーブル読み取り
         self.processed_replies_table.grant_read_write_data(self.lambda_role)  # 処理済みリプライテーブル読み書き
+        self.post_history_table.grant_read_write_data(self.lambda_role)  # 独り言の投稿履歴
 
         # S3読み取り権限を付与
         self.assets_bucket.grant_read(self.lambda_role)
@@ -295,11 +312,12 @@ class ImomaruBotStack(Stack):
             )
 
         # 推しの記憶: AgentCore Memory（書き込みは Lambda 直、読み出しは頭脳が react のたびに retrieve = 3a-read）
+        # ListMemoryRecords は独り言（3b-1）の材料選び。Lambda が facts を一覧して決定論で候補を選ぶ
         self.oshi_memory = self._create_oshi_memory()
         self.lambda_role.add_to_policy(
             iam.PolicyStatement(
                 effect=iam.Effect.ALLOW,
-                actions=["bedrock-agentcore:CreateEvent"],
+                actions=["bedrock-agentcore:CreateEvent", "bedrock-agentcore:ListMemoryRecords"],
                 resources=[self.oshi_memory.attr_memory_arn],
             )
         )
@@ -333,6 +351,7 @@ class ImomaruBotStack(Stack):
                 "EMOTION_IMAGES_TABLE_NAME": self.emotion_images_table.table_name,
                 "ALLOWED_USERS_TABLE_NAME": self.allowed_users_table.table_name,
                 "PROCESSED_REPLIES_TABLE_NAME": self.processed_replies_table.table_name,
+                "POST_HISTORY_TABLE_NAME": self.post_history_table.table_name,
                 "ASSETS_BUCKET_NAME": self.assets_bucket.bucket_name,
                 "SECRET_NAME": self.x_api_secret.secret_name,
                 "BUFFER_SECRET_NAME": self.buffer_api_secret.secret_name,
@@ -343,7 +362,7 @@ class ImomaruBotStack(Stack):
                 "BUFFER_SLOT_TIMES_JST": "02:00,08:00,11:15,12:15,14:15,15:15,19:15,20:15,22:00",
                 "PUBLIC_ASSETS_BUCKET_NAME": self.public_assets_bucket.bucket_name,
                 "BRAIN_RUNTIME_ARN": brain_runtime_arn,  # 頭脳。空なら反応は skip・リプライは固定文
-                "OSHI_MEMORY_ID": self.oshi_memory.attr_memory_id,  # 推しの記憶。空なら書き込みなし
+                "OSHI_MEMORY_ID": self.oshi_memory.attr_memory_id,  # 推しの記憶。空なら書き込みなし・独り言なし
                 "OSHI_USER_ID": oshi_user_id,
                 "OSHI_USERNAME": oshi_username,
                 "GROUP_USER_ID": group_user_id,
@@ -364,7 +383,7 @@ class ImomaruBotStack(Stack):
         self.bot_lambda.grant_invoke(self.scheduler_role)
 
         # Core Time Schedules（4つ）: 推しタイムライン監視に集中
-        # 夜 21:00 は EventBridge 入力に autonomous_allowed を付ける（3b-1 の自律投稿を許可する印。Lambda は現時点では無視）
+        # 夜 21:00 は EventBridge 入力に autonomous_allowed を付ける（3b-1: 推し投稿に反応しなかったら独り言を 1 件）
         core_time_configs = [
             ("Morning", 10, 15, {}),    # 10:00 JST, 15分ウィンドウ
             ("Afternoon", 13, 23, {}),  # 13:00 JST, 23分ウィンドウ

@@ -1,9 +1,11 @@
 """
 いも丸の頭脳（フェーズ2b-2-1、3a-read）
 
-Strands Agent ＋ Bedrock（既定: moonshotai.kimi-k2.5。BRAIN_MODEL_ID で差し替え可）で、Lambda から依頼された 2 タスクを処理する。
+Strands Agent ＋ Bedrock（既定: moonshotai.kimi-k2.5。BRAIN_MODEL_ID で差し替え可）で、Lambda から依頼された 3 タスクを処理する。
 - react:          推し／グループの投稿への反応を JSON の「提案」で返す
                   {"action": "post"|"skip", "text": 応答文, "emotion_key": 感情キー|"none", "reason": 理由}
+- autonomous:     推しの投稿がない夜に、Lambda が選んだ記憶から独り言を JSON の「提案」で返す（3b-1）
+                  react の提案 ＋ "sources": 使った記憶の id
 - reply_response: 許可ユーザーからのリプライへの応答文
 
 方針:
@@ -28,7 +30,10 @@ import boto3
 from strands import Agent
 from strands.models import BedrockModel
 
+from memory_filters import is_fan_view, is_private_life
 from prompts import (
+    AUTONOMOUS_SYSTEM_PROMPT,
+    AUTONOMOUS_USER_TEMPLATE,
     CHARACTER_SYSTEM_PROMPT,
     REACT_SYSTEM_PROMPT,
     REACT_USER_TEMPLATE,
@@ -57,13 +62,6 @@ FACTS_TOP_K = 3
 PREFERENCES_TOP_K = 2
 NO_MEMORIES = "（なし）"
 
-# ファン視点への誤抽出（「ユーザーは…閲覧・転載…」）は除外する（設計書 §10-11）
-_FAN_VIEW_PREFIX = "ユーザーは"
-_FAN_VIEW_WORDS = ("閲覧", "転載", "運営")
-# 体調・睡眠など生活の細部（設計書 v19 のタイプ E）は渡さない。プロンプトの指示だけでは本文に出た（2026-09-25 のローカル確認）。
-# 出来事と混ざったレコードも丸ごと落とす（取りこぼしより、監視しているような文面を避ける方を優先）
-_PRIVATE_LIFE_WORDS = ("眠", "寝", "睡眠", "起床", "目覚まし", "体調", "風邪", "発熱", "熱が", "病院", "通院", "怪我", "ケガ")
-
 _CODE_FENCE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$")
 
 
@@ -82,13 +80,9 @@ def _get_memory_client():
     return _memory_client
 
 
-def _is_private_life(text: str) -> bool:
-    return any(word in text for word in _PRIVATE_LIFE_WORDS)
-
-
-def _is_fan_view(text: str) -> bool:
-    stripped = text.strip()
-    return stripped.startswith(_FAN_VIEW_PREFIX) and any(word in stripped for word in _FAN_VIEW_WORDS)
+# ファン視点・生活の細部の判定は Lambda と共有（memory_filters.py、設計書 §10-11 / v19 タイプ E）
+_is_fan_view = is_fan_view
+_is_private_life = is_private_life
 
 
 def _preference_text(raw: str) -> Optional[str]:
@@ -250,6 +244,78 @@ def react(
     return reaction
 
 
+AUTONOMOUS_KIND_LABELS = {
+    "A": "A. 未来イベントの告知・カウントダウン",
+    "B": "B. 直近の出来事の余韻・お礼",
+}
+
+
+def _format_candidates(candidates: List[Dict[str, Any]]) -> str:
+    return "\n".join(
+        f"- [{c.get('id', '')}]（記録: {c.get('created_at', '')}）{str(c.get('text', '')).strip()}"
+        for c in candidates
+    )
+
+
+def autonomous(
+    kind: str,
+    candidates: List[Dict[str, Any]],
+    now: str,
+    publish_at: str,
+    days_left: Optional[int] = None,
+    event_date: Optional[str] = None,
+    recent_texts: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """
+    推しの投稿がない夜に、Lambda が選んだ記憶から「いも丸の独り言」を JSON 提案で返す（3b-1）
+
+    記憶の取得・候補の選定・重複の除外は Lambda が決定論で行い、頭脳はタイプで縛られた生成を 1 回だけ行う
+    （設計書 §10-11 2026-09-21 追記）。
+
+    Args:
+        kind: 素案タイプ（"A" 未来イベント／"B" 直近の出来事）
+        candidates: [{"id", "text", "created_at"}]（Lambda が選んだ記憶。1〜3 件）
+        now: 現在時刻（JST 表記）
+        publish_at: 公開予定時刻（次の Buffer 予約枠）
+        days_left: タイプ A のイベントまでの日数
+        event_date: タイプ A のイベント日（JST 表記）
+        recent_texts: 直近の独り言の本文（表現の重複を避けるため）
+
+    Returns:
+        {action, text, emotion_key, reason, sources, memory_count}。sources は候補の id のうち使ったもの
+    """
+    if kind not in AUTONOMOUS_KIND_LABELS:
+        raise ValueError(f"unknown autonomous kind: {kind!r}")
+    if not candidates:
+        raise ValueError("candidates must not be empty")
+
+    if kind == "A":
+        countdown = "明日" if days_left == 1 else f"あと {days_left} 日"
+        kind_detail = f"イベント日: {event_date}（公開予定の日から数えて {countdown}）"
+    else:
+        kind_detail = "直近数日のうちにあった出来事です。すでに終わったこととして書くこと"
+    recent = "\n".join(f"- {t.strip()}" for t in (recent_texts or []) if t and t.strip()) or NO_MEMORIES
+
+    agent = _make_agent(AUTONOMOUS_SYSTEM_PROMPT, RESPONSE_TEMPERATURE, RESPONSE_MAX_TOKENS)
+    user_message = AUTONOMOUS_USER_TEMPLATE.format(
+        now=now,
+        publish_at=publish_at,
+        kind_label=AUTONOMOUS_KIND_LABELS[kind],
+        kind_detail=kind_detail,
+        candidates=_format_candidates(candidates),
+        recent_texts=recent,
+    )
+    raw = _parse_json_object(_run(agent, user_message))
+    proposal = _validate_reaction(raw)
+
+    candidate_ids = [str(c.get("id", "")) for c in candidates]
+    sources = raw.get("sources")
+    sources = [str(s) for s in sources] if isinstance(sources, list) else []
+    proposal["sources"] = [s for s in candidate_ids if s in sources]
+    proposal["memory_count"] = len(candidates)
+    return proposal
+
+
 def reply_response(reply_text: str, reply_username: str, bot_tweet_text: str) -> str:
     """許可ユーザーからのリプライへの応答文を生成する"""
     agent = _make_agent(CHARACTER_SYSTEM_PROMPT, RESPONSE_TEMPERATURE, RESPONSE_MAX_TOKENS)
@@ -263,6 +329,7 @@ def reply_response(reply_text: str, reply_username: str, bot_tweet_text: str) ->
 
 TASKS: Dict[str, Callable[..., Union[str, Dict[str, Any]]]] = {
     "react": react,
+    "autonomous": autonomous,
     "reply_response": reply_response,
 }
 

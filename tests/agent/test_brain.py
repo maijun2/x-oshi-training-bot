@@ -15,6 +15,7 @@ import pytest
 
 import brain
 from prompts import (
+    AUTONOMOUS_SYSTEM_PROMPT,
     CHARACTER_SYSTEM_PROMPT,
     REACT_SYSTEM_PROMPT,
     REACT_USER_TEMPLATE,
@@ -218,6 +219,85 @@ class TestRecallOshiMemory:
         assert result["memory_count"] == -1
         assert result["action"] == "post"
         assert brain.NO_MEMORIES in agent_instance.call_args.args[0]
+
+
+AUTONOMOUS_CANDIDATES = [
+    {"id": "mem-birthday", "text": "甘木ジュリは2026年9月28日に生誕祭を開催予定。", "created_at": "2026-09-25 23:59 JST"},
+    {"id": "mem-prep", "text": "甘木ジュリは生誕祭の準備をしている。", "created_at": "2026-09-18 21:00 JST"},
+]
+AUTONOMOUS_INPUT = {
+    "kind": "A",
+    "candidates": AUTONOMOUS_CANDIDATES,
+    "now": "2026-09-26(土) 21:01 JST",
+    "publish_at": "2026-09-26(土) 22:00 JST",
+    "days_left": 2,
+    "event_date": "2026-09-28(月)",
+    "recent_texts": ["生誕祭まであと 3 日ｲﾓ🍠"],
+}
+AUTONOMOUS_JSON = {
+    "action": "post",
+    "text": "ジュリちゃんの生誕祭まであと2日ｲﾓ🍠\n\n#さつまいもの民 #びっくえんじぇる",
+    "emotion_key": "excitement_move",
+    "reason": "生誕祭が近いので楽しみにする",
+    "sources": ["mem-birthday", "mem-unknown"],
+}
+
+
+class TestAutonomous:
+    def test_separates_system_and_user(self, strands):
+        agent_cls, agent_instance, _ = strands
+        agent_instance.return_value = json.dumps(AUTONOMOUS_JSON, ensure_ascii=False)
+
+        result = brain.autonomous(**AUTONOMOUS_INPUT)
+
+        assert agent_cls.call_args.kwargs["system_prompt"] == AUTONOMOUS_SYSTEM_PROMPT
+        user_message = agent_instance.call_args.args[0]
+        assert "- [mem-birthday]（記録: 2026-09-25 23:59 JST）甘木ジュリは2026年9月28日" in user_message
+        assert "あと 2 日" in user_message and "2026-09-28(月)" in user_message
+        assert "- 生誕祭まであと 3 日ｲﾓ🍠" in user_message
+        assert "22:00" in user_message
+        assert "mem-birthday" not in AUTONOMOUS_SYSTEM_PROMPT
+        # 候補にない id は捨てる
+        assert result["sources"] == ["mem-birthday"]
+        assert result["memory_count"] == 2
+        assert result["action"] == "post"
+
+    def test_tomorrow_wording_and_kind_b(self, strands):
+        _, agent_instance, _ = strands
+        agent_instance.return_value = json.dumps(AUTONOMOUS_JSON, ensure_ascii=False)
+        brain.autonomous(**{**AUTONOMOUS_INPUT, "days_left": 1})
+        assert "明日" in agent_instance.call_args.args[0]
+
+        brain.autonomous(kind="B", candidates=AUTONOMOUS_CANDIDATES, now="n", publish_at="p")
+        user_message = agent_instance.call_args.args[0]
+        assert "B. 直近の出来事" in user_message
+        assert brain.NO_MEMORIES in user_message  # recent_texts なし
+
+    def test_skip_without_sources(self, strands):
+        _, agent_instance, _ = strands
+        agent_instance.return_value = json.dumps({"action": "skip", "text": "", "reason": "古い"}, ensure_ascii=False)
+        result = brain.autonomous(**AUTONOMOUS_INPUT)
+        assert result["action"] == "skip"
+        assert result["sources"] == []
+
+    def test_rejects_unknown_kind_and_empty_candidates(self, strands):
+        assert brain.handle({"task": "autonomous", "input": {**AUTONOMOUS_INPUT, "kind": "E"}})["success"] is False
+        assert brain.handle({"task": "autonomous", "input": {**AUTONOMOUS_INPUT, "candidates": []}})["success"] is False
+
+    def test_handle_returns_result_object(self, strands):
+        _, agent_instance, _ = strands
+        agent_instance.return_value = json.dumps(AUTONOMOUS_JSON, ensure_ascii=False)
+        result = brain.handle({"task": "autonomous", "input": AUTONOMOUS_INPUT})
+        assert result["success"] is True
+        assert result["result"]["sources"] == ["mem-birthday"]
+
+
+class TestPrompts:
+    def test_oshi_is_called_juri_chan(self):
+        # 呼称は「ジュリちゃん」に統一（maijun 決定 2026-09-25、handoff §2-11）
+        for prompt in (CHARACTER_SYSTEM_PROMPT, REACT_SYSTEM_PROMPT, AUTONOMOUS_SYSTEM_PROMPT):
+            assert "ジュリちゃん" in prompt
+            assert "「ジュリさん」とは書かない" in prompt
 
 
 class TestReplyResponse:

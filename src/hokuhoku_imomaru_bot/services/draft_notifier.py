@@ -2,12 +2,13 @@
 DraftNotifierクラス
 
 推し投稿への AI 応答素案を HTML メールで通知します。
+推しの投稿がない夜の独り言（自律投稿、3b-1）の素案も同じ宛先に通知します（send_autonomous_email）。
 メール内の X Intent リンクから Web UI 経由でポストできます（API 課金なし）。
 """
 import logging
 import urllib.parse
 from datetime import datetime, timezone, timedelta
-from typing import Optional
+from typing import Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,7 @@ class DraftNotifier:
     """
 
     SUBJECT = "【いも丸】推し投稿への応答素案ｲﾓ🍠"
+    AUTONOMOUS_SUBJECT = "【いも丸】独り言の素案ｲﾓ🍠"
 
     # Buffer 投入状況（_post_quote_safe から渡される）
     BUFFER_STATUS_DISABLED = "disabled"    # Buffer 連携なし（セクション非表示）
@@ -127,6 +129,108 @@ class DraftNotifier:
         except Exception as e:
             logger.error(f"Failed to send draft email: {e}")
             return False
+
+    def send_autonomous_email(
+        self,
+        kind_label: str,
+        draft_text: str,
+        reason: str,
+        sources: Sequence[Tuple[str, str]],
+        emotion_key: Optional[str] = None,
+        buffer_status: str = BUFFER_STATUS_DISABLED,
+        buffer_due_at: Optional[datetime] = None,
+        buffer_run_cap: Optional[int] = None,
+    ) -> bool:
+        """
+        独り言（自律投稿）の素案をメールで送信する。元の投稿はないので、根拠にした推しの記憶を載せる
+        （事実誤認を人間が見つけるための安全弁。設計書 §10-11 2026-09-20 追記）
+
+        Args:
+            kind_label: 素案タイプの表示名（例: "A. 未来イベント（あと 2 日）"）
+            draft_text: 独り言の本文（skipped のときは空）
+            reason: 頭脳の判断理由
+            sources: 根拠にした記憶 [(record_id, 本文)]
+            emotion_key: 感情キー（メール表示用）
+            buffer_status: Buffer 投入状況（BUFFER_STATUS_*。skipped = 頭脳が見送った）
+            buffer_due_at: Buffer の予約時刻（scheduled のとき）
+            buffer_run_cap: 1回の実行あたりの投入キャップ（cap のときの表示用）
+
+        Returns:
+            送信成功の可否
+        """
+        try:
+            if buffer_status == self.BUFFER_STATUS_SKIPPED:
+                buffer_note: Optional[str] = (
+                    "いも丸は独り言を見送りました。Buffer には入れていません。"
+                )
+            else:
+                buffer_note = self._build_buffer_note(buffer_status, buffer_due_at, buffer_run_cap)
+            intent_url = (
+                "https://x.com/intent/tweet?text=" + urllib.parse.quote(draft_text) if draft_text else None
+            )
+            source_lines = "\n".join(f"- [{record_id}] {text}" for record_id, text in sources) or "（なし）"
+            lines = [
+                "【いも丸の独り言の素案】",
+                "",
+                f"■ 素案タイプ\n{kind_label}",
+                "",
+                f"■ 投稿素案\n{draft_text or '（なし）'}",
+                "",
+                f"■ 判断理由\n{reason or '（なし）'}",
+                "",
+                f"■ 根拠にした推しの記憶\n{source_lines}",
+                "",
+            ]
+            if emotion_key:
+                lines += [f"■ 感情タグ\n{emotion_key}", ""]
+            if buffer_note:
+                lines += [f"■ Buffer 予約\n{buffer_note}\n{BUFFER_QUEUE_URL}", ""]
+            if intent_url:
+                lines += [f"■ X で投稿する\n{intent_url}", ""]
+            text_body = "\n".join(lines)
+            html_body = self._build_autonomous_html(text_body, intent_url)
+
+            self._ses_client.send_email(
+                Source=self._from_email,
+                Destination={"ToAddresses": [self._to_email]},
+                Message={
+                    "Subject": {"Data": self.AUTONOMOUS_SUBJECT, "Charset": "UTF-8"},
+                    "Body": {
+                        "Html": {"Data": html_body, "Charset": "UTF-8"},
+                        "Text": {"Data": text_body, "Charset": "UTF-8"},
+                    },
+                },
+            )
+            logger.info(f"Autonomous draft email sent: status={buffer_status}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to send autonomous draft email: {e}")
+            return False
+
+    @staticmethod
+    def _build_autonomous_html(text_body: str, intent_url: Optional[str]) -> str:
+        """独り言メールの HTML（本文はテキスト版をそのまま pre-wrap で表示する簡易版）"""
+        escaped = text_body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        button = (
+            f'<p style="text-align: center; margin-top: 20px;"><a href="{intent_url}" style="background-color: #000;'
+            f' color: #fff; padding: 12px 40px; text-decoration: none; border-radius: 30px; font-weight: bold;">'
+            f"Xを開いてペーストする</a></p>"
+            if intent_url
+            else ""
+        )
+        return f"""<!DOCTYPE html>
+<html lang="ja">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+<body style="margin: 0; padding: 30px 0; background-color: #f9f9f9; font-family: sans-serif;">
+  <div style="background-color: #fff; max-width: 600px; margin: 0 auto; padding: 30px; color: #333;
+              border-radius: 10px; border: 1px solid #e0e0e0;">
+    <h2 style="font-size: 18px; margin-top: 0; border-bottom: 2px solid #333; padding-bottom: 10px;">🍠 いも丸の独り言</h2>
+    <p style="white-space: pre-wrap; font-size: 14px; line-height: 1.6;">{escaped}</p>
+    {button}
+    <p style="margin-top: 30px; font-size: 12px; color: #aaa; text-align: center;">ほくほくいも丸くん 自動通知</p>
+  </div>
+</body>
+</html>"""
 
     @staticmethod
     def _build_intent_url(draft_text: str, original_url: str) -> str:

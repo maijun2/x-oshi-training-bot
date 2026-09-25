@@ -330,3 +330,77 @@ class TestBrainIntegration:
     def test_reply_response_without_brain_returns_template(self):
         generator = AIGenerator(brain_client=None)
         assert generator.generate_reply_response("a", "u", "b") == DEFAULT_REPLY_RESPONSE_TEMPLATE.format(username="u")
+
+
+class TestGenerateAutonomous:
+    """独り言（3b-1）: 頭脳 autonomous の提案を検証・整形する"""
+
+    CANDIDATES = [
+        {"id": "mem-1", "text": "甘木ジュリは2026年9月28日に生誕祭", "created_at": "2026-09-25 23:59 JST"},
+        {"id": "mem-2", "text": "甘木ジュリは生誕祭の準備中", "created_at": "2026-09-18 21:00 JST"},
+    ]
+    NOW = datetime(2026, 9, 26, 12, 1, tzinfo=timezone.utc)
+    PUBLISH_AT = datetime(2026, 9, 26, 13, 0, tzinfo=timezone.utc)
+
+    def _generate(self, proposal=None, error=None, **kwargs):
+        from src.hokuhoku_imomaru_bot.utils.brain_client import BrainError
+
+        brain = MagicMock()
+        if error:
+            brain.invoke_json.side_effect = BrainError(error)
+        else:
+            brain.invoke_json.return_value = proposal
+        generator = AIGenerator(brain_client=brain)
+        params = dict(kind="A", candidates=self.CANDIDATES, now=self.NOW, publish_at=self.PUBLISH_AT)
+        params.update(kwargs)
+        return brain, generator.generate_autonomous(**params)
+
+    def test_passes_inputs_and_formats_text(self):
+        from datetime import date
+
+        brain, reaction = self._generate(
+            {"action": "post", "text": "生誕祭まであと2日ｲﾓ🍠 楽しみｲﾓ🍠", "emotion_key": "joy",
+             "reason": "r", "sources": ["mem-1", "mem-x"]},
+            days_left=2, event_date=date(2026, 9, 28), recent_texts=["前の独り言"],
+        )
+
+        task, task_input = brain.invoke_json.call_args.args
+        assert task == "autonomous"
+        assert task_input["kind"] == "A"
+        assert task_input["candidates"] == self.CANDIDATES
+        assert task_input["publish_at"] == "2026-09-26(土) 22:00 JST"
+        assert task_input["days_left"] == 2
+        assert task_input["event_date"] == "2026-09-28(月)"
+        assert task_input["recent_texts"] == ["前の独り言"]
+        assert reaction.action == "post"
+        assert reaction.text.endswith(HASHTAGS)
+        assert reaction.emotion_key == "joy"
+        assert reaction.sources == ["mem-1"]
+
+    def test_b_omits_countdown_inputs(self):
+        brain, _ = self._generate({"action": "skip", "text": "", "reason": "古い"}, kind="B")
+        task_input = brain.invoke_json.call_args.args[1]
+        assert "days_left" not in task_input and "event_date" not in task_input
+
+    def test_post_without_sources_uses_all_candidates(self):
+        _, reaction = self._generate({"action": "post", "text": "楽しみｲﾓ🍠", "sources": []})
+        assert reaction.sources == ["mem-1", "mem-2"]
+
+    def test_skip_keeps_reason(self):
+        _, reaction = self._generate({"action": "skip", "text": "", "reason": "記憶が古い"})
+        assert reaction.action == "skip"
+        assert reaction.reason == "記憶が古い"
+        assert reaction.source == "brain"
+
+    @pytest.mark.parametrize("proposal, error", [
+        (None, "timeout"),
+        ({"action": "post", "text": "  "}, None),
+        ({"action": "maybe", "text": "t"}, None),
+    ])
+    def test_failures_become_error_skip(self, proposal, error, caplog):
+        with caplog.at_level(logging.ERROR):
+            _, reaction = self._generate(proposal, error=error)
+        assert reaction.action == "skip"
+        assert reaction.source == "error"
+        assert reaction.reason == BRAIN_FAILED_REASON
+        assert any(r.levelno == logging.ERROR for r in caplog.records)
