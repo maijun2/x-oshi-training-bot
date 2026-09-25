@@ -1188,6 +1188,8 @@ def test_ses_sender_domain_absent_falls_back_to_notification_email(monkeypatch):
     """
     SES_SENDER_DOMAIN / FROM_EMAIL が未設定なら Identity は作られず、FROM_EMAIL は NOTIFICATION_EMAIL のまま
     """
+    # スタックは .env を読み込むので、手元に .env があると消した変数が戻る。読み込みを止める
+    monkeypatch.setattr("src.hokuhoku_imomaru_bot.infrastructure.stack.load_dotenv", lambda *a, **k: None)
     monkeypatch.delenv("SES_SENDER_DOMAIN", raising=False)
     monkeypatch.delenv("FROM_EMAIL", raising=False)
     monkeypatch.setenv("NOTIFICATION_EMAIL", "me@example.com")
