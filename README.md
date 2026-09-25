@@ -10,6 +10,7 @@ X（旧Twitter）育成ボット - AWSサーバーレスアーキテクチャ
 - 🤖 **AI応答生成**: AgentCore Runtime「頭脳」（Strands ＋ Bedrock Kimi K2.5）でキャラクターに合った応答を生成。頭脳が落ちたら反応は見送り（素案メールのみ）、リプライは固定文
 - 📮 **推し投稿への反応（半人力）**: AI応答をSESメールで素案通知しつつ、Buffer のキューに予約投入。Buffer のスロット時刻に自動投稿され、NG なら人間が Buffer から削除（X API 課金 $0）
 - 🧠 **推しの記憶**: 検知した推しのオリジナル投稿（引用ポスト含む。RT・リプライ除外）を Amazon Bedrock AgentCore Memory `imomaru_oshi_memory` に Lambda から直接書き込む。事実・好み・エピソードへの長期記憶抽出は Memory 側が非同期に行う。頭脳は反応を作るたびに関連する記憶（事実・好み）を読み出して判断材料にする（2026-09-25〜）
+- 🍠 **独り言（自律投稿）**: 夜 21 時の回に推しの投稿へ反応しなかったら、推しの記憶（近づくイベントのカウントダウン、直近のイベント）から独り言を 1 日 1 件つくって Buffer に予約投入し、根拠にした記憶と一緒に素案メールで通知（2026-09-26〜）
 - 🎨 **感情別画像添付**: Buffer 予約投入時、頭脳が反応と一緒に返す感情キーに対応するLINEスタンプ画像を添付（1日1回限定）
 - ⭐ **XP獲得**: 活動に応じてXPを獲得（推し投稿: 5.0 XP、グループ投稿: 2.0 XP、いいね: 0.1 XP、リポスト: 0.5 XP）
 - 📈 **レベルアップ**: DQ3勇者の経験値テーブルに基づいてレベルアップ
@@ -23,14 +24,14 @@ X（旧Twitter）育成ボット - AWSサーバーレスアーキテクチャ
 ```
 EventBridge Scheduler → Lambda → X API (日報・レベルアップ・リプライ)
                           ├→ SES (推し投稿への応答素案メール)
-                          ├→ Buffer API (推し投稿への応答を予約投入 → Buffer が X に投稿)
+                          ├→ Buffer API (推し投稿への応答・独り言を予約投入 → Buffer が X に投稿)
                           ↓
-                    DynamoDB (状態管理・許可ユーザー・処理済みリプライ)
+                    DynamoDB (状態管理・許可ユーザー・処理済みリプライ・独り言の投稿履歴)
                           ↓
-                    AgentCore Runtime「頭脳」(Strands + Bedrock Kimi K2.5: 反応の提案〔本文・感情キー・post/skip〕・リプライ応答)
+                    AgentCore Runtime「頭脳」(Strands + Bedrock Kimi K2.5: 反応の提案〔本文・感情キー・post/skip〕・独り言の提案・リプライ応答)
                           └→ 失敗時は反応を見送り（Buffer に入れず素案メールのみ）、アラーム
                           ↓
-                    AgentCore Memory「推しの記憶」(推し投稿を Lambda 直で書き込み。Semantic/UserPreference/Episodic で抽出。頭脳が react ごとに retrieve)
+                    AgentCore Memory「推しの記憶」(推し投稿を Lambda 直で書き込み。Semantic/UserPreference/Episodic で抽出。頭脳が react ごとに retrieve、夜 21 時は Lambda が facts を一覧して独り言の材料を選ぶ)
                           ↓
                     S3 (画像アセット)
                           ↓
@@ -534,8 +535,9 @@ table.put_item(Item={
 │   └── dq3_xp_table.json          # DQ3経験値テーブルデータ
 ├── agent/                          # 頭脳（AgentCore Runtime）のコード
 │   ├── main.py                    # エントリポイント（BedrockAgentCoreApp）
-│   ├── brain.py                   # Strands Agent による 2 タスク（react / reply_response）＋ 推しの記憶の retrieve
+│   ├── brain.py                   # Strands Agent による 3 タスク（react / autonomous / reply_response）＋ 推しの記憶の retrieve
 │   ├── prompts.py                 # → src/hokuhoku_imomaru_bot/prompts.py へのシンボリックリンク
+│   ├── memory_filters.py          # → src/hokuhoku_imomaru_bot/memory_filters.py へのシンボリックリンク
 │   └── requirements.txt           # Runtime の依存（strands-agents / bedrock-agentcore）
 ├── scripts/
 │   ├── init_xp_table.py           # 経験値テーブル初期化スクリプト
@@ -551,6 +553,7 @@ table.put_item(Item={
 │       ├── __init__.py
 │       ├── lambda_handler.py      # Lambdaメインハンドラー
 │       ├── prompts.py             # プロンプト定義（Lambda と頭脳の単一ソース）
+│       ├── memory_filters.py      # 推しの記憶の除外語・イベント語・日付抽出（Lambda と頭脳の単一ソース）
 │       ├── clients/               # 外部APIクライアント
 │       ├── infrastructure/        # CDKスタック定義
 │       ├── models/                # データモデル
