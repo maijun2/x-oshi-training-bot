@@ -397,7 +397,14 @@ rm /tmp/buffer-secret.json
   旧 REST API は Public API トークンを拒否）。変更は Buffer の Web UI で行い、API で読み直して検証します。
   読み出しは `BufferClient._graphql` に次のクエリを投げる（`channel_id` はシークレットの値）:
   スロット `channel(input:{id}){postingSchedule{day times paused}}`（`times` は `"HH:MM"` の配列）、
-  投稿の状態 `post(input:{id}){id status dueAt sentAt text}`（`status` は `sent` / `scheduled` 等。id はログの `Buffer post queued: id=…`）
+  投稿の状態 `post(input:{id}){id status dueAt sentAt text}`（`status` は `sent` / `scheduled` 等。id はログの `Buffer post queued: id=…`）。
+  この 2 つは `scripts/buffer_status.py` にまとめてある:
+
+  ```bash
+  uv run python scripts/buffer_status.py --from-logs 24   # 直近 24 時間に投入した投稿の状態・予約/送信時刻（JST）・本文
+  uv run python scripts/buffer_status.py <post_id> ...    # post id を指定
+  uv run python scripts/buffer_status.py --slots          # 曜日ごとのスロット（JST）
+  ```
 - 動作確認済み（2026-09-12）: Buffer 経由の投稿で感情画像が添付され、末尾の x.com URL は X 側で引用ポストとして展開される
 
 **動作確認**
@@ -510,7 +517,8 @@ table.put_item(Item={
 │   ├── build_agent_package.sh     # 頭脳のデプロイパッケージ（dist/brain.zip）作成
 │   ├── sync_lambda_package.sh     # Lambda パッケージ同期スクリプト
 │   ├── test_brain_invoke.py       # 頭脳の本番疎通確認
-│   └── test_buffer_post.py        # Buffer キューへの投入・削除の動作確認
+│   ├── test_buffer_post.py        # Buffer キューへの投入・削除の動作確認
+│   └── buffer_status.py           # Buffer の予約投稿（状態・本文）とスロットの確認（読み取り専用）
 ├── src/
 │   └── hokuhoku_imomaru_bot/
 │       ├── __init__.py
