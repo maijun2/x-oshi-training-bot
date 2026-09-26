@@ -299,6 +299,23 @@ class TestPrompts:
             assert "ジュリちゃん" in prompt
             assert "「ジュリさん」とは書かない" in prompt
 
+    def test_first_person_is_boku(self):
+        # 一人称は「ぼく」に統一（maijun 決定 2026-09-26）
+        for prompt in (CHARACTER_SYSTEM_PROMPT, REACT_SYSTEM_PROMPT, AUTONOMOUS_SYSTEM_PROMPT):
+            assert "どうしても必要なときだけ「ぼく」" in prompt
+        assert "いも丸自身" not in AUTONOMOUS_SYSTEM_PROMPT
+
+    def test_imo_suffix_is_not_forced_on_every_sentence(self):
+        # 語尾「ｲﾓ🍠」は 1 投稿 1〜2 回（maijun 決定 2026-09-26。以前は「必ず」で全文に付いていた）
+        for prompt in (CHARACTER_SYSTEM_PROMPT, REACT_SYSTEM_PROMPT, AUTONOMOUS_SYSTEM_PROMPT):
+            assert "1 投稿に 1〜2 回" in prompt
+            assert "語尾は必ず" not in prompt
+            assert "常に語尾に" not in prompt
+
+    def test_react_posts_on_guest_appearances(self):
+        # 他の配信者の配信・コラボへの出演は skip しない（maijun 判断 2026-09-26、09-21 23:58 回の初 skip）
+        assert "他の配信者の配信・コラボ・イベントに出演・参加" in REACT_SYSTEM_PROMPT
+
 
 class TestReplyResponse:
     def test_fills_template_with_character_prompt(self, strands):

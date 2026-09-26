@@ -11,7 +11,8 @@ app = cdk.App()
 ImomaruBotStack(
     app,
     "ImomaruBotStack",
-    description="ほくほくいも丸くん育成ボット - AWS Serverless Stack",
+    # CloudFormation の GetTemplate / DescribeStacks は非 ASCII を "?" にして返すため、スタックの説明は ASCII で書く
+    description="Hokuhoku Imomaru-kun training bot - AWS Serverless Stack",
 )
 
 app.synth()
