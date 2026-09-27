@@ -208,12 +208,13 @@ uv run npx cdk deploy
 
 ### 4. 頭脳（AgentCore Runtime）
 
-推し投稿への反応とリプライ応答は、Lambda から Amazon Bedrock AgentCore Runtime `imomaru_brain`
-（Strands Agent）に依頼して生成します（フェーズ2a、2026-09-12。2b-2-1 で `react` に統合、2026-09-16）。
+推し投稿への反応・独り言・リプライ応答は、Lambda から Amazon Bedrock AgentCore Runtime `imomaru_brain`
+（Strands Agent）に依頼して生成します（フェーズ2a、2026-09-12。2b-2-1 で `react` に統合、2026-09-16。`autonomous` は 3b-1、2026-09-26）。
 
 | タスク | 入力 | 出力 |
 |------|------|------|
 | `react` | 投稿本文 ＋ 時刻情報（投稿時刻・現在時刻・公開予定＝次の Buffer 枠、JST） | JSON 提案 `{"action": "post"\|"skip", "text", "emotion_key", "reason"}`。`skip` なら Lambda は Buffer に入れず、理由をメールに載せる |
+| `autonomous` | 素案タイプ（A〜D）＋ Lambda が選んだ推しの記憶（id・本文・記録日時）＋ 現在時刻・公開予定 ＋ 直近の独り言 | JSON 提案 `{"action", "text", "emotion_key", "reason", "sources"}`（`sources` は使った記憶の id。下の「独り言」） |
 | `reply_response` | 許可ユーザーのリプライ本文・元投稿 | 応答文 |
 
 「考える頭脳・実行する Lambda」（設計書 §10-11）: 頭脳は提案を返すだけで、140 字整形・感情キー検証・Buffer／メール・キャップは Lambda が決定論で行います。
@@ -420,7 +421,8 @@ rm /tmp/buffer-secret.json
   （名目値と実スロットの隙間に Lambda 実行時刻帯が掛からないことも確認済み）。
 
   Buffer はキューが空のスロットを素通りし、投入された投稿は「投入時点より後の最初の空き枠」に先着順で入ります。
-  日報とレベルアップ告知は X API 直投稿で Buffer を通りません。Buffer に載るのは推し投稿への引用だけです
+  日報とレベルアップ告知は X API 直投稿で Buffer を通りません。Buffer に載るのは推し投稿への引用と独り言（URL なし）です。
+  独り言も `BUFFER_RUN_CAP` / `BUFFER_DAILY_CAP` を推し投稿への反応と共有し、1 日 2 件まで・日次キャップのうち 2 件は反応用に残します（2026-09-28）
 - スロット数/日（9）> `BUFFER_DAILY_CAP`（7）にしておくとキューが滞留しません（この不等式は崩さないこと）
 - 実測（2026-08-13〜09-12 の 30 日）: 推しのオリジナル投稿は平均 6.6 件/日。実行別の平均は 10:00 → 2.3、13:00 → 1.0、
   18:00 → 0.7、23:58 → 2.7 件。`BUFFER_RUN_CAP=1` で実効 3 件/日程度だった。夜の実行 21:00 は 2026-09-19 に追加済み（18:00→23:58 の検知空白を埋める）。2026-09-25 に `BUFFER_RUN_CAP=2` ＋ 02:00 枠（当日中に残り枠 ≥ キャップ、9 枠 > 日次キャップの不等式は維持）

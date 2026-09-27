@@ -174,7 +174,7 @@ class ImomaruBotStack(Stack):
         )
 
         # DynamoDB テーブル: PostHistory（独り言 = 自律投稿の投稿履歴、3b-1）
-        # 同じ記憶から続けて作らないための重複キーと、直近の本文（頭脳に渡す）。1 日 1 件（TTL: 30日）
+        # 同じ記憶から続けて作らないための重複キー、1 日の件数、直近の本文（頭脳に渡す）。1 実行 1 件（PK = YYYY-MM-DD#HH、TTL: 30日）
         self.post_history_table = dynamodb.Table(
             self,
             "PostHistoryTable",
@@ -312,7 +312,7 @@ class ImomaruBotStack(Stack):
             )
 
         # 推しの記憶: AgentCore Memory（書き込みは Lambda 直、読み出しは頭脳が react のたびに retrieve = 3a-read）
-        # ListMemoryRecords は独り言（3b-1）の材料選び。Lambda が facts を一覧して決定論で候補を選ぶ
+        # ListMemoryRecords は独り言（3b-1）の材料選び。Lambda が facts / preferences を一覧して決定論で候補を選ぶ
         self.oshi_memory = self._create_oshi_memory()
         self.lambda_role.add_to_policy(
             iam.PolicyStatement(
