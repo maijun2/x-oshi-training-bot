@@ -2,7 +2,7 @@
 DraftNotifierクラス
 
 推し投稿への AI 応答素案を HTML メールで通知します。
-推しの投稿がない夜の独り言（自律投稿、3b-1）の素案も同じ宛先に通知します（send_autonomous_email）。
+推しの投稿に反応しなかった実行の独り言（自律投稿、3b-1）の素案も同じ宛先に通知します（send_autonomous_email）。
 メール内の X Intent リンクから Web UI 経由でポストできます（API 課金なし）。
 """
 import logging

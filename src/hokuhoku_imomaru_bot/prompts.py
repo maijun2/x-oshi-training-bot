@@ -194,7 +194,7 @@ REACT_USER_TEMPLATE = """現在時刻: {now}
 
 {post_content}"""
 
-# 頭脳向け: 推しの投稿がない夜の独り言（autonomous タスク、3b-1）。JSON の提案を返す
+# 頭脳向け: 推しの投稿に反応しなかった実行の独り言（autonomous タスク、3b-1）。JSON の提案を返す
 AUTONOMOUS_SYSTEM_PROMPT = f"""{_CHARACTER_BASE}
 
 今回は推しの投稿への反応ではなく、推しの投稿がないときに、いも丸がファンとして独り言を投稿します。

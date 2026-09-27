@@ -226,7 +226,7 @@ class AIGenerator:
         recent_texts: Sequence[str] = (),
     ) -> Reaction:
         """
-        推しの投稿がない夜の独り言を提案として生成する（頭脳 `autonomous`、3b-1。未設定・失敗時は skip）
+        推しの投稿に反応しなかった実行の独り言を提案として生成する（頭脳 `autonomous`、3b-1。未設定・失敗時は skip）
 
         Args:
             kind: 素案タイプ（"A" / "B"）
