@@ -552,8 +552,7 @@ def test_core_time_evening_schedule_configuration():
 
 def test_core_time_night_schedule_configuration():
     """
-    夜21時（JST）のコアタイムスケジュール: 5 分ウィンドウ（22:00 の Buffer 枠まで猶予 55 分）、
-    EventBridge 入力に autonomous_allowed=true を付ける（3b-1 の自律投稿用。日中の実行には付けない）
+    夜21時（JST）のコアタイムスケジュール: 5 分ウィンドウ（22:00 の Buffer 枠まで猶予 55 分）
     """
     app = cdk.App()
     stack = ImomaruBotStack(app, "test-stack")
@@ -566,19 +565,31 @@ def test_core_time_night_schedule_configuration():
             "Mode": "FLEXIBLE",
             "MaximumWindowInMinutes": 5,
         },
-        "Target": assertions.Match.object_like({
-            "Input": assertions.Match.serialized_json({"execution_mode": "core_time", "autonomous_allowed": True}),
-        }),
     })
 
-    # 日中のコアタイムには autonomous_allowed を付けない
-    for hour in (10, 13, 18):
+
+def test_core_time_schedules_allow_autonomous_posts():
+    """
+    3b-1 (ii): コアタイム 4 回とも EventBridge 入力に autonomous_allowed=true を付ける。
+    23:58 の日報には付けない（次の枠が翌 02:00 でレビューできない）
+    """
+    app = cdk.App()
+    stack = ImomaruBotStack(app, "test-stack")
+    template = assertions.Template.from_stack(stack)
+
+    for hour in (10, 13, 18, 21):
         template.has_resource_properties("AWS::Scheduler::Schedule", {
             "ScheduleExpression": f"cron(0 {hour} * * ? *)",
             "Target": assertions.Match.object_like({
-                "Input": assertions.Match.serialized_json({"execution_mode": "core_time"}),
+                "Input": assertions.Match.serialized_json({"execution_mode": "core_time", "autonomous_allowed": True}),
             }),
         })
+    template.has_resource_properties("AWS::Scheduler::Schedule", {
+        "ScheduleExpression": "cron(58 23 * * ? *)",
+        "Target": assertions.Match.object_like({
+            "Input": assertions.Match.serialized_json({"execution_mode": "daily_report"}),
+        }),
+    })
 
 
 def test_daily_report_schedule_configuration():

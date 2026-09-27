@@ -4,7 +4,7 @@
 Strands Agent ＋ Bedrock（既定: moonshotai.kimi-k2.5。BRAIN_MODEL_ID で差し替え可）で、Lambda から依頼された 3 タスクを処理する。
 - react:          推し／グループの投稿への反応を JSON の「提案」で返す
                   {"action": "post"|"skip", "text": 応答文, "emotion_key": 感情キー|"none", "reason": 理由}
-- autonomous:     推しの投稿がない夜に、Lambda が選んだ記憶から独り言を JSON の「提案」で返す（3b-1）
+- autonomous:     推しの投稿に反応しなかった実行で、Lambda が選んだ記憶から独り言を JSON の「提案」で返す（3b-1）
                   react の提案 ＋ "sources": 使った記憶の id
 - reply_response: 許可ユーザーからのリプライへの応答文
 
@@ -30,15 +30,20 @@ import boto3
 from strands import Agent
 from strands.models import BedrockModel
 
-from memory_filters import is_fan_view, is_private_life
+from memory_filters import is_fan_view, is_private_life, preference_text
 from prompts import (
     AUTONOMOUS_SYSTEM_PROMPT,
     AUTONOMOUS_USER_TEMPLATE,
     CHARACTER_SYSTEM_PROMPT,
+    GREETING_RETRY_TEMPLATE,
     REACT_SYSTEM_PROMPT,
     REACT_USER_TEMPLATE,
     REPLY_USER_TEMPLATE,
     VALID_EMOTION_KEYS,
+    day_relation,
+    greeting_hint,
+    mismatched_greetings,
+    time_period,
 )
 
 logger = logging.getLogger(__name__)
@@ -83,22 +88,8 @@ def _get_memory_client():
 # ファン視点・生活の細部の判定は Lambda と共有（memory_filters.py、設計書 §10-11 / v19 タイプ E）
 _is_fan_view = is_fan_view
 _is_private_life = is_private_life
-
-
-def _preference_text(raw: str) -> Optional[str]:
-    """preferences のレコード（{"context", "preference", ...} の JSON）から本人の好みの 1 文を取り出す"""
-    try:
-        parsed = json.loads(raw)
-    except ValueError:
-        return None if _is_fan_view(raw) else raw.strip()
-    if not isinstance(parsed, dict):
-        return None
-    if _is_fan_view(str(parsed.get("context", ""))):
-        return None
-    preference = parsed.get("preference")
-    if not isinstance(preference, str) or not preference.strip() or _is_private_life(preference):
-        return None
-    return preference.strip()
+# preferences のレコード（JSON）から本人の好みの 1 文を取り出す（Lambda のタイプ D と共有）
+_preference_text = preference_text
 
 
 def _retrieve(namespace_kind: str, query: str, top_k: int) -> List[str]:
@@ -163,6 +154,34 @@ def _make_agent(
 def _run(agent: Agent, user_message: str) -> str:
     result = agent(user_message)
     return str(result).strip()
+
+
+def _propose(agent: Agent, user_message: str, publish_at: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """
+    JSON 提案を生成して形を検証する。(モデル出力の JSON, 検証済みの提案) を返す
+
+    post の本文に公開予定の時間帯と合わない挨拶（推しの「おはよう」の返し・引用など）が残っていれば、
+    同じ会話で 1 回だけ書き直しを頼む。書き直しでも残る・形が崩れるときは最初の提案を使う（ログのみ）
+    """
+    raw = _parse_json_object(_run(agent, user_message))
+    proposal = _validate_reaction(raw)
+    hint = greeting_hint(publish_at)
+    words = mismatched_greetings(proposal["text"], hint) if proposal["action"] == "post" else []
+    if not words:
+        return raw, proposal
+
+    logger.info("greeting mismatch words=%s hint=%s; asking to rewrite once", words, hint)
+    try:
+        retry_raw = _parse_json_object(_run(agent, GREETING_RETRY_TEMPLATE.format(
+            period=time_period(publish_at), words="」「".join(words),
+        )))
+        retry = _validate_reaction(retry_raw)
+    except ReactFormatError as e:
+        logger.warning("greeting rewrite failed: %s; using the first proposal", e)
+        return raw, proposal
+    if retry["action"] == "post" and mismatched_greetings(retry["text"], hint):
+        logger.warning("greeting mismatch remains after rewrite; using the rewrite")
+    return retry_raw, retry
 
 
 def _parse_json_object(text: str) -> Dict[str, Any]:
@@ -234,12 +253,15 @@ def react(
     user_message = REACT_USER_TEMPLATE.format(
         now=now,
         posted_at=posted_at,
+        posted_period=time_period(posted_at),
         publish_at=publish_at,
+        publish_period=time_period(publish_at),
+        day_relation=day_relation(posted_at, publish_at),
+        greeting=greeting_hint(publish_at),
         memories="\n".join(f"- {line}" for line in memories) if memories else NO_MEMORIES,
         post_content=post_content,
     )
-    output = _run(agent, user_message)
-    reaction = _validate_reaction(_parse_json_object(output))
+    _, reaction = _propose(agent, user_message, publish_at)
     reaction["memory_count"] = len(memories) if recalled else -1
     return reaction
 
@@ -247,6 +269,14 @@ def react(
 AUTONOMOUS_KIND_LABELS = {
     "A": "A. 未来イベントの告知・カウントダウン",
     "B": "B. 直近の出来事の余韻・お礼",
+    "C": "C. 進行中・これからの活動へのエール",
+    "D": "D. 好み・小ネタ",
+}
+
+AUTONOMOUS_KIND_DETAILS = {
+    "B": "直近数日のうちにあった出来事です。すでに終わったこととして書くこと",
+    "C": "推しが取り組んでいること・これからの活動です。まだ終わっていないこととして、応援・楽しみの気持ちで書くこと",
+    "D": "推しの好きなものです。いも丸の日常に絡めた共感として書き、推しがいまそれをしている・食べているとは書かないこと",
 }
 
 
@@ -267,13 +297,13 @@ def autonomous(
     recent_texts: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
-    推しの投稿がない夜に、Lambda が選んだ記憶から「いも丸の独り言」を JSON 提案で返す（3b-1）
+    推しの投稿に反応しなかった実行で、Lambda が選んだ記憶から「いも丸の独り言」を JSON 提案で返す（3b-1）
 
     記憶の取得・候補の選定・重複の除外は Lambda が決定論で行い、頭脳はタイプで縛られた生成を 1 回だけ行う
     （設計書 §10-11 2026-09-21 追記）。
 
     Args:
-        kind: 素案タイプ（"A" 未来イベント／"B" 直近の出来事）
+        kind: 素案タイプ（"A" 未来イベント／"B" 直近の出来事／"C" 進行中・これからの活動／"D" 好み・小ネタ）
         candidates: [{"id", "text", "created_at"}]（Lambda が選んだ記憶。1〜3 件）
         now: 現在時刻（JST 表記）
         publish_at: 公開予定時刻（次の Buffer 予約枠）
@@ -293,20 +323,21 @@ def autonomous(
         countdown = "明日" if days_left == 1 else f"あと {days_left} 日"
         kind_detail = f"イベント日: {event_date}（公開予定の日から数えて {countdown}）"
     else:
-        kind_detail = "直近数日のうちにあった出来事です。すでに終わったこととして書くこと"
+        kind_detail = AUTONOMOUS_KIND_DETAILS[kind]
     recent = "\n".join(f"- {t.strip()}" for t in (recent_texts or []) if t and t.strip()) or NO_MEMORIES
 
     agent = _make_agent(AUTONOMOUS_SYSTEM_PROMPT, RESPONSE_TEMPERATURE, RESPONSE_MAX_TOKENS)
     user_message = AUTONOMOUS_USER_TEMPLATE.format(
         now=now,
         publish_at=publish_at,
+        publish_period=time_period(publish_at),
+        greeting=greeting_hint(publish_at),
         kind_label=AUTONOMOUS_KIND_LABELS[kind],
         kind_detail=kind_detail,
         candidates=_format_candidates(candidates),
         recent_texts=recent,
     )
-    raw = _parse_json_object(_run(agent, user_message))
-    proposal = _validate_reaction(raw)
+    raw, proposal = _propose(agent, user_message, publish_at)
 
     candidate_ids = [str(c.get("id", "")) for c in candidates]
     sources = raw.get("sources")

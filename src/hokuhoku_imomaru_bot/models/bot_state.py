@@ -70,7 +70,7 @@ class BotState:
     prev_daily_oshi_count: int = 0
     # リプライチェック用の最新Tweet ID
     latest_reply_check_id: Optional[str] = None
-    # 独り言（自律投稿、3b-1）の最終実施日（YYYY-MM-DD、JST。投稿・頭脳の見送りのどちらでも立てる）
+    # 独り言（自律投稿、3b-1）の最終実施日（YYYY-MM-DD、JST。記録のみ。1 日の件数判定は投稿履歴テーブルで行う）
     last_autonomous_date: Optional[str] = None
     # 最後に Buffer へ投入した投稿の予約時刻（ISO 8601）。次の実行の公開予定時刻の見込みに使う
     last_buffer_due_at: Optional[str] = None

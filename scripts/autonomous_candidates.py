@@ -2,7 +2,7 @@
 """
 独り言（自律投稿、3b-1）の材料選びを本番の推しの記憶で確認する（読み取り専用）
 
-Lambda と同じ AutonomousSelector で facts を一覧し、除外理由・タイプ A/B の判定・選ばれる候補を表示する。
+Lambda と同じ AutonomousSelector で facts と preferences を一覧し、除外理由・タイプの判定・選ばれる候補を表示する。
 投稿履歴テーブル（imomaru-bot-post-history）の重複キーも読む（書き込みはしない）。
 --brain を付けると、選ばれた候補でローカルの頭脳（agent/brain.py、Bedrock を直接呼ぶ）を実行して素案を表示する。
 Buffer・メール・状態には触れない。
@@ -11,6 +11,7 @@ Buffer・メール・状態には触れない。
     uv run python scripts/autonomous_candidates.py                          # 今の時刻で判定
     uv run python scripts/autonomous_candidates.py --at "2026-09-27 21:01"  # JST の時刻を指定
     uv run python scripts/autonomous_candidates.py --brain --runs 3         # ローカル頭脳で素案も作る
+    uv run python scripts/autonomous_candidates.py --kind D --brain         # 上位タイプを飛ばして D を試す
 """
 import argparse
 import os
@@ -26,9 +27,13 @@ sys.path.insert(0, str(project_root / "src"))
 from hokuhoku_imomaru_bot.memory_filters import (  # noqa: E402
     AUTONOMOUS_EXTRA_EXCLUDE_WORDS,
     extract_dates,
+    is_announcement,
     is_event,
+    is_excluded_preference_for_autonomous,
     is_fan_view,
+    is_ongoing,
     is_private_life,
+    preference_parts,
 )
 from hokuhoku_imomaru_bot.services.ai_generator import format_jst  # noqa: E402
 from hokuhoku_imomaru_bot.services.autonomous_selector import AutonomousSelector, select_from  # noqa: E402
@@ -76,6 +81,8 @@ def main() -> int:
     parser.add_argument("--no-history", action="store_true", help="投稿履歴の重複キーを使わない")
     parser.add_argument("--brain", action="store_true", help="ローカルの頭脳で素案を作る（Bedrock を直接呼ぶ）")
     parser.add_argument("--runs", type=int, default=1, help="--brain の実行回数")
+    parser.add_argument("--kind", choices=["A", "B", "C", "D"],
+                        help="このタイプになるまで上位タイプの候補を使用済みとみなす（試験用）")
     args = parser.parse_args()
 
     now = (datetime.strptime(args.at, "%Y-%m-%d %H:%M").replace(tzinfo=JST) if args.at
@@ -83,29 +90,44 @@ def main() -> int:
     today = now.astimezone(JST).date()
     memory_id = args.memory_id or resolve_memory_id()
 
-    records = AutonomousSelector(memory_id, ACTOR_ID, region=REGION).list_facts()
-    print(f"now={format_jst(now)} facts={len(records)}\n")
+    selector = AutonomousSelector(memory_id, ACTOR_ID, region=REGION)
+    records = selector.list_facts()
+    preferences = selector.list_preferences()
+    print(f"now={format_jst(now)} facts={len(records)} preferences={len(preferences)}\n")
     for r in sorted(records, key=lambda r: r.created_at, reverse=True):
         reason = exclusion_reason(r.text)
         dates = [d.isoformat() for d in extract_dates(r.text, r.created_at.astimezone(JST).year) if d >= today]
         tags = [t for t in (f"excluded:{reason}" if reason else "",
                             f"future:{','.join(dates)}" if dates else "",
-                            "event" if is_event(r.text) else "") if t]
+                            "event" if is_event(r.text) else "",
+                            "announce" if is_announcement(r.text) else "",
+                            "ongoing" if is_ongoing(r.text) else "") if t]
         print(f"{r.created_at.astimezone(JST):%m-%d %H:%M} {r.record_id[:16]} [{' '.join(tags)}] {r.text[:70]}")
+
+    print("\n[preferences]")
+    for r in sorted(preferences, key=lambda r: r.created_at, reverse=True):
+        parts = preference_parts(r.text)
+        tag = "unreadable" if parts is None else ("excluded" if is_excluded_preference_for_autonomous(*parts) else "")
+        text = parts[1] if parts else r.text
+        print(f"{r.created_at.astimezone(JST):%m-%d %H:%M} {r.record_id[:16]} [{tag}] {text[:70]}")
 
     used_keys = set()
     recent_texts = []
     if not args.no_history:
         history_store = PostHistoryStore(table_name=os.environ.get("POST_HISTORY_TABLE_NAME", DEFAULT_TABLE_NAME))
         try:
-            history = history_store.load_recent(today, 7)
-            used_keys = history_store.used_keys(history)
-            recent_texts = [e.text for e in history[:3]]
+            history = history_store.load_recent(today)
+            used_keys = history_store.used_keys(history, today)
+            recent_texts = [e.text for e in history if not e.skipped][:3]
         except Exception as e:  # noqa: BLE001 — deploy 前はテーブルがない
             print(f"\n(history not available: {type(e).__name__})")
     print(f"\nused_keys={sorted(used_keys)}")
 
-    selection = select_from(records, now, used_keys)
+    selection = select_from(records, now, used_keys, preferences)
+    while args.kind and selection is not None and selection.kind < args.kind:
+        print(f"(--kind {args.kind}: skipping kind={selection.kind})")
+        used_keys = used_keys | set(selection.keys.values())
+        selection = select_from(records, now, used_keys, preferences)
     if selection is None:
         print("selection: none (autonomous_skip reason=no_candidates)")
         return 0

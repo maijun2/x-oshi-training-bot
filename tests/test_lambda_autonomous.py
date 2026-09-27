@@ -1,9 +1,9 @@
 """
-独り言（自律投稿、3b-1 (i)）の Lambda 側のテスト
+独り言（自律投稿、3b-1）の Lambda 側のテスト
 
-- 発火条件（react 0 件・本日未実施・次の枠が今日・キャップ・残り時間・候補の有無）
-- 冪等ロック・頭脳の skip／失敗・Buffer 投入・履歴・メール・dry run
-- _process_bot_logic からの呼び出し（21:00 回だけ、例外でも状態を保存）
+- 発火条件（react 0 件・次の枠が今日・キャップ・反応用の枠・残り時間・1 日の上限・候補の有無）
+- 冪等ロック（実行単位）・頭脳の skip（履歴に残す）／失敗・Buffer 投入・履歴・メール・dry run
+- _process_bot_logic からの呼び出し（autonomous_allowed の core_time だけ、例外でも状態を保存）
 - DraftNotifier.send_autonomous_email
 """
 from datetime import date, datetime, timedelta
@@ -12,6 +12,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.hokuhoku_imomaru_bot.lambda_handler import (
+    AUTONOMOUS_DAILY_ATTEMPTS,
+    AUTONOMOUS_DAILY_POSTS,
     AUTONOMOUS_MIN_REMAINING_MS,
     _autonomous_post,
     _autonomous_post_safe,
@@ -66,6 +68,7 @@ def _deps(selection=SELECTION, reaction=POST, scheduled=True, history=()):
     buffer_scheduler.next_slot_at.return_value = SLOT_22
     buffer_scheduler.can_schedule.return_value = True
     buffer_scheduler.run_cap = 2
+    buffer_scheduler.daily_cap = 7
     buffer_scheduler.schedule_autonomous.return_value = (
         ScheduledPost(post_id="p1", due_at=DUE_AT, image_attached=False) if scheduled else None
     )
@@ -97,10 +100,40 @@ class TestConditions:
         assert status == "reacted"
         deps["selector"].select.assert_not_called()
 
-    def test_already_done_today(self):
-        status, _, deps = _run(state=BotState(last_autonomous_date="2026-09-26"))
-        assert status == "already_done"
+    def test_second_post_of_the_day_is_allowed(self):
+        history = [HistoryEntry(posted_date="2026-09-26#10", kind="C", text="朝の独り言", dedupe_keys=["C:mem-x"])]
+        status, _, deps = _run(deps=_deps(history=history))
+        assert status == DraftNotifier.BUFFER_STATUS_SCHEDULED
+        assert "C:mem-x" in deps["selector"].select.call_args.args[1]
+
+    def test_daily_post_limit(self):
+        history = [
+            HistoryEntry(posted_date=f"2026-09-26#{h}", kind="C", text="t", dedupe_keys=[f"C:{h}"])
+            for h in ("10", "13")[:AUTONOMOUS_DAILY_POSTS]
+        ]
+        status, _, deps = _run(deps=_deps(history=history))
+        assert status == "daily_limit"
         deps["selector"].select.assert_not_called()
+
+    def test_attempt_limit_counts_skips(self):
+        history = [
+            HistoryEntry(posted_date=f"2026-09-26#{h}", kind="C", text="", status="skipped")
+            for h in ("10", "13", "18")[:AUTONOMOUS_DAILY_ATTEMPTS]
+        ]
+        status, _, _ = _run(deps=_deps(history=history))
+        assert status == "attempt_limit"
+
+    def test_yesterday_does_not_count(self):
+        history = [
+            HistoryEntry(posted_date=f"2026-09-25#{h}", kind="C", text="t") for h in ("10", "13", "18")
+        ]
+        assert _run(deps=_deps(history=history))[0] == DraftNotifier.BUFFER_STATUS_SCHEDULED
+
+    @pytest.mark.parametrize("daily_count, expected", [(4, "scheduled"), (5, "reserve")])
+    def test_reserve_slots_for_reactions(self, daily_count, expected):
+        # 日次キャップ 7 のうち 2 件は推し投稿への反応用に残す
+        status, _, _ = _run(state=BotState(daily_buffer_count=daily_count))
+        assert status == expected
 
     def test_next_slot_tomorrow(self):
         deps = _deps()
@@ -143,7 +176,7 @@ class TestPost:
         status, state, deps = _run()
 
         assert status == DraftNotifier.BUFFER_STATUS_SCHEDULED
-        deps["state_store"].acquire_tweet_lock.assert_called_once_with("autonomous-2026-09-26", "autonomous")
+        deps["state_store"].acquire_tweet_lock.assert_called_once_with("autonomous-2026-09-26-21", "autonomous")
         gen_kwargs = deps["ai_generator"].generate_autonomous.call_args.kwargs
         assert gen_kwargs["kind"] == "A"
         assert gen_kwargs["days_left"] == 2
@@ -153,7 +186,8 @@ class TestPost:
         assert state.last_autonomous_date == "2026-09-26"
 
         entry = deps["history_store"].record.call_args.args[0]
-        assert entry.posted_date == "2026-09-26"
+        assert entry.posted_date == "2026-09-26#21"
+        assert entry.status == "scheduled"
         assert entry.record_ids == ["mem-birthday"]
         assert entry.dedupe_keys == ["A:2026-09-28:2"]
         assert entry.buffer_post_id == "p1"
@@ -171,13 +205,19 @@ class TestPost:
         assert status == "locked"
         deps["ai_generator"].generate_autonomous.assert_not_called()
 
-    def test_brain_skip_sends_email_only(self):
+    def test_brain_skip_sends_email_and_records_candidates(self):
         skip = Reaction(action="skip", text="", emotion_key=None, reason="記憶が古い")
         status, state, deps = _run(deps=_deps(reaction=skip))
 
         assert status == "skipped"
         deps["buffer_scheduler"].schedule_autonomous.assert_not_called()
-        deps["history_store"].record.assert_not_called()
+        # 渡した候補は skip として履歴に残し、同じ日の次の実行で選ばない
+        entry = deps["history_store"].record.call_args.args[0]
+        assert entry.status == "skipped"
+        assert entry.posted_date == "2026-09-26#21"
+        assert entry.text == ""
+        assert entry.record_ids == ["mem-birthday", "mem-prep"]
+        assert entry.dedupe_keys == ["A:2026-09-28:2"]
         email = deps["draft_notifier"].send_autonomous_email.call_args.kwargs
         assert email["buffer_status"] == DraftNotifier.BUFFER_STATUS_SKIPPED
         assert email["reason"] == "記憶が古い"
@@ -212,6 +252,20 @@ class TestPost:
         assert status == DraftNotifier.BUFFER_STATUS_SCHEDULED
         deps["draft_notifier"].send_autonomous_email.assert_called_once()
 
+    def test_skipped_history_is_not_passed_as_recent_text(self):
+        history = [
+            HistoryEntry(posted_date="2026-09-26#18", kind="C", text="", status="skipped"),
+            HistoryEntry(posted_date="2026-09-26#10", kind="D", text="朝の独り言"),
+        ]
+        _, _, deps = _run(deps=_deps(history=history))
+        assert deps["ai_generator"].generate_autonomous.call_args.kwargs["recent_texts"] == ["朝の独り言"]
+
+    def test_dry_run_skip_records_nothing(self):
+        skip = Reaction(action="skip", text="", emotion_key=None, reason="r")
+        status, _, deps = _run(deps=_deps(reaction=skip), dry_run=True)
+        assert status == "skipped"
+        deps["history_store"].record.assert_not_called()
+
     def test_dry_run_touches_no_state(self):
         status, state, deps = _run(dry_run=True)
         assert status == "dry_run"
@@ -231,7 +285,7 @@ class TestPost:
 def _process(autonomous_allowed, oshi_tweets=(), execution_mode="core_time", selector=None):
     from src.hokuhoku_imomaru_bot.services import Tweet
 
-    state = BotState(last_autonomous_date="2026-09-26")  # 発火条件の手前で止める（ここでは配線だけ見る）
+    state = BotState()
     state_store = MagicMock(spec=StateStore)
     state_store.reset_daily_counts.return_value = state
     timeline_monitor = MagicMock(spec=TimelineMonitor)
@@ -267,16 +321,16 @@ def _process(autonomous_allowed, oshi_tweets=(), execution_mode="core_time", sel
         execution_mode=execution_mode,
         autonomous_allowed=autonomous_allowed,
         autonomous_selector=selector or MagicMock(spec=AutonomousSelector),
-        post_history_store=MagicMock(spec=PostHistoryStore),
+        post_history_store=None,  # 発火条件の手前（not_configured）で止める。ここでは配線だけ見る
     )
     return result, state_store
 
 
 class TestProcessBotLogicWiring:
-    def test_night_run_without_react_tries_autonomous(self):
+    def test_run_without_react_tries_autonomous(self):
         result, state_store = _process(autonomous_allowed=True)
         assert result["react_calls"] == 0
-        assert result["autonomous_status"] == "already_done"
+        assert result["autonomous_status"] == "not_configured"
         state_store.save_state.assert_called_once()
 
     def test_react_calls_are_counted(self):

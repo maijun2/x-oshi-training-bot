@@ -10,7 +10,7 @@ X（旧Twitter）育成ボット - AWSサーバーレスアーキテクチャ
 - 🤖 **AI応答生成**: AgentCore Runtime「頭脳」（Strands ＋ Bedrock Kimi K2.5）でキャラクターに合った応答を生成。頭脳が落ちたら反応は見送り（素案メールのみ）、リプライは固定文
 - 📮 **推し投稿への反応（半人力）**: AI応答をSESメールで素案通知しつつ、Buffer のキューに予約投入。Buffer のスロット時刻に自動投稿され、NG なら人間が Buffer から削除（X API 課金 $0）
 - 🧠 **推しの記憶**: 検知した推しのオリジナル投稿（引用ポスト含む。RT・リプライ除外）を Amazon Bedrock AgentCore Memory `imomaru_oshi_memory` に Lambda から直接書き込む。事実・好み・エピソードへの長期記憶抽出は Memory 側が非同期に行う。頭脳は反応を作るたびに関連する記憶（事実・好み）を読み出して判断材料にする（2026-09-25〜）
-- 🍠 **独り言（自律投稿）**: 夜 21 時の回に推しの投稿へ反応しなかったら、推しの記憶（近づくイベントのカウントダウン、直近のイベント）から独り言を 1 日 1 件つくって Buffer に予約投入し、根拠にした記憶と一緒に素案メールで通知（2026-09-26〜）
+- 🍠 **独り言（自律投稿）**: コアタイムの回に推しの投稿へ反応しなかったら、推しの記憶（近づくイベントのカウントダウン、直近のイベント、これからの活動、推しの好きなもの）から独り言をつくって Buffer に予約投入し（1 日 2 件まで）、根拠にした記憶と一緒に素案メールで通知（2026-09-26〜、全実行は 2026-09-28〜）
 - 🎨 **感情別画像添付**: Buffer 予約投入時、頭脳が反応と一緒に返す感情キーに対応するLINEスタンプ画像を添付（1日1回限定）
 - ⭐ **XP獲得**: 活動に応じてXPを獲得（推し投稿: 5.0 XP、グループ投稿: 2.0 XP、いいね: 0.1 XP、リポスト: 0.5 XP）
 - 📈 **レベルアップ**: DQ3勇者の経験値テーブルに基づいてレベルアップ
@@ -31,7 +31,7 @@ EventBridge Scheduler → Lambda → X API (日報・レベルアップ・リプ
                     AgentCore Runtime「頭脳」(Strands + Bedrock Kimi K2.5: 反応の提案〔本文・感情キー・post/skip〕・独り言の提案・リプライ応答)
                           └→ 失敗時は反応を見送り（Buffer に入れず素案メールのみ）、アラーム
                           ↓
-                    AgentCore Memory「推しの記憶」(推し投稿を Lambda 直で書き込み。Semantic/UserPreference/Episodic で抽出。頭脳が react ごとに retrieve、夜 21 時は Lambda が facts を一覧して独り言の材料を選ぶ)
+                    AgentCore Memory「推しの記憶」(推し投稿を Lambda 直で書き込み。Semantic/UserPreference/Episodic で抽出。頭脳が react ごとに retrieve、独り言は Lambda が facts / preferences を一覧して材料を選ぶ)
                           ↓
                     S3 (画像アセット)
                           ↓
@@ -230,6 +230,7 @@ uv run npx cdk deploy
 | プロンプト | `src/hokuhoku_imomaru_bot/prompts.py` が単一ソース（`agent/prompts.py` はそのシンボリックリンク）。キャラクター定義は system prompt、反応対象は user message |
 | 本文の体裁 | 1 文 1 行 ＋ 空行 ＋ ハッシュタグ（最終行）。プロンプトで指示しつつ、Lambda 側 `AIGenerator.format_post_text` が文末「ｲﾓ🍠」を境に機械的に整える（モデルが 1 行で返したときの保険。2026-09-26 から語尾「ｲﾓ🍠」は 1 投稿 1〜2 回の指示なので、語尾のない文の境界では分割しない）。整形後に改行込みで 140 字に切り詰める（2026-09-15）。語尾の崩れ（全角「イモ🍠」・「ｲﾐ🍠」など）も半角「ｲﾓ🍠」に揃える（2026-09-25。「ｲﾓ🍠🍠」は強調として残す）。リプライも同じ整形を通す |
 | 時刻の扱い | 公開予定時刻は挨拶の選択だけに使い、本文に時刻を書かない。投稿の出来事は投稿時刻基準で書き、翌日以降の公開なら「昨日の」で補う。投稿に書かれていないこと（「見せたい」→「公開された」等）は書かない（2026-09-25、時制の逆ぶれ 3 回・「19:15」の漏れへの対処） |
+| 挨拶・時間帯（2026-09-28） | 頭脳（`prompts.py`）が時刻から決定論で求めて user message に書く: 投稿時刻・公開予定の時間帯（深夜／朝／昼／夜）、公開予定の日が投稿の翌日か（「明日」→「今日」の言い換え）、公開予定に合う挨拶（5〜10 時 おはよう／11〜17 時 こんにちは／18〜21 時 こんばんは／22〜23 時 こんばんは・おやすみ／0〜4 時 なし）。本文に合わない挨拶（推しの「おはよう」の返し・引用）が残ったら、同じ会話で 1 回だけ書き直させる（09-26〜27 に昼の公開で「おはよう」「おやすみ」が 3 件出たことへの対処） |
 | ログ | `/aws/bedrock-agentcore/runtimes/imomaru_brain-*` |
 
 ```bash
@@ -246,23 +247,26 @@ uv run python scripts/test_brain_invoke.py --task react --runs 5
 uv run python scripts/test_brain_invoke.py --task autonomous --runs 3
 ```
 
-### 独り言（自律投稿、3b-1 (i)、2026-09-26）
+### 独り言（自律投稿、3b-1、2026-09-26〜）
 
-推しの投稿がない夜に、いも丸が推しの記憶から独り言を 1 件つくって Buffer に入れます（設計書 §10-11）。
+推しの投稿に反応しなかった回に、いも丸が推しの記憶から独り言をつくって Buffer に入れます（設計書 §10-11）。
+2026-09-26 は 21:00 回だけ・タイプ A/B・1 日 1 件（(i)）、2026-09-28 から全コアタイム・タイプ A〜D・1 日 2 件（(ii)）。
 
 | 項目 | 内容 |
 |------|------|
-| 発火条件 | 夜 21:00 回（EventBridge 入力 `autonomous_allowed: true`）だけ。その実行で `react` 0 件 ＋ 本日未実施（BotState `last_autonomous_date`）＋ 次の Buffer 枠が今日 ＋ キャップに空き ＋ Lambda の残り時間 ≥ 120 秒 |
-| 材料選び（Lambda、決定論） | facts を一覧 → ファン視点・生活の細部（睡眠・体調に加え 腹痛/お腹/ヤモリ/忘れ/野菜）を除外 → **A 未来イベント**（本文の日付が 1〜14 日後。当日は対象外。同じ日付の記憶をまとめて最大 3 件）→ なければ **B 直近の出来事**（イベント語 ＋ 抽出 3 日以内、今日以降の日付を含まない）。候補なしは頭脳を呼ばず `autonomous_skip reason=no_candidates` |
-| 重複 | DynamoDB `imomaru-bot-post-history`（PK `posted_date`、TTL 30 日）の重複キー（A = `A:<イベント日>:<残り日数>`、B = `B:<record_id>` を 7 日）。直近 3 件の本文を頭脳に渡して言い回しの重複を避ける |
-| 頭脳 | `autonomous` タスク 1 回。`{action, text, emotion_key, reason, sources}`。`skip` を許す |
-| 冪等 | 頭脳を呼ぶ前に processed-tweets に `autonomous-YYYY-MM-DD` をロック（タイムアウト時の再実行で 2 件入らない） |
+| 発火条件 | コアタイム 4 回（10:00 / 13:00 / 18:00 / 21:00、EventBridge 入力 `autonomous_allowed: true`。23:58 回は次の枠が翌 02:00 でレビューできないので対象外）。その実行で `react` 0 件 ＋ 次の Buffer 枠が今日 ＋ キャップに空き ＋ **日次キャップのうち 2 件を推し投稿への反応用に残せる**（`daily_buffer_count ≤ 7 − 3`）＋ Lambda の残り時間 ≥ 120 秒 ＋ **今日の独り言が公開 2 件未満・頭脳呼び出し 3 回未満**（投稿履歴から数える） |
+| 材料選び（Lambda、決定論） | facts と preferences を一覧 → ファン視点・生活の細部（睡眠・体調に加え 腹痛/お腹/ヤモリ/忘れ/野菜）を除外 → 優先順に最初に候補が残ったタイプから最大 3 件: **A 未来イベント**（本文の日付が 1〜14 日後。当日は対象外。同じ日付の記憶をまとめる）→ **B 直近の出来事**（イベント語 ＋ 抽出 3 日以内、今日以降の日付と告知語〔予定/決定/リリース/キャンペーン/発売〕を含まない）→ **C 進行中・これからの活動**（取り組み語・告知語 ＋ 抽出 14 日以内。A の記憶・今日の日付・日付がすべて 3 日より前の記憶・終わったイベントは除く）→ **D 好み・小ネタ**（preferences の `preference`。苦手/隠して/不満も除外）。候補なしは頭脳を呼ばず `autonomous_skip reason=no_candidates` |
+| 重複 | DynamoDB `imomaru-bot-post-history`（PK `posted_date` = `YYYY-MM-DD#HH`〔実行の JST の日と時〕、TTL 30 日、`status` = scheduled / skipped）の重複キー（A = `A:<イベント日>:<残り日数>`、B・C = `<タイプ>:<record_id>` を 7 日、D = 14 日）。**頭脳が skip した候補も記録**し、重複キーの期間は別の候補を選ぶ。直近 3 件の本文（skip 以外）を頭脳に渡して言い回しの重複を避ける |
+| 頭脳 | `autonomous` タスク 1 回（次のタイプには落とさない）。`{action, text, emotion_key, reason, sources}`。`skip` を許す |
+| 冪等 | 頭脳を呼ぶ前に processed-tweets に `autonomous-YYYY-MM-DD-HH` をロック（タイムアウト時の再実行で 2 件入らない） |
 | 通知 | 件名「【いも丸】独り言の素案ｲﾓ🍠」。素案・判断理由・**根拠にした記憶の本文**・Buffer 状態。頭脳の skip もメール（候補なしはログのみ）。頭脳の失敗は `[ERROR]`（アラーム）のみ |
-| 結果 | Lambda の結果 `react_calls` / `autonomous_status`（scheduled / cap / failed / skipped / brain_failed / error、または見送り理由 reacted / already_done / next_slot_tomorrow / no_candidates / locked / low_time） |
+| 結果 | Lambda の結果 `react_calls` / `autonomous_status`（scheduled / cap / failed / skipped / brain_failed / error、または見送り理由 reacted / next_slot_tomorrow / cap / reserve / low_time / daily_limit / attempt_limit / no_candidates / locked） |
 
 ```bash
 # 本番の記憶でどの候補が選ばれるか（読み取り専用。--at で JST の時刻を指定、--brain でローカル頭脳の素案も）
 uv run python scripts/autonomous_candidates.py --at "2026-09-27 21:01" --brain --runs 3
+# 上位タイプを飛ばして C / D の素案を試す
+uv run python scripts/autonomous_candidates.py --kind D --brain --runs 3
 
 # Lambda で試す（Buffer・ロック・履歴・状態に触れずメールだけ。通常の core_time 処理は走る）
 aws lambda invoke --function-name imomaru-bot-handler --cli-binary-format raw-in-base64-out \
@@ -293,7 +297,7 @@ aws ce get-cost-and-usage --region us-east-1 \
 | 書き込み | `services/oshi_memory_writer.py`。actorId = 推しの X ユーザー名、sessionId = `oshi-YYYY-MM-DD`（JST）、role = USER、`clientToken` = tweet_id（冪等）。対象は `filter_original_posts` 後の推し投稿（引用ポスト含む） |
 | 失敗時 | `[ERROR]` ログ（`imomaru-bot-app-errors` で検知）を出して握りつぶし、XP・Buffer・日報は続行。`OSHI_MEMORY_ID` が空なら書き込みなし |
 | 読み出し（3a-read、2026-09-25） | 頭脳が `react` のたびに投稿本文をクエリに retrieve し（facts 上位 3 件 ＋ preferences 上位 2 件の `preference`）、user message の「推しの記憶」に入れる（`agent/brain.py:recall_oshi_memory`。Strands の `@tool` ではなく毎回決定論で注入）。「ユーザーは」で始まり「閲覧／転載／運営」を含むファン視点の誤抽出は除外。睡眠・体調など生活の細部（眠・寝・体調・病院 等を含むレコード。設計書 v19 のタイプ E）も除外。Runtime の環境変数 `OSHI_MEMORY_ID` / `OSHI_ACTOR_ID`、ロールは `RetrieveMemoryRecords` のみ |
-| 独り言の材料（3b-1、2026-09-26） | Lambda が facts を `ListMemoryRecords` で一覧し、決定論で候補を選ぶ（`services/autonomous_selector.py`、下記「独り言」）。除外語・日付抽出は `memory_filters.py`（頭脳と共有。`agent/memory_filters.py` はシンボリックリンク） |
+| 独り言の材料（3b-1、2026-09-26） | Lambda が facts（2026-09-28 から preferences も）を `ListMemoryRecords` で一覧し、決定論で候補を選ぶ（`services/autonomous_selector.py`、下記「独り言」）。除外語・日付抽出は `memory_filters.py`（頭脳と共有。`agent/memory_filters.py` はシンボリックリンク） |
 | 読み出し失敗時 | 記憶なしで反応を作り `memory_count=-1` を返す → Lambda が `[ERROR] Brain memory recall failed …`（アラーム）。反応自体は通常どおり Buffer に入る。Lambda ログの `Brain task=react … memories=N` で件数を確認できる |
 
 ```bash
@@ -566,11 +570,13 @@ table.put_item(Item={
 
 | 時刻 | 実行モード | 投稿内容 | 条件 |
 |------|-----------|---------|------|
-| 朝10時（+0〜15分） | core_time | 推しタイムライン監視・応答素案メール＋Buffer予約投入・リプライ検出 | 毎日 |
-| 昼13時（+0〜23分） | core_time | 推しタイムライン監視・応答素案メール＋Buffer予約投入・リプライ検出 | 毎日 |
-| 夕方18時（+0〜3分） | core_time | 推しタイムライン監視・応答素案メール＋Buffer予約投入・リプライ検出 | 毎日 |
-| 夜21時（+0〜5分） | core_time | 同上。EventBridge 入力に `autonomous_allowed: true` を付ける（推し投稿に反応しなかった夜は記憶から独り言を 1 件。3b-1、2026-09-26） | 毎日 |
-| 23:58（+0〜1分） | daily_report | 全処理（推し+グループ監視・リプライ検出・エンゲージメント・日報） | 毎日（エンゲージメントは1日1回） |
+| 朝10時（+0〜15分） | core_time | 推しタイムライン監視・応答素案メール＋Buffer予約投入・リプライ検出。推し投稿に反応しなかったら独り言（下記） | 毎日 |
+| 昼13時（+0〜23分） | core_time | 同上 | 毎日 |
+| 夕方18時（+0〜3分） | core_time | 同上 | 毎日 |
+| 夜21時（+0〜5分） | core_time | 同上 | 毎日 |
+| 23:58（+0〜1分） | daily_report | 全処理（推し+グループ監視・リプライ検出・エンゲージメント・日報）。独り言はなし | 毎日（エンゲージメントは1日1回） |
+
+コアタイム 4 回は EventBridge 入力に `autonomous_allowed: true` を付けています（独り言。3b-1 (i) 2026-09-26 は 21 時だけ、(ii) 2026-09-28 から 4 回とも。上限は Lambda 側で 1 日 2 件）。
 
 ## XPレートと投稿ルール
 

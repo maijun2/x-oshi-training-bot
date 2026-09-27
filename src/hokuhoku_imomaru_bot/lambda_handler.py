@@ -32,7 +32,7 @@ from .services import (
 )
 from .services.ai_generator import REACTION_SKIP
 from .services.autonomous_selector import AutonomousSelection, AutonomousSelector
-from .services.post_history_store import HistoryEntry, PostHistoryStore
+from .services.post_history_store import STATUS_SKIPPED, HistoryEntry, PostHistoryStore, history_key
 from .services.buffer_scheduler import DEFAULT_SLOT_TIMES_JST
 from .services.daily_reporter import JST
 from .services.oshi_memory_writer import parse_created_at
@@ -99,7 +99,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     
     # 実行モードを抽出（デフォルト: daily_report）
     execution_mode = event.get("execution_mode", "daily_report")
-    # 独り言（自律投稿、3b-1）を許す実行か（EventBridge の 21:00 回だけが true を渡す）。
+    # 独り言（自律投稿、3b-1）を許す実行か（EventBridge の 23:58 以外の 4 回が true を渡す）。
     # autonomous_dry_run は手動確認用: Buffer・冪等ロック・履歴・状態に触れずメールだけ送る
     autonomous_allowed = event.get("autonomous_allowed") is True
     autonomous_dry_run = event.get("autonomous_dry_run") is True
@@ -632,7 +632,7 @@ def _process_bot_logic(
                 message="Daily report posted",
             )
     
-    # 独り言（自律投稿、3b-1 (i)）: 推し投稿に反応しなかった夜の実行だけ
+    # 独り言（自律投稿、3b-1）: autonomous_allowed の実行（23:58 以外の 4 回）で推し投稿に反応しなかったときだけ
     if is_core_time and autonomous_allowed:
         result["autonomous_status"] = _autonomous_post_safe(
             state=state,
@@ -655,16 +655,22 @@ def _process_bot_logic(
 
 # 独り言（自律投稿、3b-1）
 AUTONOMOUS_MIN_REMAINING_MS = 120_000   # 頭脳の read timeout（90 秒）＋ Buffer・SES の余裕
-AUTONOMOUS_HISTORY_DAYS = 7             # 重複キー（B は同じ記憶を 7 日作らない）と直近本文の参照範囲
 AUTONOMOUS_RECENT_TEXTS = 3             # 頭脳に渡す直近の独り言の件数
-AUTONOMOUS_LOCK_PREFIX = "autonomous-"  # processed-tweets の冪等ロック（1 日 1 件。数値のツイート ID と衝突しない）
+AUTONOMOUS_LOCK_PREFIX = "autonomous-"  # processed-tweets の冪等ロック（1 実行 1 件。数値のツイート ID と衝突しない）
+AUTONOMOUS_DAILY_POSTS = 2              # 1 日に Buffer へ入れる独り言の上限（反応が主・独り言が従。設計書 §10-11）
+AUTONOMOUS_DAILY_ATTEMPTS = 3           # 1 日に頭脳を呼ぶ回数の上限（skip メールの連発を防ぐ）
+AUTONOMOUS_RESERVE_FOR_REACTIONS = 2    # 日次キャップのうち推し投稿への反応用に残す件数
 
 
 def _autonomous_kind_label(selection: AutonomousSelection) -> str:
     if selection.kind == "A":
         countdown = "明日" if selection.days_left == 1 else f"あと {selection.days_left} 日"
         return f"A. 未来イベント（{selection.event_date:%m/%d} まで{countdown}）"
-    return "B. 直近の出来事の余韻"
+    return {
+        "B": "B. 直近の出来事の余韻",
+        "C": "C. 進行中・これからの活動へのエール",
+        "D": "D. 好み・小ネタ",
+    }.get(selection.kind, selection.kind)
 
 
 def _autonomous_skip(reason: str) -> str:
@@ -705,19 +711,21 @@ def _autonomous_post(
     now: Optional[datetime] = None,
 ) -> str:
     """
-    推しの投稿に反応しなかった夜に、推しの記憶から独り言を 1 件作って Buffer に入れる（設計書 §10-11）
+    推しの投稿に反応しなかった実行で、推しの記憶から独り言を 1 件作って Buffer に入れる（設計書 §10-11、§10-15）
 
-    発火条件（決定論）: この実行で react 0 件 ＋ 本日未実施 ＋ 次の枠が今日 ＋ Buffer キャップに空き ＋ 残り時間。
-    候補は AutonomousSelector が選び、頭脳は 1 回だけ呼ぶ。頭脳の skip はメールで理由を知らせる（候補なしはログのみ）
+    発火条件（決定論）: この実行で react 0 件 ＋ 次の枠が今日 ＋ Buffer キャップに空き ＋ 反応用の枠が残る ＋
+    残り時間 ＋ 今日の独り言が上限未満（公開 AUTONOMOUS_DAILY_POSTS 件・頭脳呼び出し AUTONOMOUS_DAILY_ATTEMPTS 回。
+    投稿履歴から数える）。候補は AutonomousSelector が選び、頭脳は 1 回だけ呼ぶ。
+    頭脳の skip はメールで理由を知らせ、その候補を履歴に残して以後の実行では別の候補を選ぶ（候補なしはログのみ）
     """
     now = now or datetime.now(timezone.utc)
-    today = now.astimezone(JST).date()
+    now_jst = now.astimezone(JST)
+    today = now_jst.date()
     today_str = today.isoformat()
+    run_key = history_key(now_jst)
 
     if react_calls > 0:
         return _autonomous_skip("reacted")
-    if state.last_autonomous_date == today_str:
-        return _autonomous_skip("already_done")
     if None in (buffer_scheduler, selector, history_store, draft_notifier):
         return _autonomous_skip("not_configured")
     publish_at = buffer_scheduler.next_slot_at(now)
@@ -725,18 +733,26 @@ def _autonomous_post(
         return _autonomous_skip("next_slot_tomorrow")
     if not buffer_scheduler.can_schedule(state):
         return _autonomous_skip("cap")
+    if state.daily_buffer_count + 1 + AUTONOMOUS_RESERVE_FOR_REACTIONS > buffer_scheduler.daily_cap:
+        return _autonomous_skip("reserve")
     if remaining_time_ms is not None and remaining_time_ms() < AUTONOMOUS_MIN_REMAINING_MS:
         return _autonomous_skip("low_time")
 
-    history = history_store.load_recent(today, AUTONOMOUS_HISTORY_DAYS)
-    selection = selector.select(now, history_store.used_keys(history))
+    history = history_store.load_recent(today)
+    today_entries = PostHistoryStore.on_day(history, today)
+    if sum(1 for e in today_entries if not e.skipped) >= AUTONOMOUS_DAILY_POSTS:
+        return _autonomous_skip("daily_limit")
+    if len(today_entries) >= AUTONOMOUS_DAILY_ATTEMPTS:
+        return _autonomous_skip("attempt_limit")
+
+    selection = selector.select(now, history_store.used_keys(history, today))
     if selection is None:
         return _autonomous_skip("no_candidates")
 
     if not dry_run:
         # タイムアウト時の自動リトライや EventBridge の重複配信で 2 件入らないように、頭脳を呼ぶ前にロックする
         try:
-            state_store.acquire_tweet_lock(f"{AUTONOMOUS_LOCK_PREFIX}{today_str}", "autonomous")
+            state_store.acquire_tweet_lock(f"{AUTONOMOUS_LOCK_PREFIX}{run_key.replace('#', '-')}", "autonomous")
         except TweetAlreadyProcessedError:
             return _autonomous_skip("locked")
 
@@ -747,10 +763,10 @@ def _autonomous_post(
         publish_at=publish_at,
         days_left=selection.days_left,
         event_date=selection.event_date,
-        recent_texts=[e.text for e in history[:AUTONOMOUS_RECENT_TEXTS]],
+        recent_texts=[e.text for e in history if not e.skipped][:AUTONOMOUS_RECENT_TEXTS],
     )
     if reaction.source == "error":
-        # ERROR ログ（アラーム）は AIGenerator が出している。ロック済みなので今日は再試行しない
+        # ERROR ログ（アラーム）は AIGenerator が出している。ロック済みなのでこの実行では再試行しない
         return "brain_failed"
 
     kind_label = _autonomous_kind_label(selection)
@@ -760,6 +776,18 @@ def _autonomous_post(
     if reaction.action == REACTION_SKIP:
         if not dry_run:
             state.last_autonomous_date = today_str
+            # 渡した候補は重複キーの期間（7 日、D は 14 日）選ばない（同じ記憶で skip を繰り返さない）
+            try:
+                history_store.record(HistoryEntry(
+                    posted_date=run_key,
+                    kind=selection.kind,
+                    text="",
+                    record_ids=[c.record_id for c in selection.candidates],
+                    dedupe_keys=selection.keys_for(c.record_id for c in selection.candidates),
+                    status=STATUS_SKIPPED,
+                ))
+            except Exception as e:
+                handle_api_error(e, "autonomous_history")
         draft_notifier.send_autonomous_email(
             kind_label=kind_label,
             draft_text="",
@@ -791,7 +819,7 @@ def _autonomous_post(
     if scheduled is not None:
         try:
             history_store.record(HistoryEntry(
-                posted_date=today_str,
+                posted_date=run_key,
                 kind=selection.kind,
                 text=reaction.text,
                 record_ids=[c.record_id for c in used],
