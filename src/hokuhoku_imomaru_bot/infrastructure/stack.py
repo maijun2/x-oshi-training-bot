@@ -383,12 +383,14 @@ class ImomaruBotStack(Stack):
         self.bot_lambda.grant_invoke(self.scheduler_role)
 
         # Core Time Schedules（4つ）: 推しタイムライン監視に集中
-        # 夜 21:00 は EventBridge 入力に autonomous_allowed を付ける（3b-1: 推し投稿に反応しなかったら独り言を 1 件）
+        # 4 回とも EventBridge 入力に autonomous_allowed を付ける（3b-1 (ii): 推し投稿に反応しなかったら独り言。
+        # 上限は Lambda 側で 1 日 2 件）。23:58 の日報は次の枠が翌 02:00 でレビューできないので付けない
+        autonomous = {"autonomous_allowed": True}
         core_time_configs = [
-            ("Morning", 10, 15, {}),    # 10:00 JST, 15分ウィンドウ
-            ("Afternoon", 13, 23, {}),  # 13:00 JST, 23分ウィンドウ
-            ("Evening", 18, 3, {}),     # 18:00 JST, 3分ウィンドウ
-            ("Night", 21, 5, {"autonomous_allowed": True}),  # 21:00 JST, 5分ウィンドウ（22:00 枠まで猶予 55 分）
+            ("Morning", 10, 15, autonomous),    # 10:00 JST, 15分ウィンドウ
+            ("Afternoon", 13, 23, autonomous),  # 13:00 JST, 23分ウィンドウ
+            ("Evening", 18, 3, autonomous),     # 18:00 JST, 3分ウィンドウ
+            ("Night", 21, 5, autonomous),       # 21:00 JST, 5分ウィンドウ（22:00 枠まで猶予 55 分）
         ]
         for name, hour_jst, window_min, extra_input in core_time_configs:
             scheduler.CfnSchedule(

@@ -1,17 +1,21 @@
 """
-AutonomousSelector — 独り言（自律投稿、3b-1 (i)）の材料を推しの記憶から決定論で選ぶ
+AutonomousSelector — 独り言（自律投稿、3b-1）の材料を推しの記憶から決定論で選ぶ
 
 設計書 §10-11 2026-09-21 追記（素案タイプ A〜E）。候補の絞り込みは LLM に任せず Lambda で行い、
 頭脳には「タイプ ＋ 候補の記憶」だけを渡す。
 
-- 対象: facts の namespace（ListMemoryRecords）。preferences はタイプ D（3b-1 (ii)）で使う
+- 対象: facts（A〜C）と preferences（D）の namespace（ListMemoryRecords）
 - 除外: ファン視点・生活の細部（v19 タイプ E）。memory_filters.is_excluded_for_autonomous
 - A 未来イベント: 本文の日付のうち今日より後で最も近い日（1〜MAX_DAYS_AHEAD 日後）。
   当日は対象外（22:00 公開の時点でイベントが終わっていることが多い。maijun 決定 2026-09-26）。
   同じイベント日の記憶をまとめて候補にし、重複キーは "A:<イベント日>:<残り日数>"（毎晩のカウントダウン）
-- B 直近の出来事: イベント語を含み、抽出（createdAt）が RECENT_DAYS 日以内。今日以降の日付を含む記憶は除く。
-  重複キーは "B:<record_id>"
-- 優先 A > B。最初に候補が残ったタイプから最大 MAX_CANDIDATES 件
+- B 直近の出来事: イベント語を含み、抽出（createdAt）が RECENT_DAYS 日以内。今日以降の日付を含む記憶と、
+  告知（予定・決定など。まだ終わっていない）は除く。重複キーは "B:<record_id>"
+- C 進行中・これからの活動（3b-1 (ii)）: 取り組み語・告知語を含み、抽出が ONGOING_DAYS 日以内。A に当たる記憶、
+  今日の日付を含む記憶、本文の日付がすべて STALE_DAYS 日より前の記憶（古い「〜時点で」の状態）は除く。
+  イベント語を含む記憶は告知のときだけ（終わった出来事は B の担当）。重複キーは "C:<record_id>"
+- D 好み・小ネタ（3b-1 (ii)）: preferences の本人の好み。重複キーは "D:<record_id>"（期間は PostHistoryStore）
+- 優先 A > B > C > D。最初に候補が残ったタイプから最大 MAX_CANDIDATES 件
 """
 import logging
 from dataclasses import dataclass, field
@@ -21,7 +25,15 @@ from typing import Any, Dict, Iterable, List, Optional, Set
 import boto3
 from botocore.config import Config
 
-from ..memory_filters import extract_dates, is_event, is_excluded_for_autonomous
+from ..memory_filters import (
+    extract_dates,
+    is_announcement,
+    is_event,
+    is_excluded_for_autonomous,
+    is_excluded_preference_for_autonomous,
+    is_ongoing,
+    preference_parts,
+)
 from .daily_reporter import JST
 
 logger = logging.getLogger(__name__)
@@ -32,6 +44,8 @@ PAGE_SIZE = 100
 MAX_CANDIDATES = 3
 MAX_DAYS_AHEAD = 14
 RECENT_DAYS = 3
+ONGOING_DAYS = 14
+STALE_DAYS = 3
 
 
 @dataclass
@@ -50,7 +64,7 @@ class MemoryCandidate:
 
 @dataclass
 class AutonomousSelection:
-    kind: str                                        # "A" / "B"
+    kind: str                                        # "A" / "B" / "C" / "D"
     candidates: List[MemoryCandidate]
     keys: Dict[str, str] = field(default_factory=dict)  # record_id → 重複キー
     days_left: Optional[int] = None
@@ -77,12 +91,32 @@ def _parse_created_at(value: Any) -> Optional[datetime]:
     return None
 
 
+def _selection(kind: str, records: List[MemoryCandidate]) -> Optional[AutonomousSelection]:
+    candidates = records[:MAX_CANDIDATES]
+    if not candidates:
+        return None
+    return AutonomousSelection(
+        kind=kind,
+        candidates=candidates,
+        keys={c.record_id: f"{kind}:{c.record_id}" for c in candidates},
+    )
+
+
 def select_from(
     records: List[MemoryCandidate],
     now: datetime,
     used_keys: Set[str],
+    preferences: Iterable[MemoryCandidate] = (),
 ) -> Optional[AutonomousSelection]:
-    """記憶の一覧から素案タイプと候補を選ぶ（純関数）。候補がなければ None"""
+    """
+    記憶の一覧から素案タイプと候補を選ぶ（純関数）。候補がなければ None
+
+    Args:
+        records: facts（A〜C の材料）
+        now: 現在時刻
+        used_keys: 投稿履歴の重複キー（期間内のもの）
+        preferences: preferences（D の材料。text は本文の JSON のまま）
+    """
     today = now.astimezone(JST).date()
     usable = sorted(
         (r for r in records if r.text.strip() and not is_excluded_for_autonomous(r.text)),
@@ -92,11 +126,10 @@ def select_from(
 
     # A: 未来イベント
     by_event: Dict[date, List[MemoryCandidate]] = {}
-    has_future_date: Set[str] = set()
+    dates_of: Dict[str, List[date]] = {}
     for record in usable:
         dates = extract_dates(record.text, record.created_at.astimezone(JST).year)
-        if any(d >= today for d in dates):
-            has_future_date.add(record.record_id)
+        dates_of[record.record_id] = dates
         ahead = [d for d in dates if 1 <= (d - today).days <= MAX_DAYS_AHEAD]
         if ahead:
             by_event.setdefault(min(ahead), []).append(record)
@@ -113,23 +146,51 @@ def select_from(
             days_left=days_left,
             event_date=event_date,
         )
+    in_a = {r.record_id for records_ in by_event.values() for r in records_}
 
-    # B: 直近の出来事（イベント系のみ）
+    # B: 直近の出来事（イベント系のみ。告知はまだ終わっていないので C へ）
     since = now - timedelta(days=RECENT_DAYS)
-    recent = [
+    selection = _selection("B", [
         r for r in usable
         if r.created_at >= since
         and is_event(r.text)
-        and r.record_id not in has_future_date
+        and not is_announcement(r.text)
+        and not any(d >= today for d in dates_of[r.record_id])
         and f"B:{r.record_id}" not in used_keys
-    ][:MAX_CANDIDATES]
-    if recent:
-        return AutonomousSelection(
-            kind="B",
-            candidates=recent,
-            keys={c.record_id: f"B:{c.record_id}" for c in recent},
+    ])
+    if selection:
+        return selection
+
+    # C: 進行中・これからの活動（エール）
+    ongoing_since = now - timedelta(days=ONGOING_DAYS)
+    stale_before = today - timedelta(days=STALE_DAYS)
+
+    def is_c(r: MemoryCandidate) -> bool:
+        dates = dates_of[r.record_id]
+        return (
+            r.created_at >= ongoing_since
+            and is_ongoing(r.text)
+            and (not is_event(r.text) or is_announcement(r.text))
+            and r.record_id not in in_a
+            and today not in dates
+            and (not dates or max(dates) >= stale_before)
+            and f"C:{r.record_id}" not in used_keys
         )
-    return None
+
+    selection = _selection("C", [r for r in usable if is_c(r)])
+    if selection:
+        return selection
+
+    # D: 好み・小ネタ（preferences。本文の JSON から preference を取り出す）
+    liked: List[MemoryCandidate] = []
+    for record in sorted(preferences, key=lambda r: r.created_at, reverse=True):
+        parts = preference_parts(record.text)
+        if parts is None or is_excluded_preference_for_autonomous(*parts):
+            continue
+        if f"D:{record.record_id}" in used_keys:
+            continue
+        liked.append(MemoryCandidate(record.record_id, parts[1], record.created_at))
+    return _selection("D", liked)
 
 
 class AutonomousSelector:
@@ -151,10 +212,16 @@ class AutonomousSelector:
         )
 
     def list_facts(self) -> List[MemoryCandidate]:
+        return self._list("facts")
+
+    def list_preferences(self) -> List[MemoryCandidate]:
+        return self._list("preferences")
+
+    def _list(self, namespace_kind: str) -> List[MemoryCandidate]:
         records: List[MemoryCandidate] = []
         kwargs: Dict[str, Any] = {
             "memoryId": self._memory_id,
-            "namespace": f"/oshi/{self._actor_id}/facts/",
+            "namespace": f"/oshi/{self._actor_id}/{namespace_kind}/",
             "maxResults": PAGE_SIZE,
         }
         for _ in range(MAX_PAGES):
@@ -177,9 +244,10 @@ class AutonomousSelector:
 
     def select(self, now: datetime, used_keys: Set[str]) -> Optional[AutonomousSelection]:
         records = self.list_facts()
-        selection = select_from(records, now, used_keys)
+        preferences = self.list_preferences()
+        selection = select_from(records, now, used_keys, preferences)
         logger.info(
-            f"Autonomous candidates: facts={len(records)} "
+            f"Autonomous candidates: facts={len(records)} preferences={len(preferences)} "
             + (f"kind={selection.kind} candidates={len(selection.candidates)} days_left={selection.days_left}"
                if selection else "none")
         )

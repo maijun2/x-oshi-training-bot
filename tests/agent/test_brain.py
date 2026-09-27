@@ -20,6 +20,10 @@ from prompts import (
     REACT_SYSTEM_PROMPT,
     REACT_USER_TEMPLATE,
     REPLY_USER_TEMPLATE,
+    day_relation,
+    greeting_hint,
+    mismatched_greetings,
+    time_period,
 )
 
 REACT_INPUT = {
@@ -65,13 +69,18 @@ class TestReact:
         expected_user = REACT_USER_TEMPLATE.format(
             now=REACT_INPUT["now"],
             posted_at=REACT_INPUT["posted_at"],
+            posted_period="深夜",
             publish_at=REACT_INPUT["publish_at"],
+            publish_period="昼",
+            day_relation="投稿と同じ日",
+            greeting="こんにちは",
             memories=brain.NO_MEMORIES,
             post_content=REACT_INPUT["post_content"],
         )
         agent_instance.assert_called_once_with(expected_user)
         assert "今日はライブでした" not in REACT_SYSTEM_PROMPT
         assert "14:15" in expected_user and "01:42" in expected_user
+        assert "公開予定の時間帯に合う挨拶: こんにちは" in expected_user
         # 履歴・ツールを持たない使い捨て Agent
         assert agent_cls.call_args.kwargs["callback_handler"] is None
         assert "tools" not in agent_cls.call_args.kwargs
@@ -256,6 +265,7 @@ class TestAutonomous:
         assert "あと 2 日" in user_message and "2026-09-28(月)" in user_message
         assert "- 生誕祭まであと 3 日ｲﾓ🍠" in user_message
         assert "22:00" in user_message
+        assert "公開予定の時間帯に合う挨拶: こんばんは・おやすみ" in user_message
         assert "mem-birthday" not in AUTONOMOUS_SYSTEM_PROMPT
         # 候補にない id は捨てる
         assert result["sources"] == ["mem-birthday"]
@@ -272,6 +282,20 @@ class TestAutonomous:
         user_message = agent_instance.call_args.args[0]
         assert "B. 直近の出来事" in user_message
         assert brain.NO_MEMORIES in user_message  # recent_texts なし
+
+    @pytest.mark.parametrize("kind, label, detail", [
+        ("C", "C. 進行中・これからの活動へのエール", "まだ終わっていないこととして"),
+        ("D", "D. 好み・小ネタ", "いまそれをしている・食べているとは書かない"),
+    ])
+    def test_kind_c_and_d(self, strands, kind, label, detail):
+        _, agent_instance, _ = strands
+        agent_instance.return_value = json.dumps(AUTONOMOUS_JSON, ensure_ascii=False)
+        result = brain.autonomous(kind=kind, candidates=AUTONOMOUS_CANDIDATES, now="n", publish_at="p")
+        user_message = agent_instance.call_args.args[0]
+        assert label in user_message
+        assert detail in user_message
+        assert "公開予定の時間帯に合う挨拶: なし" in user_message  # 時刻が読めない
+        assert result["action"] == "post"
 
     def test_skip_without_sources(self, strands):
         _, agent_instance, _ = strands
@@ -290,6 +314,100 @@ class TestAutonomous:
         result = brain.handle({"task": "autonomous", "input": AUTONOMOUS_INPUT})
         assert result["success"] is True
         assert result["result"]["sources"] == ["mem-birthday"]
+
+
+class TestGreetingRewrite:
+    """合わない挨拶が残ったら同じ会話で 1 回だけ書き直す"""
+
+    def _json(self, text, action="post"):
+        return json.dumps({**REACT_JSON, "action": action, "text": text}, ensure_ascii=False)
+
+    def test_rewrites_once_when_greeting_mismatches(self, strands):
+        _, agent_instance, _ = strands
+        agent_instance.side_effect = [self._json("ジュリちゃんおはようｲﾓ🍠"), self._json("ジュリちゃん眩しいｲﾓ🍠")]
+
+        result = brain.react(**REACT_INPUT)  # 公開予定 14:15 = こんにちは
+
+        assert result["text"] == "ジュリちゃん眩しいｲﾓ🍠"
+        assert agent_instance.call_count == 2
+        retry_message = agent_instance.call_args_list[1].args[0]
+        assert "「おはよう」" in retry_message and "昼" in retry_message
+
+    def test_no_rewrite_when_greeting_matches(self, strands):
+        _, agent_instance, _ = strands
+        agent_instance.return_value = self._json("こんにちはｲﾓ🍠")
+        brain.react(**REACT_INPUT)
+        assert agent_instance.call_count == 1
+
+    def test_no_rewrite_for_skip(self, strands):
+        _, agent_instance, _ = strands
+        agent_instance.return_value = self._json("おはよう", action="skip")
+        brain.react(**REACT_INPUT)
+        assert agent_instance.call_count == 1
+
+    def test_broken_rewrite_keeps_first_proposal(self, strands):
+        _, agent_instance, _ = strands
+        agent_instance.side_effect = [self._json("おはようｲﾓ🍠"), "書き直せません"]
+        assert brain.react(**REACT_INPUT)["text"] == "おはようｲﾓ🍠"
+
+    def test_autonomous_uses_rewritten_sources(self, strands):
+        _, agent_instance, _ = strands
+        first = {**AUTONOMOUS_JSON, "text": "おやすみｲﾓ🍠", "sources": ["mem-prep"]}
+        second = {**AUTONOMOUS_JSON, "text": "楽しみｲﾓ🍠", "sources": ["mem-birthday"]}
+        agent_instance.side_effect = [json.dumps(first, ensure_ascii=False), json.dumps(second, ensure_ascii=False)]
+        # 公開予定 13:00 はこんにちは → 「おやすみ」は合わない
+        result = brain.autonomous(**{**AUTONOMOUS_INPUT, "publish_at": "2026-09-26(土) 13:00 JST"})
+        assert result["text"] == "楽しみｲﾓ🍠"
+        assert result["sources"] == ["mem-birthday"]
+
+
+class TestGreetingHint:
+    @pytest.mark.parametrize("publish_at, expected", [
+        ("2026-09-28(月) 02:02 JST", "なし（挨拶を書かない）"),
+        ("2026-09-28(月) 04:59 JST", "なし（挨拶を書かない）"),
+        ("2026-09-28(月) 05:00 JST", "おはよう"),
+        ("2026-09-28(月) 08:03 JST", "おはよう"),
+        ("2026-09-28(月) 10:59 JST", "おはよう"),
+        ("2026-09-28(月) 11:16 JST", "こんにちは"),
+        ("2026-09-28(月) 17:59 JST", "こんにちは"),
+        ("2026-09-28(月) 18:00 JST", "こんばんは"),
+        ("2026-09-28(月) 21:59 JST", "こんばんは"),
+        ("2026-09-28(月) 22:05 JST", "こんばんは・おやすみ"),
+        ("2026-09-28(月) 23:59 JST", "こんばんは・おやすみ"),
+        ("不明（数時間後）", "なし（挨拶を書かない）"),
+        ("", "なし（挨拶を書かない）"),
+    ])
+    def test_hour_ranges(self, publish_at, expected):
+        assert greeting_hint(publish_at) == expected
+
+    @pytest.mark.parametrize("moment, expected", [
+        ("2026-09-27(日) 01:31 JST", "深夜"),
+        ("2026-09-27(日) 05:00 JST", "朝"),
+        ("2026-09-27(日) 11:16 JST", "昼"),
+        ("2026-09-27(日) 18:00 JST", "夜"),
+        ("不明（数時間後）", "不明"),
+    ])
+    def test_time_period(self, moment, expected):
+        assert time_period(moment) == expected
+
+    def test_day_relation(self):
+        assert day_relation("2026-09-27(日) 11:28 JST", "2026-09-27(日) 14:20 JST") == "投稿と同じ日"
+        assert day_relation("2026-09-27(日) 23:32 JST", "2026-09-28(月) 08:03 JST").startswith("投稿の翌日")
+        assert "「明日」は「今日」" in day_relation("2026-09-27(日) 23:32 JST", "2026-09-28(月) 08:03 JST")
+        assert day_relation("2026-09-26(土) 23:32 JST", "2026-09-28(月) 08:03 JST").startswith("投稿の 2 日後")
+        assert day_relation("x", "2026-09-28(月) 08:03 JST") == "不明"
+
+    def test_mismatched_greetings(self):
+        assert mismatched_greetings("ジュリちゃんおはよう！", "こんにちは") == ["おはよう"]
+        assert mismatched_greetings("だいすきおやすみ、届いた", "おはよう") == ["おやすみ"]
+        assert mismatched_greetings("こんばんは、おやすみ", "こんばんは・おやすみ") == []
+        assert mismatched_greetings("こんにちは", "なし（挨拶を書かない）") == ["こんにちは"]
+        assert mismatched_greetings("かわいい", "おはよう") == []
+
+    def test_rule_is_in_both_prompts(self):
+        for prompt in (REACT_SYSTEM_PROMPT, AUTONOMOUS_SYSTEM_PROMPT):
+            assert "公開予定の時間帯に合う挨拶" in prompt
+            assert "引用する（" in prompt and "のも不可" in prompt
 
 
 class TestPrompts:

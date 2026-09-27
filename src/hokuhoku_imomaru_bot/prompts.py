@@ -7,10 +7,13 @@
 層の切り分け（設計書 §10-8）:
 - CHARACTER_SYSTEM_PROMPT = いも丸が「誰で・どう喋るか」。固定。Memory から注入しない
 - REACT_SYSTEM_PROMPT     = 上に react タスクの出力形式（JSON 提案）と時刻の扱いを足したもの
-- AUTONOMOUS_SYSTEM_PROMPT = 上に autonomous タスク（推しの投稿がない夜の独り言、3b-1）の出力形式と材料の扱いを足したもの
+- AUTONOMOUS_SYSTEM_PROMPT = 上に autonomous タスク（推しの投稿に反応しなかった実行の独り言、3b-1）の出力形式と材料の扱いを足したもの
 - *_USER_TEMPLATE            = いも丸が「何に反応するか」（投稿本文・時刻情報・推しの記憶）。
                                推しの記憶（Memory の retrieve 結果、フェーズ3a-read）はこちら側に注入する
 """
+import re
+from datetime import date
+from typing import List, Optional, Tuple
 
 # 頭脳が未設定・失敗したときのリプライ固定文
 DEFAULT_REPLY_RESPONSE_TEMPLATE = "@{username} ありがとうｲﾓ🍠✨ #さつまいもの民 #びっくえんじぇる"
@@ -61,15 +64,100 @@ CHARACTER_SYSTEM_PROMPT = f"""{_CHARACTER_BASE}
 
 応答文だけを返してください（前置き・説明・引用符は不要）。"""
 
+# 時間帯・挨拶・日付の関係は時刻から決定論で求め、user message に書いて渡す（LLM に時刻から推し量らせない）。
+# 推しの「おはよう」「おやすみ」をそのまま返して昼に「おはよう」と出る、深夜の投稿を「朝から」と書く、
+# 23 時の投稿の「明日」を翌朝の公開でも「明日」と書く、といった事例が続いたため（2026-09-26〜27）
+_GREETING_RULE = """- 挨拶は必須ではない。書くなら、ユーザーメッセージの「公開予定の時間帯に合う挨拶」だけを使うこと。「なし」なら挨拶を書かない
+- 推しの投稿や記憶にある挨拶（おはよう・おやすみ 等）が公開予定の時間帯に合わないときは、その挨拶の言葉を本文に書かないこと。
+  返す（「ジュリちゃんおはよう」）のも、引用する（「おはよう届いたよ」「おはようの姿」）のも不可。挨拶だけの投稿なら、写真・様子・気持ちに反応する"""
+
+GREETING_NONE = "なし（挨拶を書かない）"
+_DATETIME = re.compile(r"(\d{4})-(\d{2})-(\d{2}).*?(\d{1,2}):(\d{2})")
+
+
+def _parse_moment(text: str) -> Optional[Tuple[date, int]]:
+    """「2026-09-27(日) 11:16 JST」形式から (日付, 時) を読む。読めなければ None"""
+    match = _DATETIME.search(text or "")
+    if not match:
+        return None
+    try:
+        return date(int(match.group(1)), int(match.group(2)), int(match.group(3))), int(match.group(4))
+    except ValueError:
+        return None
+
+
+def time_period(moment: str) -> str:
+    """時刻の表記から時間帯（深夜／朝／昼／夜）を返す。読めなければ「不明」"""
+    parsed = _parse_moment(moment)
+    if parsed is None:
+        return "不明"
+    hour = parsed[1]
+    if hour <= 4:
+        return "深夜"
+    if hour <= 10:
+        return "朝"
+    if hour <= 17:
+        return "昼"
+    return "夜"
+
+
+def greeting_hint(publish_at: str) -> str:
+    """
+    公開予定時刻の表記（例: 「2026-09-27(日) 11:16 JST」）から、その時間帯に合う挨拶を返す
+
+    5〜10 時: おはよう／11〜17 時: こんにちは／18〜21 時: こんばんは／22〜23 時: こんばんは・おやすみ／
+    0〜4 時（02:00 枠。起きている人が少ない）と読めないとき: なし
+    """
+    parsed = _parse_moment(publish_at)
+    if parsed is None:
+        return GREETING_NONE
+    hour = parsed[1]
+    if 5 <= hour <= 10:
+        return "おはよう"
+    if 11 <= hour <= 17:
+        return "こんにちは"
+    if 18 <= hour <= 21:
+        return "こんばんは"
+    if 22 <= hour <= 23:
+        return "こんばんは・おやすみ"
+    return GREETING_NONE
+
+
+GREETING_WORDS = ("おはよう", "こんにちは", "こんばんは", "おやすみ")
+
+# 本文に時間帯と合わない挨拶が残ったときに、同じ会話で 1 回だけ書き直しを頼む（頭脳の react / autonomous）
+GREETING_RETRY_TEMPLATE = """本文に、公開予定の時間帯（{period}）に合わない挨拶の言葉「{words}」が入っています。
+返すのも引用するのも不可です。この言葉を使わずに書き直し、同じ形式の JSON オブジェクトだけを返してください。"""
+
+
+def mismatched_greetings(text: str, hint: str) -> List[str]:
+    """本文に含まれる挨拶のうち、公開予定の時間帯に合う挨拶（greeting_hint の結果）にないもの"""
+    return [word for word in GREETING_WORDS if word in text and word not in hint]
+
+
+def day_relation(posted_at: str, publish_at: str) -> str:
+    """投稿時刻と公開予定の日付の関係（公開時点での「今日」「明日」の言い換え）"""
+    posted, publish = _parse_moment(posted_at), _parse_moment(publish_at)
+    if posted is None or publish is None:
+        return "不明"
+    days = (publish[0] - posted[0]).days
+    if days <= 0:
+        return "投稿と同じ日"
+    if days == 1:
+        return "投稿の翌日（投稿の「今日」は「昨日」、「明日」は「今日」と言い換えて書く）"
+    return f"投稿の {days} 日後（投稿の「今日」「明日」はそのまま使わない）"
+
+
 # 頭脳向け: 推しの投稿への反応（react タスク）。JSON の提案を返す
 REACT_SYSTEM_PROMPT = f"""{_CHARACTER_BASE}
 
 時刻について:
 - 応答は投稿された直後ではなく、ユーザーメッセージの「公開予定」の時刻に読まれます
 - 「公開予定」の時刻は、時刻に依存する挨拶（おはよう・こんにちは・おやすみ 等）を選ぶためだけに使うこと
+{_GREETING_RULE}
 - 本文に時刻（「19:15」のような時刻表記）を書かないこと
-- 投稿に書かれた出来事は「投稿時刻」の時点のものとして扱うこと。「朝から」「今夜」のような時間帯の言葉は、公開予定ではなく投稿時刻に合わせる
-- 公開予定が投稿時刻の翌日以降なら「昨日の」「昨夜の」のように時制を補うこと（例: 23 時の投稿「今日撮影した」を翌朝に公開するなら「昨日の撮影」）
+- 投稿に書かれた出来事は「投稿時刻」の時点のものとして扱うこと。「朝から」「今夜」のような時間帯の言葉は、公開予定ではなく投稿時刻の時間帯（ユーザーメッセージの括弧内）に合わせる。時間帯が合わないなら時間帯の言葉を書かない
+- 「公開予定の日」が投稿の翌日以降なら、書かれている言い換えに従って時制を補うこと（例: 23 時の投稿「今日撮影した」を翌朝に公開するなら「昨日の撮影」、「明日のライブ」なら「今日のライブ」）
 - 投稿に書かれていないことを事実として書かないこと（例: 「早く見せたい」を「公開された」「大放出」と書かない）
 
 推しの記憶について:
@@ -94,8 +182,10 @@ emotion_key の選択肢:
 {_EMOTION_CHOICES}"""
 
 REACT_USER_TEMPLATE = """現在時刻: {now}
-投稿時刻: {posted_at}
-公開予定: {publish_at} 頃（次の予約枠。応答はこの時刻に読まれる。本文に時刻は書かない）
+投稿時刻: {posted_at}（{posted_period}）
+公開予定: {publish_at} 頃（{publish_period}。次の予約枠。応答はこの時刻に読まれる。本文に時刻は書かない）
+公開予定の日: {day_relation}
+公開予定の時間帯に合う挨拶: {greeting}
 
 推しの記憶（過去の投稿から抽出。背景知識）:
 {memories}
@@ -107,17 +197,22 @@ REACT_USER_TEMPLATE = """現在時刻: {now}
 # 頭脳向け: 推しの投稿がない夜の独り言（autonomous タスク、3b-1）。JSON の提案を返す
 AUTONOMOUS_SYSTEM_PROMPT = f"""{_CHARACTER_BASE}
 
-今回は推しの投稿への反応ではなく、推しの投稿がない夜に、いも丸がファンとして独り言を投稿します。
-材料は、ユーザーメッセージの「推しの記憶」（推しの過去の投稿から抽出した事実）だけです。
+今回は推しの投稿への反応ではなく、推しの投稿がないときに、いも丸がファンとして独り言を投稿します。
+材料は、ユーザーメッセージの「推しの記憶」（推しの過去の投稿から抽出した事実・好み）だけです。
 
 書き方:
-- 「素案タイプ」に合った調子で書くこと（A: イベントを楽しみにする告知・カウントダウン／B: 終わった出来事の余韻・お礼）
+- 「素案タイプ」に合った調子で書くこと
+  - A: イベントを楽しみにする告知・カウントダウン
+  - B: 終わった出来事の余韻・お礼
+  - C: 推しが取り組んでいること・これからの活動への応援（まだ終わっていないこととして書く）
+  - D: 推しの好きなものへの共感。いも丸の日常に絡めてよいが、推しがいまそれをしている・食べているとは書かない
 - 記憶に書かれていないこと（会場・時間・内容・結果、推しの準備の様子や気持ちなど）を事実として書かないこと。
   推しの様子を推測で書かず、ファンとしての自分の気持ち（楽しみ・応援・お礼）として書くこと
 - タイプ A は「イベント日」の書き方（「あと N 日」「明日」）に合わせ、「今日」「当日」とは書かないこと
 - 引用する元の投稿はありません。「この投稿」「さっきの投稿」のように書かないこと
 - 記憶の本文を羅列・コピーせず、ファンの気持ちとして 1 つの話題にしぼること
 - 本文に時刻（「22:00」のような時刻表記）を書かないこと。「公開予定」は挨拶を選ぶためだけに使うこと
+{_GREETING_RULE}
 - 体調・睡眠・住まい・失敗談など生活の細部は書かないこと
 - 「最近の独り言」と同じ言い回し・同じ切り口にしないこと
 - 記憶が古い、話題として不自然、ファンが書くのがふさわしくないと思ったら、無理に作らず skip にすること
@@ -134,7 +229,8 @@ emotion_key の選択肢:
 {_EMOTION_CHOICES}"""
 
 AUTONOMOUS_USER_TEMPLATE = """現在時刻: {now}
-公開予定: {publish_at} 頃（次の予約枠。独り言はこの時刻に読まれる。本文に時刻は書かない）
+公開予定: {publish_at} 頃（{publish_period}。次の予約枠。独り言はこの時刻に読まれる。本文に時刻は書かない）
+公開予定の時間帯に合う挨拶: {greeting}
 
 素案タイプ: {kind_label}
 {kind_detail}
