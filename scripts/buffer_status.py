@@ -31,7 +31,7 @@ import boto3
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
-from hokuhoku_imomaru_bot.clients.buffer_client import BufferClient  # noqa: E402
+from hokuhoku_imomaru_bot.clients.buffer_client import BufferAPIError, BufferClient  # noqa: E402
 
 REGION = os.environ.get("AWS_REGION", "ap-northeast-1")
 SECRET_NAME = os.environ.get("BUFFER_SECRET_NAME", "imomaru-bot/buffer-api")
@@ -67,7 +67,15 @@ def post_ids_from_logs(hours: float) -> List[str]:
 
 def print_posts(client: BufferClient, post_ids: List[str]) -> None:
     for post_id in post_ids:
-        post = client._graphql(_POST_QUERY, {"id": post_id})["post"]
+        try:
+            post = client._graphql(_POST_QUERY, {"id": post_id})["post"]
+        except BufferAPIError as e:
+            # Buffer UI で手動削除した投稿は not found になる。残りの確認を止めない
+            if "Post not found" not in str(e):
+                raise
+            print(f"== {post_id}  not found（Buffer 側で削除済み）")
+            print()
+            continue
         print(f"== {post['id']}  {post['status']}  due {to_jst(post['dueAt'])}  sent {to_jst(post['sentAt'])} (JST)")
         print(post["text"])
         print()
