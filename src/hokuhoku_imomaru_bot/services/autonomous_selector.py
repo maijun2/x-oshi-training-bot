@@ -15,7 +15,8 @@ AutonomousSelector — 独り言（自律投稿、3b-1）の材料を推しの�
   今日の日付を含む記憶、本文の日付がすべて STALE_DAYS 日より前の記憶（古い「〜時点で」の状態）は除く。
   イベント語を含む記憶は告知のときだけ（終わった出来事は B の担当）。重複キーは "C:<record_id>"
 - D 好み・小ネタ（3b-1 (ii)）: preferences の本人の好み。重複キーは "D:<record_id>"（期間は PostHistoryStore）
-- 優先 A > B > C > D。最初に候補が残ったタイプから最大 MAX_CANDIDATES 件
+- 優先 A > B > C > D。最初に候補が残ったタイプから最大 MAX_CANDIDATES 件（C は MAX_CANDIDATES_BY_KIND の 2 件。
+  複数の活動をまとめて応援するタイプで、3 件だと 1 投稿に話題を詰め込むため。KiroCrew 回答 2026-09-29）
 """
 import logging
 from dataclasses import dataclass, field
@@ -42,6 +43,7 @@ DEFAULT_REGION = "ap-northeast-1"
 MAX_PAGES = 5
 PAGE_SIZE = 100
 MAX_CANDIDATES = 3
+MAX_CANDIDATES_BY_KIND = {"C": 2}
 MAX_DAYS_AHEAD = 14
 RECENT_DAYS = 3
 ONGOING_DAYS = 14
@@ -92,7 +94,7 @@ def _parse_created_at(value: Any) -> Optional[datetime]:
 
 
 def _selection(kind: str, records: List[MemoryCandidate]) -> Optional[AutonomousSelection]:
-    candidates = records[:MAX_CANDIDATES]
+    candidates = records[:MAX_CANDIDATES_BY_KIND.get(kind, MAX_CANDIDATES)]
     if not candidates:
         return None
     return AutonomousSelection(

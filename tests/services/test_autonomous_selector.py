@@ -181,6 +181,13 @@ class TestSelectC:
         song = _rec("mem-song", "甘木ジュリは歌の練習をしている", 1)
         assert select_from([song], NOW, {"C:mem-song"}) is None
 
+    def test_c_caps_candidates_at_two_newest_first(self):
+        # C は 1 投稿に話題を詰め込まないよう 2 件まで（KiroCrew 回答 2026-09-29。09-28 に 3 話題の例）
+        records = [_rec(f"mem-{i}", f"甘木ジュリは新曲{i}の練習をしている", created_days_ago=i + 1) for i in range(4)]
+        selection = select_from(records, NOW, set())
+        assert selection.kind == "C"
+        assert [c.record_id for c in selection.candidates] == ["mem-0", "mem-1"]
+
 
 def _pref(record_id, preference, context="ユーザーが自身の投稿で好きと述べている", created_days_ago=5.0):
     text = json.dumps({"context": context, "preference": preference, "categories": ["food"]}, ensure_ascii=False)

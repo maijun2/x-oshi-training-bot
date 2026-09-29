@@ -50,9 +50,11 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL_ID = "moonshotai.kimi-k2.5"  # 東京 In-Region。Grok 4.6 はアカウント提供制限で不可（2026-09-12、サポート問い合わせ中）
 DEFAULT_REGION = "ap-northeast-1"
-# Reasoning が出力枠を消費する可能性があるため Lambda 側の 140 字制限より大きく取る
+# Bedrock 経由の Kimi K2.5 は推論を出さない（Instant 相当、2026-09-29 Converse 実測）。
+# 本文 140 字 ＋ JSON（出力は日次最大 303 tokens）に対して余裕を持たせる
 RESPONSE_MAX_TOKENS = 1024
-RESPONSE_TEMPERATURE = 0.7
+# Kimi K2.5 の推奨は Thinking 1.0 / Instant 0.6（https://huggingface.co/moonshotai/Kimi-K2.5）
+RESPONSE_TEMPERATURE = 0.6
 
 REACT_ACTIONS = frozenset({"post", "skip"})
 

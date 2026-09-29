@@ -430,6 +430,19 @@ class TestPrompts:
             assert "語尾は必ず" not in prompt
             assert "常に語尾に" not in prompt
 
+    def test_no_image_content_and_no_unverified_oshi_actions(self):
+        # 頭脳は画像を受け取っていない。推しの未確認の行動は断定せず、自分の習慣は主語「ぼく」（KiroCrew 回答 2026-09-29）
+        for prompt in (CHARACTER_SYSTEM_PROMPT, REACT_SYSTEM_PROMPT, AUTONOMOUS_SYSTEM_PROMPT):
+            assert "画像・写真・動画の内容" in prompt
+            assert "推しの行動・習慣・意図を、投稿や記憶に書かれていないまま断定しない" in prompt
+            assert "主語「ぼく」を書く" in prompt
+        for prompt in (REACT_SYSTEM_PROMPT, AUTONOMOUS_SYSTEM_PROMPT):
+            assert "写真・様子" not in prompt
+
+    def test_autonomous_topics(self):
+        assert "話題を 1 つにしぼる" in AUTONOMOUS_SYSTEM_PROMPT
+        assert "タイプ C だけは最大 2 つ" in AUTONOMOUS_SYSTEM_PROMPT
+
     def test_react_posts_on_guest_appearances(self):
         # 他の配信者の配信・コラボへの出演は skip しない（maijun 判断 2026-09-26、09-21 23:58 回の初 skip）
         assert "他の配信者の配信・コラボ・イベントに出演・参加" in REACT_SYSTEM_PROMPT
