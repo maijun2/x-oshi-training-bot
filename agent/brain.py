@@ -36,6 +36,7 @@ from prompts import (
     AUTONOMOUS_USER_TEMPLATE,
     CHARACTER_SYSTEM_PROMPT,
     GREETING_RETRY_TEMPLATE,
+    LATE_NIGHT_RETRY_TEMPLATE,
     REACT_SYSTEM_PROMPT,
     REACT_USER_TEMPLATE,
     REPLY_USER_TEMPLATE,
@@ -43,6 +44,7 @@ from prompts import (
     day_relation,
     greeting_hint,
     mismatched_greetings,
+    stale_tomorrow_words,
     time_period,
 )
 
@@ -158,31 +160,43 @@ def _run(agent: Agent, user_message: str) -> str:
     return str(result).strip()
 
 
-def _propose(agent: Agent, user_message: str, publish_at: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+def _rewrite_requests(text: str, publish_at: str, posted_at: Optional[str]) -> List[str]:
+    """本文を書き直してほしい理由（公開予定の時間帯と合わない挨拶・深夜の投稿の「明日」）。空なら書き直し不要"""
+    requests = []
+    words = mismatched_greetings(text, greeting_hint(publish_at))
+    if words:
+        requests.append(GREETING_RETRY_TEMPLATE.format(period=time_period(publish_at), words="」「".join(words)))
+    tomorrow = stale_tomorrow_words(text, posted_at, publish_at) if posted_at else []
+    if tomorrow:
+        requests.append(LATE_NIGHT_RETRY_TEMPLATE.format(words="」「".join(tomorrow)))
+    return requests
+
+
+def _propose(
+    agent: Agent, user_message: str, publish_at: str, posted_at: Optional[str] = None
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """
     JSON 提案を生成して形を検証する。(モデル出力の JSON, 検証済みの提案) を返す
 
-    post の本文に公開予定の時間帯と合わない挨拶（推しの「おはよう」の返し・引用など）が残っていれば、
-    同じ会話で 1 回だけ書き直しを頼む。書き直しでも残る・形が崩れるときは最初の提案を使う（ログのみ）
+    post の本文に公開予定の時間帯と合わない挨拶（推しの「おはよう」の返し・引用など）や、
+    深夜の投稿の「明日」（posted_at があるときだけ）が残っていれば、同じ会話で 1 回だけ書き直しを頼む。
+    書き直しでも残る・形が崩れるときは最初の提案を使う（ログのみ）
     """
     raw = _parse_json_object(_run(agent, user_message))
     proposal = _validate_reaction(raw)
-    hint = greeting_hint(publish_at)
-    words = mismatched_greetings(proposal["text"], hint) if proposal["action"] == "post" else []
-    if not words:
+    requests = _rewrite_requests(proposal["text"], publish_at, posted_at) if proposal["action"] == "post" else []
+    if not requests:
         return raw, proposal
 
-    logger.info("greeting mismatch words=%s hint=%s; asking to rewrite once", words, hint)
+    logger.info("rewrite requested (%d): %s", len(requests), " / ".join(r.splitlines()[0] for r in requests))
     try:
-        retry_raw = _parse_json_object(_run(agent, GREETING_RETRY_TEMPLATE.format(
-            period=time_period(publish_at), words="」「".join(words),
-        )))
+        retry_raw = _parse_json_object(_run(agent, "\n\n".join(requests)))
         retry = _validate_reaction(retry_raw)
     except ReactFormatError as e:
-        logger.warning("greeting rewrite failed: %s; using the first proposal", e)
+        logger.warning("rewrite failed: %s; using the first proposal", e)
         return raw, proposal
-    if retry["action"] == "post" and mismatched_greetings(retry["text"], hint):
-        logger.warning("greeting mismatch remains after rewrite; using the rewrite")
+    if retry["action"] == "post" and _rewrite_requests(retry["text"], publish_at, posted_at):
+        logger.warning("rewrite target remains after rewrite; using the rewrite")
     return retry_raw, retry
 
 
@@ -263,7 +277,7 @@ def react(
         memories="\n".join(f"- {line}" for line in memories) if memories else NO_MEMORIES,
         post_content=post_content,
     )
-    _, reaction = _propose(agent, user_message, publish_at)
+    _, reaction = _propose(agent, user_message, publish_at, posted_at)
     reaction["memory_count"] = len(memories) if recalled else -1
     return reaction
 

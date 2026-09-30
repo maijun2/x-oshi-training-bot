@@ -23,6 +23,7 @@ from prompts import (
     day_relation,
     greeting_hint,
     mismatched_greetings,
+    stale_tomorrow_words,
     time_period,
 )
 
@@ -72,7 +73,7 @@ class TestReact:
             posted_period="深夜",
             publish_at=REACT_INPUT["publish_at"],
             publish_period="昼",
-            day_relation="投稿と同じ日",
+            day_relation=day_relation(REACT_INPUT["posted_at"], REACT_INPUT["publish_at"]),
             greeting="こんにちは",
             memories=brain.NO_MEMORIES,
             post_content=REACT_INPUT["post_content"],
@@ -81,6 +82,7 @@ class TestReact:
         assert "今日はライブでした" not in REACT_SYSTEM_PROMPT
         assert "14:15" in expected_user and "01:42" in expected_user
         assert "公開予定の時間帯に合う挨拶: こんにちは" in expected_user
+        assert "公開予定の日: 投稿と同じ日（投稿は深夜。" in expected_user
         # 履歴・ツールを持たない使い捨て Agent
         assert agent_cls.call_args.kwargs["callback_handler"] is None
         assert "tools" not in agent_cls.call_args.kwargs
@@ -350,6 +352,29 @@ class TestGreetingRewrite:
         agent_instance.side_effect = [self._json("おはようｲﾓ🍠"), "書き直せません"]
         assert brain.react(**REACT_INPUT)["text"] == "おはようｲﾓ🍠"
 
+    def test_rewrites_tomorrow_of_late_night_post(self, strands):
+        # REACT_INPUT は 01:42 の投稿を同じ日の 14:15 に公開 → 「あした」は寝て起きたあとの今日
+        _, agent_instance, _ = strands
+        agent_instance.side_effect = [self._json("またあしたねｲﾓ🍠"), self._json("だいすきｲﾓ🍠")]
+        result = brain.react(**REACT_INPUT)
+        assert result["text"] == "だいすきｲﾓ🍠"
+        retry_message = agent_instance.call_args_list[1].args[0]
+        assert "「あした」" in retry_message and "深夜" in retry_message
+
+    def test_greeting_and_tomorrow_in_one_rewrite(self, strands):
+        _, agent_instance, _ = strands
+        agent_instance.side_effect = [self._json("おはよう、また明日ｲﾓ🍠"), self._json("だいすきｲﾓ🍠")]
+        brain.react(**REACT_INPUT)
+        assert agent_instance.call_count == 2
+        retry_message = agent_instance.call_args_list[1].args[0]
+        assert "「おはよう」" in retry_message and "「明日」" in retry_message
+
+    def test_no_tomorrow_rewrite_for_daytime_post(self, strands):
+        _, agent_instance, _ = strands
+        agent_instance.return_value = self._json("明日のライブ楽しみｲﾓ🍠")
+        brain.react(**{**REACT_INPUT, "posted_at": "2026-09-16(火) 11:42 JST"})
+        assert agent_instance.call_count == 1
+
     def test_autonomous_uses_rewritten_sources(self, strands):
         _, agent_instance, _ = strands
         first = {**AUTONOMOUS_JSON, "text": "おやすみｲﾓ🍠", "sources": ["mem-prep"]}
@@ -396,6 +421,17 @@ class TestGreetingHint:
         assert "「明日」は「今日」" in day_relation("2026-09-27(日) 23:32 JST", "2026-09-28(月) 08:03 JST")
         assert day_relation("2026-09-26(土) 23:32 JST", "2026-09-28(月) 08:03 JST").startswith("投稿の 2 日後")
         assert day_relation("x", "2026-09-28(月) 08:03 JST") == "不明"
+        # 深夜の投稿の「あした」は寝て起きたあとの同じ日付
+        assert "寝て起きたあとの今日" in day_relation("2026-09-30(水) 03:22 JST", "2026-09-30(水) 11:14 JST")
+        assert day_relation("2026-09-30(水) 05:00 JST", "2026-09-30(水) 11:14 JST") == "投稿と同じ日"
+
+    def test_stale_tomorrow_words(self):
+        assert stale_tomorrow_words("またあしたね", "2026-09-30(水) 03:22 JST", "2026-09-30(水) 11:14 JST") == ["あした"]
+        assert stale_tomorrow_words("また明日", "2026-09-30(水) 03:22 JST", "2026-09-30(水) 11:14 JST") == ["明日"]
+        # 昼の投稿・翌日公開（翌日の言い換えは day_relation が指示する）は対象外
+        assert stale_tomorrow_words("また明日", "2026-09-30(水) 13:22 JST", "2026-09-30(水) 19:14 JST") == []
+        assert stale_tomorrow_words("また明日", "2026-09-29(火) 03:22 JST", "2026-09-30(水) 11:14 JST") == []
+        assert stale_tomorrow_words("また明日", "x", "2026-09-30(水) 11:14 JST") == []
 
     def test_mismatched_greetings(self):
         assert mismatched_greetings("ジュリちゃんおはよう！", "こんにちは") == ["おはよう"]
