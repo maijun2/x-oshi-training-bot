@@ -13,6 +13,7 @@ import json
 
 from src.hokuhoku_imomaru_bot.memory_filters import (
     extract_dates,
+    extract_event_dates,
     is_event,
     is_excluded_for_autonomous,
     is_excluded_preference_for_autonomous,
@@ -49,6 +50,18 @@ class TestMemoryFilters:
     def test_year_less_date_does_not_match_inside_full_date(self):
         # 「2026年12月28日」の「2月28日」を年なしの日付として拾わない
         assert extract_dates("2026年12月28日", 2025) == [date(2026, 12, 28)]
+
+    @pytest.mark.parametrize("text, expected", [
+        ("2026年9月30日時点で、豊洲PITのライブに関心を示している", []),
+        ("2026年9月28日17時05分（JST）時点で配信を見ていた", []),
+        ("2026年9月15日00:57 JST時点で配信を見送ると投稿", []),
+        ("9月23日時点で、SPARK2026の9月22日の出演を振り返った", [date(2026, 9, 22)]),
+        ("2026年9月24日にラジオの収録を行った", [date(2026, 9, 24)]),
+        ("2026-09-24 時点の状態", []),
+    ])
+    def test_extract_event_dates_skips_snapshot_dates(self, text, expected):
+        assert extract_event_dates(text, 2026) == expected
+        assert extract_dates(text, 2026)  # extract_dates は時点の日付も従来どおり返す
 
     @pytest.mark.parametrize("text, excluded", [
         ("ユーザーは@juri_bigangelの投稿を閲覧している", True),   # ファン視点
@@ -117,7 +130,7 @@ class TestSelectB:
         assert select_from([SPARK, BIRTHDAY], NOW, set()).kind == "A"
 
     def test_b_window_is_three_days(self):
-        old = _rec("mem-old", "甘木ジュリは福岡のライブに出演した", created_days_ago=3.01)
+        old = _rec("mem-old", "甘木ジュリは2026年9月23日に福岡のライブに出演した", created_days_ago=3.01)
         assert select_from([old], NOW, set()) is None
 
     def test_b_requires_event_words(self):
@@ -135,8 +148,26 @@ class TestSelectB:
         assert selection.kind == "C"
         assert [c.record_id for c in selection.candidates] == ["mem-tower", "mem-campaign"]
 
+    def test_b_requires_past_event_date(self):
+        # 日付なし・「時点」の日付だけの記憶は、終わった出来事か分からないので B にしない
+        undated = _rec("mem-undated", "甘木ジュリは豊洲PITのライブに出演する")
+        snapshot = _rec("mem-snapshot", "甘木ジュリは2026年9月25日時点で、豊洲PITのライブへの関心を示す投稿を共有している")
+        assert select_from([undated, snapshot], NOW, set()) is None
+
+    def test_snapshot_of_today_event_is_not_b(self):
+        # 2026-10-01 13:18 の本番: 当日夜のライブ（A の記憶では 10/1）を「9/30 時点」の記憶から余韻として書いた
+        now = datetime(2026, 10, 1, 13, 18, tzinfo=JST)
+        announce = MemoryCandidate("mem-fes", "甘木ジュリは2026年10月1日に豊洲PITのふぃくふぇす！に出演予定", now - timedelta(days=3))
+        snapshot = MemoryCandidate(
+            "mem-0436",
+            "甘木ジュリ（@juri_bigangel）は2026年9月30日時点で、豊洲PIT開催・撮影可能曲あり・"
+            "のんふぃく！さん主催のライブへの参加または関心を示す投稿を共有している。",
+            now - timedelta(hours=19),
+        )
+        assert select_from([announce, snapshot], now, set()) is None
+
     def test_b_caps_candidates_newest_first(self):
-        records = [_rec(f"mem-{i}", f"甘木ジュリは配信{i}をした", created_days_ago=0.1 * (i + 1)) for i in range(5)]
+        records = [_rec(f"mem-{i}", f"甘木ジュリは9月25日に配信{i}をした", created_days_ago=0.1 * (i + 1)) for i in range(5)]
         selection = select_from(records, NOW, set())
         assert [c.record_id for c in selection.candidates] == ["mem-0", "mem-1", "mem-2"]
 

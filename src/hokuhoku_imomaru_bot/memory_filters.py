@@ -40,6 +40,8 @@ PREFERENCE_EXTRA_EXCLUDE_WORDS = ("苦手", "隠して", "不満")
 _DATE_WITH_YEAR = re.compile(r"(\d{4})年(\d{1,2})月(\d{1,2})日")
 _DATE_ISO = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
 _DATE_NO_YEAR = re.compile(r"(?<![\d年])(\d{1,2})月(\d{1,2})日")
+# 日付の直後の「時点」（間に時刻・タイムゾーンを挟んでもよい）
+_SNAPSHOT_SUFFIX = re.compile(r"\s*(?:\d{1,2}(?:時\d{1,2}分|:\d{2})\s*(?:[（(]?JST[）)]?)?\s*)?時点")
 
 
 def is_fan_view(text: str) -> bool:
@@ -119,6 +121,26 @@ def _safe_date(year: int, month: int, day: int) -> List[date]:
         return []
 
 
+def _iter_dates(text: str, base_year: int) -> List[Tuple[date, int]]:
+    """本文の日付と、その直後の位置の組（「年付き → ISO → 年なし」の順、重複あり）"""
+    found: List[Tuple[date, int]] = []
+    for m in _DATE_WITH_YEAR.finditer(text):
+        found += [(d, m.end()) for d in _safe_date(int(m.group(1)), int(m.group(2)), int(m.group(3)))]
+    for m in _DATE_ISO.finditer(text):
+        found += [(d, m.end()) for d in _safe_date(int(m.group(1)), int(m.group(2)), int(m.group(3)))]
+    for m in _DATE_NO_YEAR.finditer(text):
+        found += [(d, m.end()) for d in _safe_date(base_year, int(m.group(1)), int(m.group(2)))]
+    return found
+
+
+def _unique(dates: List[date]) -> List[date]:
+    unique: List[date] = []
+    for d in dates:
+        if d not in unique:
+            unique.append(d)
+    return unique
+
+
 def extract_dates(text: str, base_year: int) -> List[date]:
     """
     本文に書かれた日付を抜き出す（重複なし、出現順）
@@ -126,15 +148,15 @@ def extract_dates(text: str, base_year: int) -> List[date]:
     「2026年9月28日」「2026-09-28」と、年なしの「9月28日」（base_year で補う）を読む。
     存在しない日付（2 月 30 日など）は捨てる。
     """
-    found: List[date] = []
-    for m in _DATE_WITH_YEAR.finditer(text):
-        found += _safe_date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-    for m in _DATE_ISO.finditer(text):
-        found += _safe_date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-    for m in _DATE_NO_YEAR.finditer(text):
-        found += _safe_date(base_year, int(m.group(1)), int(m.group(2)))
-    unique: List[date] = []
-    for d in found:
-        if d not in unique:
-            unique.append(d)
-    return unique
+    return _unique([d for d, _ in _iter_dates(text, base_year)])
+
+
+def extract_event_dates(text: str, base_year: int) -> List[date]:
+    """
+    extract_dates のうち、出来事の日付だけ（「2026年9月30日時点で」のような抽出時点の日付を除く）
+
+    「9月28日17時05分（JST）時点」「9月15日00:57 JST時点」のように時刻を挟む形も時点とみなす。
+    タイプ B（終わった出来事）の判定用。時点の日付を出来事の日と取り違えると、
+    開催前のイベントを終わったものとして書いてしまう（2026-10-01 13:18 の本番）
+    """
+    return _unique([d for d, end in _iter_dates(text, base_year) if not _SNAPSHOT_SUFFIX.match(text, end)])
