@@ -9,8 +9,10 @@ AutonomousSelector — 独り言（自律投稿、3b-1）の材料を推しの�
 - A 未来イベント: 本文の日付のうち今日より後で最も近い日（1〜MAX_DAYS_AHEAD 日後）。
   当日は対象外（22:00 公開の時点でイベントが終わっていることが多い。maijun 決定 2026-09-26）。
   同じイベント日の記憶をまとめて候補にし、重複キーは "A:<イベント日>:<残り日数>"（毎晩のカウントダウン）
-- B 直近の出来事: イベント語を含み、抽出（createdAt）が RECENT_DAYS 日以内。今日以降の日付を含む記憶と、
-  告知（予定・決定など。まだ終わっていない）は除く。重複キーは "B:<record_id>"
+- B 直近の出来事: イベント語を含み、抽出（createdAt）が RECENT_DAYS 日以内で、本文に今日より前の出来事の日付
+  （「〜時点」の日付は除く）がある記憶。今日以降の日付を含む記憶と、告知（予定・決定など。まだ終わっていない）は除く。
+  日付なし・時点の日付だけの記憶は、終わったかどうか分からないので B にしない（10-01 13:18 の本番で、
+  「9月30日時点で…ライブに関心」を当日夜のライブの余韻として書いた）。重複キーは "B:<record_id>"
 - C 進行中・これからの活動（3b-1 (ii)）: 取り組み語・告知語を含み、抽出が ONGOING_DAYS 日以内。A に当たる記憶、
   今日の日付を含む記憶、本文の日付がすべて STALE_DAYS 日より前の記憶（古い「〜時点で」の状態）は除く。
   イベント語を含む記憶は告知のときだけ（終わった出来事は B の担当）。重複キーは "C:<record_id>"
@@ -28,6 +30,7 @@ from botocore.config import Config
 
 from ..memory_filters import (
     extract_dates,
+    extract_event_dates,
     is_announcement,
     is_event,
     is_excluded_for_autonomous,
@@ -129,9 +132,12 @@ def select_from(
     # A: 未来イベント
     by_event: Dict[date, List[MemoryCandidate]] = {}
     dates_of: Dict[str, List[date]] = {}
+    event_dates_of: Dict[str, List[date]] = {}
     for record in usable:
-        dates = extract_dates(record.text, record.created_at.astimezone(JST).year)
+        year = record.created_at.astimezone(JST).year
+        dates = extract_dates(record.text, year)
         dates_of[record.record_id] = dates
+        event_dates_of[record.record_id] = extract_event_dates(record.text, year)
         ahead = [d for d in dates if 1 <= (d - today).days <= MAX_DAYS_AHEAD]
         if ahead:
             by_event.setdefault(min(ahead), []).append(record)
@@ -158,6 +164,7 @@ def select_from(
         and is_event(r.text)
         and not is_announcement(r.text)
         and not any(d >= today for d in dates_of[r.record_id])
+        and any(d < today for d in event_dates_of[r.record_id])
         and f"B:{r.record_id}" not in used_keys
     ])
     if selection:
