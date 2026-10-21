@@ -37,6 +37,7 @@ from prompts import (
     CHARACTER_SYSTEM_PROMPT,
     GREETING_RETRY_TEMPLATE,
     LATE_NIGHT_RETRY_TEMPLATE,
+    OWN_EXPERIENCE_RETRY_TEMPLATE,
     REACT_SYSTEM_PROMPT,
     REACT_USER_TEMPLATE,
     REPLY_USER_TEMPLATE,
@@ -44,6 +45,7 @@ from prompts import (
     day_relation,
     greeting_hint,
     mismatched_greetings,
+    own_experience_words,
     stale_tomorrow_words,
     time_period,
 )
@@ -161,7 +163,7 @@ def _run(agent: Agent, user_message: str) -> str:
 
 
 def _rewrite_requests(text: str, publish_at: str, posted_at: Optional[str]) -> List[str]:
-    """本文を書き直してほしい理由（公開予定の時間帯と合わない挨拶・深夜の投稿の「明日」）。空なら書き直し不要"""
+    """本文を書き直してほしい理由（公開予定の時間帯と合わない挨拶・深夜の投稿の「明日」・いも丸自身の経験）。空なら書き直し不要"""
     requests = []
     words = mismatched_greetings(text, greeting_hint(publish_at))
     if words:
@@ -169,6 +171,9 @@ def _rewrite_requests(text: str, publish_at: str, posted_at: Optional[str]) -> L
     tomorrow = stale_tomorrow_words(text, posted_at, publish_at) if posted_at else []
     if tomorrow:
         requests.append(LATE_NIGHT_RETRY_TEMPLATE.format(words="」「".join(tomorrow)))
+    own = own_experience_words(text)
+    if own:
+        requests.append(OWN_EXPERIENCE_RETRY_TEMPLATE.format(words="」「".join(own)))
     return requests
 
 
@@ -179,7 +184,8 @@ def _propose(
     JSON 提案を生成して形を検証する。(モデル出力の JSON, 検証済みの提案) を返す
 
     post の本文に公開予定の時間帯と合わない挨拶（推しの「おはよう」の返し・引用など）や、
-    深夜の投稿の「明日」（posted_at があるときだけ）が残っていれば、同じ会話で 1 回だけ書き直しを頼む。
+    深夜の投稿の「明日」（posted_at があるときだけ）、いも丸自身の経験（「ぼくも昨日食べた」等）が残っていれば、
+    同じ会話で 1 回だけ書き直しを頼む。
     書き直しでも残る・形が崩れるときは最初の提案を使う（ログのみ）
     """
     raw = _parse_json_object(_run(agent, user_message))
@@ -292,7 +298,10 @@ AUTONOMOUS_KIND_LABELS = {
 AUTONOMOUS_KIND_DETAILS = {
     "B": "直近数日のうちにあった出来事です。すでに終わったこととして書くこと",
     "C": "推しが取り組んでいること・これからの活動です。まだ終わっていないこととして、応援・楽しみの気持ちで書くこと",
-    "D": "推しの好きなものです。いも丸の日常に絡めた共感として書き、推しがいまそれをしている・食べているとは書かないこと",
+    "D": (
+        "推しの好きなものです。推しの好みへの共感・興味（おいしそう・気になる・食べてみたい 等）として書くこと。"
+        "「ぼくも好き・食べた・買う」のような、あなた自身の経験・好みは書かず、推しがいまそれをしている・食べているとも書かないこと"
+    ),
 }
 
 

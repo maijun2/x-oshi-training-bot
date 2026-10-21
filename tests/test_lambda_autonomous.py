@@ -260,6 +260,24 @@ class TestPost:
         _, _, deps = _run(deps=_deps(history=history))
         assert deps["ai_generator"].generate_autonomous.call_args.kwargs["recent_texts"] == ["朝の独り言"]
 
+    def test_recent_texts_are_last_7_days_up_to_10(self):
+        history = [
+            HistoryEntry(posted_date=f"2026-09-{d:02d}#{h}", kind="B", text=f"{d}日{h}時")
+            for d in range(25, 19, -1) for h in (21, 13)
+        ] + [HistoryEntry(posted_date="2026-09-18#13", kind="B", text="8日前")]
+        _, _, deps = _run(deps=_deps(history=history))
+        recent = deps["ai_generator"].generate_autonomous.call_args.kwargs["recent_texts"]
+        assert recent == [e.text for e in history[:10]]
+        assert "8日前" not in recent
+
+    def test_recent_texts_exclude_older_than_7_days(self):
+        history = [
+            HistoryEntry(posted_date="2026-09-19#13", kind="B", text="7日前"),
+            HistoryEntry(posted_date="2026-09-18#21", kind="B", text="8日前"),
+        ]
+        _, _, deps = _run(deps=_deps(history=history))
+        assert deps["ai_generator"].generate_autonomous.call_args.kwargs["recent_texts"] == ["7日前"]
+
     def test_dry_run_skip_records_nothing(self):
         skip = Reaction(action="skip", text="", emotion_key=None, reason="r")
         status, _, deps = _run(deps=_deps(reaction=skip), dry_run=True)

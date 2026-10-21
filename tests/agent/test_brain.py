@@ -23,6 +23,7 @@ from prompts import (
     day_relation,
     greeting_hint,
     mismatched_greetings,
+    own_experience_words,
     stale_tomorrow_words,
     time_period,
 )
@@ -287,7 +288,7 @@ class TestAutonomous:
 
     @pytest.mark.parametrize("kind, label, detail", [
         ("C", "C. 進行中・これからの活動へのエール", "まだ終わっていないこととして"),
-        ("D", "D. 好み・小ネタ", "いまそれをしている・食べているとは書かない"),
+        ("D", "D. 好み・小ネタ", "あなた自身の経験・好みは書かず"),
     ])
     def test_kind_c_and_d(self, strands, kind, label, detail):
         _, agent_instance, _ = strands
@@ -375,6 +376,23 @@ class TestGreetingRewrite:
         brain.react(**{**REACT_INPUT, "posted_at": "2026-09-16(火) 11:42 JST"})
         assert agent_instance.call_count == 1
 
+    def test_rewrites_own_experience(self, strands):
+        _, agent_instance, _ = strands
+        agent_instance.side_effect = [
+            self._json("湯葉鍋、ぼくも昨日食べたんだｲﾓ🍠"),
+            self._json("湯葉鍋、おいしそうｲﾓ🍠"),
+        ]
+        result = brain.react(**{**REACT_INPUT, "posted_at": "2026-09-16(火) 11:42 JST"})
+        assert result["text"] == "湯葉鍋、おいしそうｲﾓ🍠"
+        retry_message = agent_instance.call_args_list[1].args[0]
+        assert "「ぼくも昨日食べた」" in retry_message
+
+    def test_no_rewrite_for_fan_feelings(self, strands):
+        _, agent_instance, _ = strands
+        agent_instance.return_value = self._json("ぼくも食べたくなってきた\nぼくも応援してるｲﾓ🍠")
+        brain.react(**{**REACT_INPUT, "posted_at": "2026-09-16(火) 11:42 JST"})
+        assert agent_instance.call_count == 1
+
     def test_autonomous_uses_rewritten_sources(self, strands):
         _, agent_instance, _ = strands
         first = {**AUTONOMOUS_JSON, "text": "おやすみｲﾓ🍠", "sources": ["mem-prep"]}
@@ -432,6 +450,18 @@ class TestGreetingHint:
         assert stale_tomorrow_words("また明日", "2026-09-30(水) 13:22 JST", "2026-09-30(水) 19:14 JST") == []
         assert stale_tomorrow_words("また明日", "2026-09-29(火) 03:22 JST", "2026-09-30(水) 11:14 JST") == []
         assert stale_tomorrow_words("また明日", "x", "2026-09-30(水) 11:14 JST") == []
+
+    def test_own_experience_words(self):
+        # 2026-10-13〜16 の本番文面
+        assert own_experience_words("湯葉鍋、ぼくも昨日食べたんだ") == ["ぼくも昨日食べた"]
+        assert own_experience_words("ホタルイカの漬け、ぼくも大好きなんだ") == ["ぼくも大好きなんだ"]
+        assert own_experience_words("ローソンの冷凍汁なし坦々麺、ぼくも気になってたんだ") == ["ぼくも気になってたんだ"]
+        assert own_experience_words("生ハムご飯、ぼくも週末の楽しみにしてるんだ") == ["ぼくも週末の楽しみにしてるんだ"]
+        assert own_experience_words("ぼくも夜更かししちゃったからお揃いだね") == ["ぼくも夜更かし"]
+        # ファンとしての気持ち・行動は対象外
+        for text in ("ぼくも食べたくなってきた", "ぼくも食べてみたくなったよ", "ぼくも応援してる",
+                     "TikTok、ぼくも見たよ", "ぼくも嬉しい", "ぼくも楽しみにしてるよ", "食べたんだね"):
+            assert own_experience_words(text) == [], text
 
     def test_mismatched_greetings(self):
         assert mismatched_greetings("ジュリちゃんおはよう！", "こんにちは") == ["おはよう"]
