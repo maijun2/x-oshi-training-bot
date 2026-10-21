@@ -4,7 +4,7 @@ Lambda関数のメインハンドラー
 EventBridgeからトリガーされ、ボットのメインロジックを実行します。
 """
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 import boto3
@@ -655,7 +655,10 @@ def _process_bot_logic(
 
 # 独り言（自律投稿、3b-1）
 AUTONOMOUS_MIN_REMAINING_MS = 120_000   # 頭脳の read timeout（90 秒）＋ Buffer・SES の余裕
-AUTONOMOUS_RECENT_TEXTS = 3             # 頭脳に渡す直近の独り言の件数
+# 頭脳に渡す直近の独り言（同じ出来事・話題なら頭脳が skip する）。B が同じイベントを別の記憶経由で
+# 繰り返した例（SPARK2026 を 10-11〜13 に 3 日連続）があり、3 件では足りないため 7 日分に広げた（2026-10-21）
+AUTONOMOUS_RECENT_TEXTS = 10            # 件数の上限
+AUTONOMOUS_RECENT_DAYS = 7              # 日数
 AUTONOMOUS_LOCK_PREFIX = "autonomous-"  # processed-tweets の冪等ロック（1 実行 1 件。数値のツイート ID と衝突しない）
 AUTONOMOUS_DAILY_POSTS = 2              # 1 日に Buffer へ入れる独り言の上限（反応が主・独り言が従。設計書 §10-11）
 AUTONOMOUS_DAILY_ATTEMPTS = 3           # 1 日に頭脳を呼ぶ回数の上限（skip メールの連発を防ぐ）
@@ -763,7 +766,10 @@ def _autonomous_post(
         publish_at=publish_at,
         days_left=selection.days_left,
         event_date=selection.event_date,
-        recent_texts=[e.text for e in history if not e.skipped][:AUTONOMOUS_RECENT_TEXTS],
+        recent_texts=[
+            e.text for e in history
+            if not e.skipped and e.day >= (today - timedelta(days=AUTONOMOUS_RECENT_DAYS)).isoformat()
+        ][:AUTONOMOUS_RECENT_TEXTS],
     )
     if reaction.source == "error":
         # ERROR ログ（アラーム）は AIGenerator が出している。ロック済みなのでこの実行では再試行しない
