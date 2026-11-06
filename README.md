@@ -224,6 +224,7 @@ uv run npx cdk deploy
 | 項目 | 内容 |
 |------|------|
 | デプロイ方式 | direct code deploy（`dist/brain.zip`、`PYTHON_3_12`、arm64）。`agent/` 配下のコードと `agent/requirements.txt` を `scripts/build_agent_package.sh` が zip 化し、CDK が S3 アセットとして配置 |
+| プラットフォーム | `V2`（スナップショットから起動、2026-11-06 移行。`stack.py` の `BRAIN_PLATFORM_VERSION`）。更新は `READY` まで数分かかる。起動時に時刻・乱数・認証情報を保持しない（[Runtime V2 向けの最適化](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-v2-optimize.html)）。戻すときは値を `V1` にして `cdk deploy` |
 | モデル | Runtime の環境変数 `BRAIN_MODEL_ID`（`stack.py` の `BRAIN_MODEL_ID`）。既定 `moonshotai.kimi-k2.5`（東京 In-Region）。差し替えは値を変えて `cdk deploy` するだけ。Grok 4.6 はこのアカウントでは提供制限（`AccessDeniedException … not available for this account`）のため未使用 |
 | 呼び出し | Lambda の `AIGenerator` → `utils/brain_client.py`（`bedrock-agentcore:InvokeAgentRuntime`）。Lambda 1 回の実行で 1 セッションを使い回す。Runtime 側の Agent はリクエストごとに使い捨て |
 | 失敗時 | 頭脳の呼び出しに失敗（JSON 提案の形が崩れた場合、`post` なのに本文が空の場合も含む）すると `[ERROR] Brain failed …` を出して（アラーム発火）、推し投稿への反応は skip 扱い（Buffer に入れず、素案メールに「頭脳の呼び出しに失敗したため素案なし」）、リプライは固定文「@user ありがとうｲﾓ🍠✨」。`BRAIN_RUNTIME_ARN` が空でも同じ（`Brain not configured`）。Bedrock Haiku 4.5 直呼びのフォールバックは 2026-09-25 に撤去（フェーズ2b-3） |
