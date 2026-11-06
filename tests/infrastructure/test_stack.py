@@ -1042,6 +1042,7 @@ def test_brain_runtime_created():
         },
         "NetworkConfiguration": {"NetworkMode": "PUBLIC"},
         "ProtocolConfiguration": "HTTP",
+        "PlatformVersion": "V2",
         "LifecycleConfiguration": {"IdleRuntimeSessionTimeout": 300, "MaxLifetime": 1800},
         "EnvironmentVariables": {
             "BRAIN_MODEL_ID": "moonshotai.kimi-k2.5",

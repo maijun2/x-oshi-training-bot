@@ -35,6 +35,9 @@ BRAIN_RUNTIME_NAME = "imomaru_brain"
 # 既定モデル。Grok 4.6 はこのアカウントでは提供制限（AccessDenied）のため Kimi K2.5（東京 In-Region）。
 # 差し替えは Runtime の環境変数 BRAIN_MODEL_ID を変えて deploy するだけ
 BRAIN_MODEL_ID = "moonshotai.kimi-k2.5"
+# Runtime のプラットフォームバージョン。CDK 2.236 の CfnRuntime に引数がないので add_property_override で渡す。
+# 省略すると既存 Runtime は現在のバージョンのまま、新規作成はサービスの既定になるので明示する
+BRAIN_PLATFORM_VERSION = "V2"
 BRAIN_PACKAGE_PATH = "dist/brain.zip"  # scripts/build_agent_package.sh が生成
 
 # 推しの記憶（AgentCore Memory、フェーズ3a）。namespace は推し 1 本（actorId = 推しの X ユーザー名）
@@ -816,6 +819,7 @@ class ImomaruBotStack(Stack):
                 "OSHI_ACTOR_ID": oshi_username,               # Memory の actorId（Lambda の書き込みと同じ）
             },
         )
+        runtime.add_property_override("PlatformVersion", BRAIN_PLATFORM_VERSION)
         runtime.node.add_dependency(brain_role)
 
         CfnOutput(self, "BrainRuntimeArn", value=runtime.attr_agent_runtime_arn)
